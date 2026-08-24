@@ -15,6 +15,10 @@
 #   (g) explicit merge method is not overridden by the default --squash
 #   (g2) --method=queue, --method queue, and --no-method skip default --squash
 #        and forward no strategy flag, so a merge-queue branch can choose
+#   (g3) that path uses the same live outcome read as every other GitHub merge,
+#        so an enqueued still-open PR is named queued rather than merged
+#   (g4) those forge-decides tokens are refused on GitLab before any state is
+#        recorded, while a real GitLab merge method still forwards
 #   (h) repo override args fail fast because the repo comes from the URL,
 #       including a bundled short-option cluster that carries -R
 #   (i) a GitLab MR URL resolves and merges through glab instead of erroring
@@ -119,9 +123,10 @@ make_case() {
 }
 
 # gh-axi mock recording every invocation to a log file, and gh mock answering
-# headRefOid for fm-pr-check.sh's pr_head lookup. Args: case_dir head_sha
+# headRefOid for fm-pr-check.sh's pr_head lookup and, when a state is given, the
+# post-merge `--json state` read. Args: case_dir head_sha [pr_state]
 add_gh_mocks() {
-  local case_dir=$1 head=$2
+  local case_dir=$1 head=$2 state=${3-}
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -141,6 +146,9 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
+      *"--json state"*)
+        [ -n '$state' ] || exit 1
+        printf '%s\n' '$state' ; exit 0 ;;
     esac
     ;;
   "api graphql")
@@ -1507,6 +1515,131 @@ test_forge_decides_method_forwards_other_flags() {
   pass "fm-pr-merge still forwards non-strategy GitHub flags after a forge-decides method"
 }
 
+# On a merge-queue branch the merge call enqueues the pull request and leaves it
+# open, while the forge CLI still reports that as a merge. The same live outcome
+# read used for every GitHub merge must name which of the two actually happened,
+# and the forge-decides tokens must still omit a strategy.
+test_forge_decides_reports_queued_and_merged_outcomes() {
+  local case_dir rc
+  case_dir=$(make_case forge-decides-queued)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+  write_github_outcome "$case_dir" OPEN false true master
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 -- --method=queue \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "forge-decides-queued: a queued PR should succeed"
+  grep -qxF 'pr merge 31 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "forge-decides-queued: expected merge with no strategy, got '$(cat "$case_dir/gh-axi.log")'"
+  assert_github_merge_has_no_strategy "$case_dir/gh-axi.log" "forge-decides-queued"
+  assert_grep 'verified: https://github.com/example/repo/pull/31 is queued' \
+    "$case_dir/stdout" "forge-decides-queued: success was not reported as queued"
+  assert_no_grep 'merged:' "$case_dir/stdout" \
+    "forge-decides-queued: an enqueued, still-open PR was confirmed as merged"
+
+  case_dir=$(make_case forge-decides-landed)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 1111111111111111111111111111111111111111
+  write_github_outcome "$case_dir" MERGED true false main
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 -- --method=queue \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "forge-decides-landed: a merged PR should succeed"
+  grep -qxF 'pr merge 31 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "forge-decides-landed: expected merge with no strategy, got '$(cat "$case_dir/gh-axi.log")'"
+  assert_github_merge_has_no_strategy "$case_dir/gh-axi.log" "forge-decides-landed"
+  assert_grep 'verified: https://github.com/example/repo/pull/31 is merged' \
+    "$case_dir/stdout" "forge-decides-landed: success was not reported as verified"
+  pass "fm-pr-merge reports an enqueued PR as queued and a landed one as merged"
+}
+
+# An unreadable state on the forge-decides path must not claim the PR merged.
+# Main's outcome gate refuses rather than treating that read as report-only.
+test_forge_decides_unreadable_state_reports_without_failing() {
+  local case_dir rc
+  case_dir=$(make_case forge-decides-unreadable-state)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 2222222222222222222222222222222222222222
+  add_gh_mock_outcome_read_fails "$case_dir" 2222222222222222222222222222222222222222
+  add_gh_axi_mock_view_fails "$case_dir"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 -- --no-method \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "forge-decides-unreadable-state: an unreadable outcome must fail"
+  assert_grep 'could not read the GitHub pull request outcome after the merge attempt' \
+    "$case_dir/stderr" "forge-decides-unreadable-state: the unreadable state was not reported"
+  assert_no_grep 'verified: ' "$case_dir/stdout" \
+    "forge-decides-unreadable-state: an unread state was confirmed as merged"
+  grep -qxF 'pr merge 32 --repo example/repo' "$case_dir/gh-axi.log" \
+    || fail "forge-decides-unreadable-state: expected merge with no strategy, got '$(cat "$case_dir/gh-axi.log")'"
+  assert_grep 'pr=https://github.com/example/repo/pull/32' "$case_dir/state/task-x1.meta" \
+    "forge-decides-unreadable-state: a successful merge call lost its PR reference"
+  assert_present "$case_dir/state/task-x1.check.sh" \
+    "forge-decides-unreadable-state: no merge poll was armed for a merge that may have landed"
+  pass "fm-pr-merge refuses an unreadable forge-decides outcome without claiming a merge"
+}
+
+# The forge-decides tokens are firstmate-level and no glab flag spells them.
+# GitLab already applies the project's own merge method, so they are refused by
+# name before anything is recorded rather than forwarded to glab afterwards.
+test_gitlab_forge_decides_method_refuses_before_recording() {
+  local case_dir rc spelling
+  for spelling in 'no-method|--no-method' 'method-equals-queue|--method=queue' 'method-queue|--method queue'; do
+    case_dir=$(make_gitlab_case "gitlab-forge-decides-${spelling%%|*}")
+
+    set +e
+    # shellcheck disable=SC2086  # The spelling is one or two extra merge flags.
+    run_pr_merge "$case_dir" task-x1 "$MR_URL" -- ${spelling#*|} \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "gitlab-forge-decides-${spelling%%|*}: fm-pr-merge should refuse the forge-decides token"
+    assert_grep 'extra merge arguments must not ask GitLab to choose the merge method' \
+      "$case_dir/stderr" "gitlab-forge-decides-${spelling%%|*}: refusal did not name the forge-decides token"
+    assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
+      "gitlab-forge-decides-${spelling%%|*}: the URL was recorded before rejecting the token"
+    assert_absent "$case_dir/state/task-x1.check.sh" \
+      "gitlab-forge-decides-${spelling%%|*}: the refused token armed a merge poll"
+    [ ! -s "$case_dir/glab.log" ] \
+      || fail "gitlab-forge-decides-${spelling%%|*}: glab was invoked with a flag it does not define"
+  done
+  pass "fm-pr-merge refuses forge-decides merge methods on GitLab before recording state"
+}
+
+# A GitLab merge method the caller spells for glab itself is untouched by the
+# new guard, so GitLab merge behavior is unchanged.
+test_gitlab_squash_arg_still_forwarded() {
+  local case_dir
+  case_dir=$(make_gitlab_case gitlab-squash-arg)
+
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" -- --squash \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "gitlab-squash-arg: fm-pr-merge failed"
+
+  [ "$(glab_merge_line "$case_dir/glab.log")" \
+    = "GITLAB_HOST=$MR_HOST mr merge 7 -R $MR_PROJECT_URL --sha $MR_HEAD --yes --squash" ] \
+    || fail "gitlab-squash-arg: expected the caller's --squash forwarded, got '$(glab_merge_line "$case_dir/glab.log")'"
+  pass "fm-pr-merge still forwards a caller's real GitLab merge method"
+}
+
 test_parses_pr_url_for_gh_axi() {
   local case_dir
   case_dir=$(make_case url-parsing)
@@ -2164,6 +2297,8 @@ test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_forge_decides_method_omits_strategy
 test_forge_decides_method_forwards_other_flags
+test_forge_decides_reports_queued_and_merged_outcomes
+test_forge_decides_unreadable_state_reports_without_failing
 test_parses_pr_url_for_gh_axi
 test_github_still_forwards_sha_arg
 test_gitlab_url_resolves_and_merges
@@ -2178,6 +2313,8 @@ test_gitlab_unreadable_state_refuses
 test_gitlab_invalid_head_refuses
 test_gitlab_missing_tool_refuses_before_recording
 test_gitlab_head_override_args_refuse_before_recording
+test_gitlab_forge_decides_method_refuses_before_recording
+test_gitlab_squash_arg_still_forwarded
 test_secondmate_merge_reports_upward_once
 test_secondmate_merge_reports_on_the_local_route
 test_gitlab_merge_reports_upward
