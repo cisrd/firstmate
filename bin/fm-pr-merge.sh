@@ -44,6 +44,8 @@
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
+# Those same forge-decides tokens are refused up front on GitLab, where no glab
+# flag spells them.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -185,6 +187,22 @@ github_drop_forge_decides_method() {
   done
 }
 
+# Firstmate-level tokens that ask the forge to choose the merge method. No glab
+# flag spells them, and GitLab already applies the project's own merge method,
+# so the request is a no-op there: refuse it by name before anything is recorded
+# rather than forward an unknown flag to glab after the merge is armed.
+reject_forge_decides_method() {
+  local arg prev=''
+  for arg in "$@"; do
+    if [ "$arg" = --no-method ] || [ "$arg" = --method=queue ] \
+      || { [ "$prev" = --method ] && [ "$arg" = queue ]; }; then
+      echo "error: extra merge arguments must not ask GitLab to choose the merge method, which it already does" >&2
+      return 1
+    fi
+    prev=$arg
+  done
+}
+
 reject_repo_overrides() {
   local arg
   for arg in "$@"; do
@@ -218,6 +236,7 @@ reject_head_overrides() {
 
 reject_repo_overrides "$@" || exit 1
 [ "$PROVIDER" != gitlab ] || reject_head_overrides "$@" || exit 1
+[ "$PROVIDER" != gitlab ] || reject_forge_decides_method "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
