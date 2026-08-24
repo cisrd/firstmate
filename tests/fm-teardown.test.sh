@@ -32,6 +32,7 @@
 #   (i) no-mistakes + dirty worktree, even when work landed     -> REFUSE (dirty wins)
 #   (j) no-mistakes + gh lookup errors + content not in default -> REFUSE (fail-safe)
 #   (k) no-mistakes + merged PR but HEAD moved afterward        -> REFUSE (stale PR)
+#   (k2) no-mistakes + OPEN PR (merge-queue enqueue)            -> REFUSE (not landed)
 #   (l) no-mistakes + stale origin/main but fetched content     -> ALLOW  (fresh fetch)
 #   (m) no-mistakes + local HEAD ancestor of merged PR head     -> ALLOW  (lagging local)
 #   (n) no-mistakes + replayed unpushed patch in merged PR head -> ALLOW  (replayed local)
@@ -274,6 +275,36 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
+      *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# Override GitHub lookups to report PR 7 as still open with the supplied head.
+# A merge-queue enqueue leaves the pull request OPEN until it actually lands.
+add_gh_pr_open_for_head() {
+  local case_dir=$1 head=$2
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr list")
+    printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,open" ; exit 0 ;;
+  "pr view")
+    printf '%s\n' "pull_request:" "  number: 7" "  state: open" ; exit 0 ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *"state,headRefOid"*) printf '%s\t%s\n' 'OPEN' '$head' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
     esac
     ;;
@@ -788,6 +819,27 @@ test_squash_merged_pr_allows_replayed_unpushed_patch() {
   expect_code 0 "$rc" "squash-replayed-patch: teardown should succeed when unpushed local patch is in the merged PR head"
   ! grep -q REFUSED "$case_dir/stderr" || fail "squash-replayed-patch: teardown printed a REFUSED line"
   pass "squash-merged PR accepts replayed unpushed local patches contained in the PR head"
+}
+
+test_open_pr_does_not_count_as_landed() {
+  local case_dir rc pr_head
+  case_dir=$(make_case open-pr-unlanded)
+  write_meta "$case_dir" no-mistakes ship
+  # Same unpushed branch content as the squash-merged allow case, but the PR is
+  # still OPEN: that is the merge-queue enqueue state, not a landing.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_for_current_head "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_open_for_head "$case_dir" "$pr_head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "open-pr-unlanded: teardown should refuse while the PR is still open"
+  grep -q REFUSED "$case_dir/stderr" || fail "open-pr-unlanded: no REFUSED line in stderr"
+  pass "open PR, including a merge-queue enqueue, does not count as landed"
 }
 
 test_merged_pr_with_later_local_commit_refuses() {
@@ -2615,6 +2667,7 @@ test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
 test_squash_merged_pr_allows_replayed_unpushed_patch
+test_open_pr_does_not_count_as_landed
 test_merged_pr_with_later_local_commit_refuses
 test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags

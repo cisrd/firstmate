@@ -1085,6 +1085,7 @@ pr_is_merged() {
   head=${view#*$'\t'}
   [ "$state" != "$view" ] || return 1
   case "$state" in
+    # OPEN includes a merge-queue enqueue: landing is MERGED only.
     MERGED|merged) ;;
     *) return 1 ;;
   esac
