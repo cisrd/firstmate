@@ -123,10 +123,10 @@ make_case() {
 }
 
 # gh-axi mock recording every invocation to a log file, and gh mock answering
-# headRefOid for fm-pr-check.sh's pr_head lookup and, when a state is given, the
-# post-merge `--json state` read. Args: case_dir head_sha [pr_state]
+# headRefOid for fm-pr-check.sh's pr_head lookup and the post-merge outcome
+# reads. Args: case_dir head_sha
 add_gh_mocks() {
-  local case_dir=$1 head=$2 state=${3-}
+  local case_dir=$1 head=$2
   cat > "$case_dir/fakebin/gh-axi" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$FM_TEST_GH_AXI_LOG"
@@ -146,9 +146,6 @@ case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
       *headRefOid*) printf '%s\n' '$head' ; exit 0 ;;
-      *"--json state"*)
-        [ -n '$state' ] || exit 1
-        printf '%s\n' '$state' ; exit 0 ;;
     esac
     ;;
   "api graphql")
