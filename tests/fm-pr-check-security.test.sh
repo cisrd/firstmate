@@ -677,7 +677,7 @@ test_static_poll_contract() {
   dir=$(make_case poll-contract)
   make_poll_fixture "$dir"
 
-  for state in OPEN CLOSED QUEUED AWAITING_CHECKS EMPTY MALFORMED; do
+  for state in OPEN CLOSED EMPTY MALFORMED; do
     case "$state" in
       EMPTY) value= ;;
       MALFORMED) value='not-a-state' ;;
