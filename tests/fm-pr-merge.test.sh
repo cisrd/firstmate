@@ -13,6 +13,8 @@
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
+#   (g2) --method=queue, --method queue, and --no-method skip default --squash
+#        and forward no strategy flag, so a merge-queue branch can choose
 #   (h) repo override args fail fast because the repo comes from the URL,
 #       including a bundled short-option cluster that carries -R
 #   (i) a GitLab MR URL resolves and merges through glab instead of erroring
@@ -1453,6 +1455,58 @@ test_method_equals_merge_method_not_overridden() {
   pass "fm-pr-merge respects --method=<value> as an explicit merge method"
 }
 
+# Assert the GitHub CLI was asked to merge without imposing a strategy, so a
+# merge-queue branch can apply the project's own method.
+assert_github_merge_has_no_strategy() {
+  local log=$1 label=$2 line flag
+  line=$(grep -F 'pr merge ' "$log" || true)
+  [ -n "$line" ] || fail "$label: gh-axi pr merge was not invoked"
+  for flag in --squash --rebase --merge --method --no-method; do
+    case "$line" in
+      *"$flag"*) fail "$label: '$flag' was imposed on GitHub: '$line'" ;;
+    esac
+  done
+}
+
+test_forge_decides_method_omits_strategy() {
+  local case_dir spelling
+  for spelling in \
+    'method-equals-queue|--method=queue' \
+    'method-queue|--method queue' \
+    'no-method|--no-method'
+  do
+    case_dir=$(make_case "forge-decides-${spelling%%|*}")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+    : > "$case_dir/gh-axi.log"
+
+    # shellcheck disable=SC2086  # The spelling is one or two extra merge flags.
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/24 -- ${spelling#*|} \
+      > "$case_dir/stdout" 2> "$case_dir/stderr" \
+      || fail "forge-decides-${spelling%%|*}: fm-pr-merge failed"
+
+    grep -qxF 'pr merge 24 --repo example/repo' "$case_dir/gh-axi.log" \
+      || fail "forge-decides-${spelling%%|*}: expected merge with no strategy, got '$(cat "$case_dir/gh-axi.log")'"
+    assert_github_merge_has_no_strategy "$case_dir/gh-axi.log" "forge-decides-${spelling%%|*}"
+  done
+  pass "fm-pr-merge omits a GitHub strategy when the caller asks the forge to decide"
+}
+
+test_forge_decides_method_forwards_other_flags() {
+  local case_dir
+  case_dir=$(make_case forge-decides-extra-flags)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" ffffffffffffffffffffffffffffffffffffffff
+  : > "$case_dir/gh-axi.log"
+
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/25 -- --method=queue --delete-branch \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" || fail "forge-decides-extra-flags: fm-pr-merge failed"
+
+  grep -qxF 'pr merge 25 --repo example/repo --delete-branch' "$case_dir/gh-axi.log" \
+    || fail "forge-decides-extra-flags: extra flags were not forwarded after dropping the forge-decides method"
+  pass "fm-pr-merge still forwards non-strategy GitHub flags after a forge-decides method"
+}
+
 test_parses_pr_url_for_gh_axi() {
   local case_dir
   case_dir=$(make_case url-parsing)
@@ -2108,6 +2162,8 @@ test_repo_override_args_refuse_before_recording
 test_bundled_repo_override_args_refuse_before_recording
 test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
+test_forge_decides_method_omits_strategy
+test_forge_decides_method_forwards_other_flags
 test_parses_pr_url_for_gh_axi
 test_github_still_forwards_sha_arg
 test_gitlab_url_resolves_and_merges

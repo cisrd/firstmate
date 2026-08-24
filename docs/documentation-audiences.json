@@ -417,6 +417,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/github-merge-queue.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/muse.md",
       "audience": "maintainer-verification"
     },

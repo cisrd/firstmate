@@ -7,7 +7,11 @@
 # host and path, so any instance works and no host is hardcoded.
 #
 # Merge method on GitHub defaults to --squash when the caller passes none of
-# --squash, --merge, --rebase, or --method after the optional -- separator.
+# --squash, --merge, --rebase, --method, or --no-method after the optional --
+# separator. --method=queue, --method queue, and --no-method count as a method
+# so that default is skipped, then they are dropped rather than forwarded: a
+# GitHub merge-queue branch refuses any explicit strategy, and gh-axi rejects
+# --method=queue.
 # The gh-axi merge abstraction always performs the merge; the outcome read that
 # follows it never becomes a prerequisite for reaching that abstraction. After
 # gh-axi returns success, GitHub's live state is read back and accepted only
@@ -107,7 +111,7 @@ caller_has_merge_method() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      --squash|--merge|--rebase|--method|--method=*) return 0 ;;
+      --squash|--merge|--rebase|--method|--method=*|--no-method) return 0 ;;
     esac
   done
   return 1
@@ -152,6 +156,33 @@ caller_requested_auto_merge() {
     esac
   done
   return "$requested"
+}
+
+# GitHub-only: drop tokens that mean "let the forge choose the method".
+# They already satisfy caller_has_merge_method so the default --squash is not
+# added. They are not GitHub merge strategies and must not reach gh-axi.
+GITHUB_MERGE_FORWARD=()
+github_drop_forge_decides_method() {
+  GITHUB_MERGE_FORWARD=()
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --no-method|--method=queue)
+        shift
+        ;;
+      --method)
+        if [ "${2-}" = queue ]; then
+          shift 2
+        else
+          GITHUB_MERGE_FORWARD+=("$1")
+          shift
+        fi
+        ;;
+      *)
+        GITHUB_MERGE_FORWARD+=("$1")
+        shift
+        ;;
+    esac
+  done
 }
 
 reject_repo_overrides() {
@@ -639,8 +670,10 @@ case "$PROVIDER" in
       FM_PR_GITHUB_AUTO_REQUESTED=true
     fi
     FM_PR_GITHUB_CALLER_METHOD=$(caller_merge_method "$@")
+    github_drop_forge_decides_method "$@"
     if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-      "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1); then
+      "${merge_args[@]+"${merge_args[@]}"}" \
+      "${GITHUB_MERGE_FORWARD[@]+"${GITHUB_MERGE_FORWARD[@]}"}" 2>&1); then
       FM_PR_GITHUB_MERGE_ACCEPTED=true
     else
       merge_status=$?
