@@ -25,8 +25,13 @@
 #     names the context window), so a bare duration can never match one.
 #   - anything not rendered in the footer region: displayed CONTENT can contain
 #     token-shaped or cost-shaped text, so the scan is limited to the last
-#     FM_PROGRESS_FOOTER_LINES non-blank lines, the same footer discipline
-#     bin/fm-busy-lib.sh's rendered-tail arm uses.
+#     FM_PROGRESS_FOOTER_LINES non-blank lines. Six is the footer size this repo
+#     already settled on for exactly this contamination risk - see the busy-match
+#     comment in bin/fm-watch.sh and the acknowledgement scan in
+#     bin/fm-pending-reply-lib.sh, both of which read the last 6 non-blank lines
+#     so that lookalike strings in displayed content cannot drive a verdict.
+#     Every rendered footer this repo has recorded is a single status line at the
+#     bottom, so a wider window buys nothing and only admits more transcript.
 #
 # Absence of counters is a REPORTED fact, not a verdict. A harness that renders
 # no counters at all (Codex's "• Working (6s • esc to interrupt)" is the
@@ -40,7 +45,8 @@
 # tests/fm-busy-progress-drift-live-e2e.test.sh is the guard that proves it.
 
 # Footer region scanned for counters, in non-blank lines from the end.
-FM_PROGRESS_FOOTER_LINES=${FM_PROGRESS_FOOTER_LINES:-12}
+FM_PROGRESS_FOOTER_LINES=${FM_PROGRESS_FOOTER_LINES:-6}
+case "$FM_PROGRESS_FOOTER_LINES" in ''|*[!0-9]*|0) FM_PROGRESS_FOOTER_LINES=6 ;; esac
 
 _FM_PROGRESS_ARROW_UP=$'\xE2\x86\x91'
 _FM_PROGRESS_ARROW_DOWN=$'\xE2\x86\x93'
