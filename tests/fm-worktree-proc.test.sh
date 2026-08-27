@@ -1039,13 +1039,22 @@ test_a_process_that_outlives_the_force_stop_is_never_reported_stopped() {
   mkdir -p "$dir/work"
   pid=$(witness "$dir/work")
   err="$dir/survivor.err"
-  # The cwd source keeps answering that the process is there, and its birth
-  # identity keeps matching: from the reap's side this is indistinguishable
-  # from a process wedged past a KILL.
+  # The cwd source keeps answering that the process is there, its birth identity
+  # keeps matching, and it keeps reading ALIVE: from the reap's side this is
+  # indistinguishable from a process wedged past a KILL, which is what the real
+  # thing is - an uninterruptible sleep does not die and does not stop existing.
+  # The liveness answer has to be stubbed alongside the other two, because the
+  # fixture's witness really does die when signalled and a wedged process does
+  # not; stubbing only the listing would model a process that is gone, which is
+  # a different outcome with a different status.
   make_cwd_source_stub "$dir" "$pid" "$dir/work" forever
+  local real_alive
+  real_alive=$(declare -f fm_pid_alive)
+  fm_pid_alive() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
   rc=0
   with_stubbed_cwd_source "$dir" fm_wtproc_reap "survivor" none "$dir/work" \
     >/dev/null 2>"$err" || rc=$?
+  eval "$real_alive"
   [ "$rc" = 3 ] || fail "reap-outcome: a process still listed after the force-stop returned $rc, not 3"
   [ "$FM_WTPROC_SURVIVORS" = "$pid" ] \
     || fail "reap-outcome: the survivor was not named: '$FM_WTPROC_SURVIVORS'"

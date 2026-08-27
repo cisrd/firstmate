@@ -85,6 +85,9 @@
 #                                          path is provably a linked worktree
 #                                          and not a primary checkout
 #   fm_wtproc_task_tmp <task-id> <dir>  -> echoes the resolved per-task tmp root
+#   fm_wtproc_signalling_root <dir> <label>
+#                                       -> echoes the resolved path after the
+#                                          shape refusals alone (0/1/2 as above)
 #                                          (0 = accepted, 1 = refused with a
 #                                          reason, 2 = absent, nothing there)
 #   fm_wtproc_worker_is_gone <task-id> <agent-state>
@@ -374,9 +377,30 @@ _fm_wtproc_pids_under_lsof() {  # <real-dir>
       n*)
         [ -n "$pid" ] || return 1
         path=${line#n}
+        # The same two corrections the /proc arm carries, for the same two
+        # reasons. An `if`, because this is the last command of the case, of
+        # the while body, and of this function, so an `&&` list whose test
+        # fails makes the function report FAILURE on a correct answer - and a
+        # caller reads that as "the scan could not be done", refusing a
+        # teardown or calling a copy it read correctly unexaminable. And the
+        # liveness recheck, because `lsof` is itself forked from the caller and
+        # walks the process table with the caller's working directory, so a
+        # scan run from inside the copy lists lsof's own pid as an occupant of
+        # it. `kill -0` is the test available here: there is no /proc to ask on
+        # the hosts this arm exists for, and it is the same question for the
+        # scanner's own just-exited helper.
+        #
+        # NOT EXERCISED ON THIS HOST. lsof is absent from the machine this was
+        # written and verified on, so this arm has no test coverage here and
+        # was corrected by inspection alone, in step with its /proc twin. It is
+        # labelled rather than left asymmetric: a reader finding one arm fixed
+        # and the other not would reasonably conclude the second was examined
+        # and judged sound.
         case "$path" in
           "$dir"|"$dir"/*)
-            [ "$pid" != "$self" ] && [ "$pid" != "$$" ] && printf '%s\n' "$pid"
+            if [ "$pid" != "$self" ] && [ "$pid" != "$$" ] && fm_pid_alive "$pid"; then
+              printf '%s\n' "$pid"
+            fi
             ;;
         esac
         ;;
@@ -561,6 +585,34 @@ _fm_wtproc_refuse_sensitive_root() {  # <real-path> <fm-home> <what>
       return 1
       ;;
   esac
+}
+
+# fm_wtproc_signalling_root: resolve <dir> and apply the shape refusals that no
+# task root may ever fail, without asserting what KIND of root it is.
+#
+# For bin/fm-teardown.sh, whose recorded roots reach a signalling loop. That
+# caller cannot use fm_wtproc_disposable_worktree: it supports a task copy that
+# is an ordinary clone rather than a linked worktree, which its own suite pins,
+# so the linked-worktree proof would refuse a shape the command is required to
+# handle. What it can and must have is the half that names the harm - the
+# filesystem root, a path sitting directly in the home, anything under
+# projects/, which is where the operator's own stack lives - so a stale or
+# hand-edited record can never point a signal at it.
+#
+#   0  accepted; the resolved path is printed
+#   1  refused; the reason is printed on stderr
+#   2  absent; nothing is there, so there is nothing to scan and nothing to say
+fm_wtproc_signalling_root() {  # <dir> <label> [fm-home]
+  local dir=$1 label=$2 home=${3:-${FM_HOME:-}} real
+  [ -n "$dir" ] || { echo "fm-worktree-proc: no path was recorded for $label" >&2; return 1; }
+  [ -e "$dir" ] || return 2
+  [ -d "$dir" ] || { echo "fm-worktree-proc: $label '$dir' exists but is not a directory" >&2; return 1; }
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || {
+    echo "fm-worktree-proc: $label '$dir' exists but could not be entered" >&2
+    return 1
+  }
+  _fm_wtproc_refuse_sensitive_root "$real" "$home" "$label" || return 1
+  printf '%s' "$real"
 }
 
 fm_wtproc_disposable_worktree() {  # <dir> [fm-home]

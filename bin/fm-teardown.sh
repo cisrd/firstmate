@@ -1787,6 +1787,58 @@ reap_task_backend_process_group() {  # <label>
 # process that exits on its own between the two passes is simply absent from
 # the recheck. A host with no working-directory source at all uses the backend
 # process-group fallback; a scan error refuses before destructive teardown.
+# validate_recorded_reap_roots: prove the recorded paths are what the record
+# claims BEFORE anything is signalled inside them.
+#
+# The two sibling paths on this branch each run their recorded values through a
+# validator - a task's copy has to prove itself a linked worktree that is not a
+# primary checkout, and a temp root has to resolve to the exact path fm-spawn
+# builds - and both refuse the shapes that are never a task's own: the
+# filesystem root, a path sitting directly in the home, anything under
+# projects/. Teardown passed `worktree=` and `tasktmp=` off the record straight
+# into its signalling loop with none of that behind them.
+#
+# That gap predates this branch, but this branch is what made it REACHABLE: the
+# scan was gated on lsof, absent on the host where this matters, so the loop
+# never ran. Moving it onto the shared resolver switched it on. A stale or
+# hand-edited record naming the operator's own stack under projects/ - ports
+# 3001, 3002, 3003, 3103 - would then be signalled into, which is the one
+# outcome this whole mechanism exists to make impossible.
+#
+# A recorded root that fails those refusals REFUSES the teardown rather than
+# narrowing it. Signalling nothing and removing the worktree anyway would be
+# worse than refusing: the destructive half would run against a record the safe
+# half just rejected. A root that is merely ABSENT is not a refusal - nothing is
+# there to examine - and it is dropped, exactly as the report path drops it.
+#
+# Deliberately the shape refusals ALONE, not fm_wtproc_disposable_worktree's
+# linked-worktree proof: this command supports a task copy that is an ordinary
+# clone, which its own suite pins, so that proof would refuse a shape teardown
+# is required to handle. The half kept is the half that names the harm.
+REAP_ROOTS=()
+validate_recorded_reap_roots() {
+  local real rc pair label dir
+  REAP_ROOTS=()
+  for pair in "worktree:$WT" "tasktmp:$TASK_TMP"; do
+    label=${pair%%:*}
+    dir=${pair#*:}
+    [ -n "$dir" ] || continue
+    rc=0
+    real=$(fm_wtproc_signalling_root "$dir" "task $ID's recorded $label" "$FM_HOME" 2>&1) || rc=$?
+    case "$rc" in
+      0) REAP_ROOTS+=("$real") ;;
+      # Absent: nothing is there to signal into, and teardown's own handling
+      # below already covers a copy that is gone. Not a refusal, and not an
+      # alarm.
+      2) ;;
+      *)
+        echo "REFUSED: task $ID's recorded $label '$dir' is not a path this may ever signal into (${real:-the check refused it without stating a reason}); nothing was signalled and nothing was removed. Correct the record, or inspect that path by hand." >&2
+        exit 1
+        ;;
+    esac
+  done
+}
+
 # The reap runs from OUTSIDE the roots it is about to scan. Every helper it
 # spawns - the /proc walk, each identity read - inherits this shell's working
 # directory, so a teardown started from inside the worktree would list its own
@@ -2796,6 +2848,28 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     fi
   fi
 fi
+
+# Every landed/discard-work refusal above has now passed (or --force skipped
+# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
+# --force, and before ANY destructive step below - a still-parked run or a
+# leaked process can own live work in this exact worktree. Not for
+# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
+# dedicated process-event and firstmate-home removal machinery further below,
+# not by task-worktree cleanup.
+if [ "$KIND" != secondmate ]; then
+  conclude_task_no_mistakes_run "$WT"
+  validate_recorded_reap_roots
+  # Both recorded roots absent means there is nothing on this machine to scan,
+  # not that a scan came back empty; skipping is the honest action, and an empty
+  # expansion into the reap would be read as a scan of no roots at all.
+  if [ "${#REAP_ROOTS[@]}" -gt 0 ]; then
+    reap_task_worktree_processes worktree "${REAP_ROOTS[@]}"
+  fi
+fi
+
+# Fix 3 (see script header): sweep remote job workers abandoned by an already
+# pruned code root. Best effort - a sweep failure never blocks this teardown.
+"$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
