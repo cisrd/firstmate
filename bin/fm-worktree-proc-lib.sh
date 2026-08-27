@@ -335,8 +335,20 @@ _fm_wtproc_pids_under_proc() {  # <real-dir>
     # alive, and dropping it would let a teardown remove a copy with a live
     # foreign process still sitting in it. Directory existence is the exact
     # question and is permission-independent.
+    # An `if`, not `test && printf`. This is the last command of the case, of
+    # the while body, and of this function, so an `&&` list whose test fails
+    # makes all three yield 1 - and the function would report FAILURE having
+    # produced a perfectly correct answer. Callers read that as "the scan could
+    # not be done": teardown refuses and preserves a copy it should have
+    # cleaned, and the sweep calls a copy it read correctly unexaminable. The
+    # trigger is the very thing this recheck exists for, a helper that exited
+    # between the listing and the read, so it would fire routinely.
     case "$link" in
-      "$dir"|"$dir"/*) [ -e "$root/$pid" ] && printf '%s\n' "$pid" ;;
+      "$dir"|"$dir"/*)
+        if [ -e "$root/$pid" ]; then
+          printf '%s\n' "$pid"
+        fi
+        ;;
     esac
   done <<EOF
 $_FM_WTPROC_LISTING

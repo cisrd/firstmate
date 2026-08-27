@@ -1467,6 +1467,61 @@ test_a_scan_from_inside_a_copy_never_reports_its_own_helpers() {
   pass "a scan run from inside a copy reports no helpers of its own, and still finds a real leftover there"
 }
 
+# --- 12d. a correct answer is never reported as a failed scan ----------------
+#
+# The liveness recheck above sits at the end of the case, of the while body, and
+# of the function, so writing it as `test && printf` makes a failing test the
+# function's own exit status: it reports FAILURE having produced a perfectly
+# correct answer. Callers do not treat that lightly - teardown refuses and
+# preserves a copy it should have cleaned, and the sweep calls a copy it read
+# correctly unexaminable - and the trigger is the very thing the recheck exists
+# for, a process that exits between the listing and the read, so it fires
+# routinely rather than rarely.
+#
+# Reproduced deterministically: a held snapshot keeps a listing whose LAST
+# matching entry names a pid whose directory has since gone.
+
+test_a_scan_whose_last_entry_has_exited_still_reports_success() {
+  local lib out rc
+  lib="$ROOT/bin/fm-worktree-proc-lib.sh"
+
+  out=$(bash -c '
+    set -u
+    lib=$1; base=$2
+    root="$base/proc"; copy="$base/copy"
+    mkdir -p "$root/100" "$root/200" "$copy"
+    # The self-test needs one resolving cwd link; `self` is not matched by the
+    # listing glob, so it never becomes a scan candidate itself.
+    mkdir -p "$root/self"
+    ln -s "$PWD" "$root/self/cwd"
+    ln -s "$copy" "$root/100/cwd"
+    ln -s "$copy" "$root/200/cwd"
+    export FM_PROC_ROOT_OVERRIDE="$root"
+    . "$lib"
+    # Hold ONE listing across both calls, so the second is answered from an
+    # instant at which 200 was still there.
+    fm_wtproc_snapshot_begin
+    fm_wtproc_pids_under "$copy" >/dev/null || { echo "SETUP-FAILED"; exit 0; }
+    # 200 sorts last among the matching entries, so its disappearance lands on
+    # the final iteration - the one whose status the function returns.
+    rm -rf "${root:?}/200"
+    pids=$(fm_wtproc_pids_under "$copy"); rc=$?
+    fm_wtproc_snapshot_end
+    printf "rc=%s pids=%s" "$rc" "$(echo $pids | tr "\n" ",")"
+  ' _ "$lib" "$TMP_ROOT/case-last-exited" 2>/dev/null || true)
+
+  case "$out" in
+    *SETUP-FAILED*)
+      fail "last-exited: the fixture could not produce a first successful scan, so this case proves nothing" ;;
+  esac
+  case "$out" in
+    "rc=0 pids=100"*) ;;
+    *) fail "last-exited: a scan that produced a correct answer did not report success: $out" ;;
+  esac
+
+  pass "a scan whose last listed process has exited still reports success, and still returns the live one"
+}
+
 # --- 13. the resolver self-test runs once per observation, not once per root --
 
 test_the_resolver_self_test_is_not_repeated_for_every_root() {
@@ -1625,5 +1680,6 @@ test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
 test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable
 test_a_scan_from_inside_a_copy_never_reports_its_own_helpers
+test_a_scan_whose_last_entry_has_exited_still_reports_success
 test_the_resolver_self_test_is_not_repeated_for_every_root
 test_a_cleanup_never_signals_the_shell_it_was_started_from
