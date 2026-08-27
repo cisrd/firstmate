@@ -47,11 +47,24 @@
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
 #              Records a durable checkpoint and that note, exits the old agent,
-#              then delegates the launch to its single owner,
-#              bin/fm-spawn.sh --relaunch. A failure before publication keeps
-#              the prior durable record in place and reports the concrete
-#              state; it never leaves a half-transitioned task claiming to be
-#              running.
+#              stops what that agent left running in the task's local copy, then
+#              delegates the launch to its single owner, bin/fm-spawn.sh
+#              --relaunch. A failure before publication keeps the prior durable
+#              record in place and reports the concrete state; it never leaves a
+#              half-transitioned task claiming to be running.
+#
+#              That cleanup is the reason relaunch is not just "exit then
+#              spawn": a dev server, watcher, or queue worker the previous
+#              incarnation started keeps running in the same copy the
+#              replacement is about to work in, and nothing else would ever stop
+#              it. Processes are attributed by their real working directory
+#              alone (bin/fm-worktree-proc-lib.sh), never by command name; the
+#              endpoint's own shell is spared because relaunch reuses it, a
+#              secondmate is skipped because its "worktree" is its firstmate
+#              home, an agent that was only READ as already stopped has that
+#              reading corroborated by an independent current-state source
+#              first, and a cleanup that cannot be completed warns and lets the
+#              relaunch finish rather than stranding the task with no agent.
 #
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an
@@ -136,6 +149,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-worktree-proc-lib.sh
+. "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -304,6 +319,7 @@ LABEL="fm-$ID"
 RECORDED_HARNESS=$(fm_meta_get "$META" harness)
 KIND=$(fm_meta_get "$META" kind)
 WT=$(fm_meta_get "$META" worktree)
+TASK_TMP=$(fm_meta_get "$META" tasktmp)
 [ -n "$KIND" ] || KIND=ship
 
 HARNESS=$(fm_control_harness_family "$RECORDED_HARNESS") \
@@ -783,6 +799,65 @@ record_note() {
   esac
 }
 
+# reap_previous_incarnation: stop what the agent just replaced left running in
+# this task's own local copy, before its replacement is launched into the same
+# copy. This is the case where "ownerless" needs the least judgement: the copy
+# has a known owner and that owner is being replaced, and when this run actually
+# delivered the exit and watched the agent go, nothing still running there has a
+# live owner. Attribution is by working directory alone
+# (bin/fm-worktree-proc-lib.sh); no command name is ever matched.
+#
+# Two things are deliberately spared. Session leaders are protected because the
+# endpoint's own shell sits in this worktree and a relaunch reuses that
+# endpoint. A secondmate is skipped entirely: its recorded "worktree" is its
+# firstmate home, its crewmates live in their own copies, and reconciling them
+# is the relaunched mate's own job (bin/fm-control.sh's safe_checkpoint).
+#
+# A reap that cannot be completed WARNS and lets the relaunch continue. This
+# path exists to stop leftover processes, not to gate the worker's return: a
+# task left with no agent because a `sleep` could not be identified would be a
+# worse outcome than a surviving leftover, and nothing here destroys work.
+REAP_RESULT=none
+reap_previous_incarnation() {  # <exit-result>
+  local exit_result=$1 wt_real tmp_real reaped
+  local -a roots=()
+  REAP_RESULT=none
+  case "$KIND" in
+    ship|scout) ;;
+    *) REAP_RESULT="skipped-kind"; return 0 ;;
+  esac
+  # `stopped` means this run delivered the exit command and watched the agent
+  # go, which is proof enough on its own. `already-stopped` means the agent was
+  # only ever READ as gone, and a backend classifier has been observed calling a
+  # running worker dead, so that reading has to be corroborated by the
+  # independent current-state source before anything is signalled.
+  if [ "$exit_result" != stopped ] \
+     && ! fm_wtproc_worker_is_gone "$ID" "$(agent_state)"; then
+    echo "warning: task $ID's agent was already recorded as stopped but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; leaving every process in its local copy alone" >&2
+    REAP_RESULT="unconfirmed-stop"
+    return 0
+  fi
+  if ! wt_real=$(fm_wtproc_disposable_worktree "$WT" "$FM_HOME"); then
+    echo "warning: task $ID's local copy $WT could not be confirmed disposable; leaving every process in it alone" >&2
+    REAP_RESULT="unconfirmed-copy"
+    return 0
+  fi
+  roots+=("$wt_real")
+  if [ -n "$TASK_TMP" ] && tmp_real=$(fm_wtproc_task_tmp "$ID" "$TASK_TMP" 2>/dev/null); then
+    roots+=("$tmp_real")
+  fi
+  if ! reaped=$(fm_wtproc_reap "task $ID leftover" 1 "${roots[@]}"); then
+    echo "warning: leftover processes in task $ID's local copy could not be accounted for; the relaunch continues and they are left running" >&2
+    REAP_RESULT=unresolved
+    return 0
+  fi
+  if [ -n "$reaped" ]; then
+    REAP_RESULT="stopped:$(printf '%s' "$reaped" | tr ' ' ',')"
+  else
+    REAP_RESULT=clean
+  fi
+}
+
 do_relaunch() {
   local exit_result state note_line
   local -a spawn_args
@@ -823,7 +898,9 @@ do_relaunch() {
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)
-  journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  reap_previous_incarnation "$exit_result"
+  journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" \
+    "exit_result=$exit_result" "reap=$REAP_RESULT"
 
   # The launch owner (fm-spawn --relaunch) clears the previous incarnation's
   # per-task harness wiring before arming the new one, so nothing to do here.
@@ -846,7 +923,8 @@ do_relaunch() {
   }
   RELAUNCH_AGENT_CONFIRMED=1
 
-  journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" "exit_result=$exit_result"
+  journal_write complete "${CHECKPOINT_LINES[@]}" "$note_line" \
+    "exit_result=$exit_result" "reap=$REAP_RESULT"
   RELAUNCH_ACTIVE=0
   echo "relaunched $ID harness=$TARGET_HARNESS from=$PRIOR_RECORDED_HARNESS model=$TARGET_MODEL effort=$TARGET_EFFORT backend=$BACKEND endpoint=$T worktree=$WT"
 }

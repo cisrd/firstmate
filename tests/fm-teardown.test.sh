@@ -62,8 +62,6 @@ REAL_GIT_FOR_TEST=$(command -v git)
 export REAL_GIT_FOR_TEST
 REAL_PS_FOR_TEST=$(command -v ps)
 export REAL_PS_FOR_TEST
-REAL_LSOF_FOR_TEST=$(command -v lsof)
-export REAL_LSOF_FOR_TEST
 
 # Build a fresh sandbox for one test case. Sets up:
 #   $CASE/state/        - firstmate state dir (with a fresh watcher beacon)
@@ -564,7 +562,7 @@ backlog_row_state() {
 make_path_without_lsof() {  # <case-dir>
   local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
   mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
+  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln ls \
     mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
@@ -1076,8 +1074,14 @@ test_lsof_error_never_clears_index_lock() {
   set -e
 
   expect_code 1 "$rc" "lsof-error-index-lock: teardown should refuse when lsof errors"
-  assert_grep "REFUSED: cannot determine leaked processes" "$case_dir/stderr" \
+  # The lock-staleness proof is the only thing here that depends on lsof; the
+  # separate process scan answers from /proc where the kernel exposes it, so its
+  # refusal is not what this case is about (test_lsof_error_refuses_before_removal
+  # covers that one).
+  assert_grep "teardown: lsof check failed" "$case_dir/stderr" \
     "lsof-error-index-lock: teardown did not report the lsof failure"
+  assert_grep "is not provably stale" "$case_dir/stderr" \
+    "lsof-error-index-lock: teardown did not refuse on the unprovable lock"
   assert_not_contains "$(cat "$case_dir/stderr")" "removed provably-stale git lock" \
     "lsof-error-index-lock: teardown removed a lock after lsof failed"
   [ -e "$lock" ] || fail "lsof-error-index-lock: lock file was removed after lsof failed"
@@ -2867,7 +2871,10 @@ test_leaked_tasktmp_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too"
 }
 
-test_lsof_absent_reaps_tmux_process_group() {
+# The process-group fallback is for a host that can answer the cwd question
+# NEITHER from /proc NOR from lsof, so both sources are removed here: /proc is
+# pointed at a path that does not exist and lsof is taken off the search path.
+test_no_cwd_source_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
   write_meta "$case_dir" no-mistakes ship
@@ -2892,6 +2899,7 @@ EOF
 
   rc=0
   FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 0 "$rc" "lsof-absent-process-group-reap: teardown should succeed"
@@ -2901,7 +2909,7 @@ EOF
   fi
   assert_grep "reaping leaked worktree process group" "$case_dir/stderr" \
     "lsof-absent-process-group-reap: teardown did not use the process-group fallback"
-  pass "missing lsof falls back to reaping the tmux pane process group"
+  pass "a host with neither /proc nor lsof falls back to reaping the tmux pane process group"
 }
 
 test_lsof_error_refuses_before_removal() {
@@ -2920,11 +2928,12 @@ EOF
   chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/treehouse"
 
   rc=0
-  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 1 "$rc" "lsof-error-refusal: teardown should refuse"
-  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (lsof failed)" "$case_dir/stderr" \
-    "lsof-error-refusal: teardown did not explain the lsof refusal"
+  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (the working-directory scan failed)" "$case_dir/stderr" \
+    "lsof-error-refusal: teardown did not explain the scan refusal"
   assert_present "$case_dir/wt" "lsof-error-refusal: teardown removed the worktree"
   assert_present "$case_dir/state/task-x1.meta" "lsof-error-refusal: teardown removed task metadata"
   assert_absent "$case_dir/treehouse.log" "lsof-error-refusal: teardown returned the worktree"
@@ -3007,6 +3016,9 @@ if [ "${1:-}" = -p ] && [ "${2:-}" = "${FM_FAKE_EXEC_PID:-}" ] \
 fi
 exec "$REAL_PS_FOR_TEST" "$@"
 SH
+  # A synthetic cwd record rather than a delegation to a real lsof: this case
+  # deliberately runs on the lsof resolver (FM_PROC_ROOT_OVERRIDE points at
+  # nothing), and lsof is not installed everywhere the suite runs.
   cat > "$case_dir/fakebin/lsof" <<'SH'
 #!/usr/bin/env bash
 count=0
@@ -3021,13 +3033,17 @@ if [ "$count" -eq 2 ]; then
     i=$((i + 1))
   done
 fi
-exec "$REAL_LSOF_FOR_TEST" "$@"
+if kill -0 "$FM_FAKE_EXEC_PID" 2>/dev/null; then
+  printf 'p%s\nfcwd\nn%s\n' "$FM_FAKE_EXEC_PID" "$FM_FAKE_EXEC_WT"
+fi
+exit 0
 SH
   chmod +x "$case_dir/fakebin/ps" "$case_dir/fakebin/lsof"
 
   rc=0
   FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" \
   FM_FAKE_EXEC_PID="$pid" FM_FAKE_EXEC_MARKER="$marker" \
+  FM_FAKE_EXEC_WT="$case_dir/wt" \
   FM_FAKE_EXEC_DONE="$done_flag" FM_FAKE_LSOF_COUNT="$case_dir/lsof-count" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
@@ -3264,7 +3280,7 @@ test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
-test_lsof_absent_reaps_tmux_process_group
+test_no_cwd_source_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped

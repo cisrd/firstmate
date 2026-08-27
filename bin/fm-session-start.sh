@@ -45,8 +45,9 @@
 #                       represented by the two digests below.
 #   6. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail,
-#                       state/.afk, and a cheap per-task endpoint-liveness read:
-#                       read-only, always runs.
+#                       state/.afk, a cheap per-task endpoint-liveness read, and
+#                       the processes still running in the local copy of any task
+#                       whose worker is gone: read-only, always runs.
 #   7. network checks - the result of the deferred network stage started back at
 #                       step 1, harvested WITHOUT waiting for it.
 #   8. context digest - data/projects.md, data/secondmates.md, data/captain.md,
@@ -839,6 +840,24 @@ for meta in "$STATE"/*.meta; do
   fi
 done
 [ "$META_FOUND" -eq 1 ] || printf '(none)\n'
+
+# A worker that dies without a cleanup - quota exhausted, harness crash, terminal
+# closed - leaves whatever it started running in its local copy, with nothing
+# left to stop it. Surfaced from disk here because that is precisely the case no
+# live supervision cycle was watching. Read-only: bin/fm-orphan-reap.sh's header
+# owns why nothing is stopped automatically.
+subsection "Processes left in a gone worker's local copy"
+# Bounded: this section reports, and a reader that cannot answer in time must
+# not hold up a session start.
+LEFTOVER_RC=0
+LEFTOVER=$(timeout 30 "$SCRIPT_DIR/fm-orphan-reap.sh" scan 2>/dev/null) || LEFTOVER_RC=$?
+if [ "$LEFTOVER_RC" != 0 ]; then
+  printf 'not checked (the scan did not finish in time; run bin/fm-orphan-reap.sh scan)\n'
+elif [ -n "$LEFTOVER" ]; then
+  printf '%s\n' "$LEFTOVER"
+else
+  printf '(none)\n'
+fi
 
 subsection "Orphan status logs (state/*.status without matching .meta)"
 ORPHAN_STATUS_FOUND=0
