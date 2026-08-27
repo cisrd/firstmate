@@ -28,6 +28,11 @@ set -u
 . "$ROOT/bin/fm-control-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-trace-context-lib.sh"
+# Sourced here rather than inside the fixture: a subshell around the marker
+# write leaves every later reference to the fixture's own variables looking like
+# a read of something a subshell changed.
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-worktree-proc-lib.sh"
 
 CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
@@ -180,8 +185,7 @@ EOF
   # The copy carries the allocation marker its spawn would have written. Without
   # one no cleanup is authorised at all, so every case that expects one has to
   # look like a real allocation rather than merely like the right shape.
-  ( . "$ROOT/bin/fm-worktree-proc-lib.sh"
-    fm_wtproc_write_owner "$wt" worktree "$id" "$FIXTURE_TOKEN" ) \
+  fm_wtproc_write_owner "$wt" worktree "$id" "$FIXTURE_TOKEN" \
     || fail "fixture: could not stamp $id's copy with its allocation marker"
   # Two independent sources must agree the worker is gone before anything in the
   # copy is signalled, so the default fixture supplies a second source that

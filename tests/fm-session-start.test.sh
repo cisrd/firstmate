@@ -37,6 +37,11 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
+# Sourced here rather than inside the fixture: a subshell around the marker
+# write leaves every later reference to the fixture's own variables looking like
+# a read of something a subshell changed.
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-worktree-proc-lib.sh"
 
 SESSION_START="$ROOT/bin/fm-session-start.sh"
 BASE_PATH=${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}
@@ -2653,8 +2658,7 @@ test_the_digest_names_a_copy_a_gone_worker_left_processes_in() {
   # one nothing can show it is this task's, and the scan refuses it rather than
   # reporting on it - so an unstamped fixture would prove nothing about
   # attribution.
-  ( . "$ROOT/bin/fm-worktree-proc-lib.sh"
-    fm_wtproc_write_owner "$wt" worktree lo1 "$LEFTOVER_TOKEN" ) \
+  fm_wtproc_write_owner "$wt" worktree lo1 "$LEFTOVER_TOKEN" \
     || fail "fixture: could not stamp lo1's copy"
   # A `sleep` is witness enough; the incident this section exists for came out
   # of a saturated host and nothing here needs a server to prove attribution.
