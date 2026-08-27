@@ -55,6 +55,27 @@
 #                          for human inspection only - never an automatic
 #                          interrupt, signal, or restart of the worker or its
 #                          tool process.
+#   stale: <window> (busy but no progress for <n>s ...)
+#                          a SEPARATE, longer-fused signal for the case the
+#                          bound above cannot see: a busy pane whose harness
+#                          still renders progress counters, and whose counters
+#                          have not moved for BUSY_NO_PROGRESS_SECS. The bound
+#                          above measures elapsed time since the last COMPLETED
+#                          turn, which cannot tell a wedge from a long
+#                          legitimate turn and is therefore set generously; this
+#                          one measures the counters themselves
+#                          (bin/fm-progress-lib.sh), which move only when the
+#                          model actually consumes or produces, so it can fire
+#                          far sooner without firing on ordinary long work.
+#                          busy_progress_check owns it. It is a REPORT, worded
+#                          as no-progress rather than wedged or blocked, and
+#                          takes no action of any kind. It is skipped entirely
+#                          for a declared external wait, a verified captain-held
+#                          transfer, an away-mode home (the daemon owns triage
+#                          there), and any harness that renders no counters at
+#                          all - the last of those is reported in the triage log
+#                          rather than guessed at, and keeps BUSY_TURN_MAX_SECS
+#                          as its only backstop.
 #   stale: <window> (unread firstmate instruction: ...)
 #                          the steering-inbox ladder spent its delivery-attempt
 #                          budget on an idle pane without an acknowledgement
@@ -126,6 +147,10 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# Observable-progress contract: which rendered numbers are progress and which
+# are animation. Pure text, no state, so it adds nothing to the source graph.
+# shellcheck source=bin/fm-progress-lib.sh
+. "$SCRIPT_DIR/fm-progress-lib.sh"
 # Steering-inbox loss detection: bin/fm-task-inbox-lib.sh owns the record,
 # doorbell, and re-ring ladder contracts; this watcher only supplies the busy
 # gate and the wake emission (inbox_steer_check below).
@@ -205,6 +230,20 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # turn-ended and resets the age. Set generously above any legitimate interval
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
+# The bound above can only ask "how long since a turn completed", so it cannot
+# separate a wedged worker from a worker on one long legitimate call and has to
+# be set generously enough for the longest of those. That leaves the case it was
+# never able to see: a worker frozen for tens of minutes INSIDE a turn, still
+# painting a busy footer, reported to nobody. BUSY_NO_PROGRESS_SECS bounds that
+# case on a different measure - the harness's own progress counters
+# (bin/fm-progress-lib.sh), which move only when the model actually consumes or
+# produces - so a worker that is genuinely advancing resets it continuously and
+# is never at risk, however long its turn runs.
+# The default sits deliberately far above STALE_ESCALATE_SECS and above the
+# longest legitimate single call observed on the captain's machine (22 minutes),
+# because this signal must not compete with ordinary staleness or fire on real
+# work; it is a long-fuse report, not a wedge verdict.
+BUSY_NO_PROGRESS_SECS=${FM_BUSY_NO_PROGRESS_SECS:-1500}
 # A local secondmate's foreign queue is checked on every poll, but only after this
 # bounded age can it produce a parent notification.
 SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-60}
@@ -684,6 +723,103 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
   fi
   wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task"
   return 1
+}
+
+clear_progress_tracking() {  # <window-key>
+  local key=$1
+  rm -f "$STATE/.progress-fp-$key" "$STATE/.progress-since-$key"
+}
+
+# Everything this task can currently show as PROGRESS, on one line, cheap enough
+# for every poll. The first field says whether the sharp measure - the harness's
+# own rendered counters - was available at all, because the caller must treat
+# "no counters" as an admitted blind spot rather than a reading.
+#
+# The counters are joined by three harness-neutral records that also only change
+# when something real happened: the completed-turn marker, the status log's
+# size:mtime, and the semantic busy record's sequence. Any one of them moving
+# counts as progress. That redundancy is deliberate and one-directional: extra
+# signals can only SUPPRESS the report, never produce one, so no single vendor
+# string is load-bearing for a wake about a worker that may be perfectly alive.
+busy_progress_fingerprint() {  # <task> <tail40>
+  local task=$1 tail40=$2 counters="" have=0 turn status busy
+  if counters=$(fm_progress_counters "$tail40"); then have=1; fi
+  turn=$(stat_mtime "$STATE/$task.turn-ended" || true)
+  status=$(fm_wake_signal_sig "$STATE/$task.status" || true)
+  busy=$(sed -n 's/.*[[:space:]]seq=\([0-9][0-9]*\).*/\1/p' "$STATE/$task.busy-state" 2>/dev/null | tail -1)
+  printf 'counters=%s act:turn=%s act:status=%s act:busy=%s %s' \
+    "$have" "${turn:-none}" "${status:-none}" "${busy:-none}" \
+    "$(printf '%s' "$counters" | tr '\n' ' ')"
+}
+
+# The busy-pane progress report: the one path that can see a worker frozen
+# INSIDE a turn. Runs on every poll of a busy pane, next to - never instead of -
+# busy_turn_bound_check, whose completed-turn bound stays exactly as it was.
+#
+# It reports and nothing else: no interrupt, no signal, no restart, no teardown,
+# and its wording says "no progress", never wedged, blocked, stopped or dead,
+# because a worker on one very long call produces the same reading as a frozen
+# one and the difference is the supervisor's to judge, not this poll's.
+#
+# Four cases never reach the timer at all:
+#   - away mode, where the daemon owns triage and a new wake identity would
+#     climb its escalation ladder for the whole quiet stretch;
+#   - a declared external wait or verified captain-held transfer, an already
+#     explained standstill that handle_paused_stale's long cadence owns;
+#   - a harness that renders no counters, which is recorded in the triage log
+#     as an admitted blind spot and left to BUSY_TURN_MAX_SECS;
+#   - a task whose own worktree was written during the frozen window, the same
+#     harder-to-fake liveness wedge_defer_writing already trusts over the pane.
+busy_progress_check() {  # <window> <task> <tail40> <window-key>
+  local win=$1 task=$2 tail40=$3 key=$4 fpf sincef fp prev since age reason
+  [ -n "$task" ] || return 0
+  fpf="$STATE/.progress-fp-$key"
+  sincef="$STATE/.progress-since-$key"
+  if afk_present; then
+    clear_progress_tracking "$key"
+    return 0
+  fi
+  if status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")"; then
+    clear_progress_tracking "$key"
+    return 0
+  fi
+  fp=$(busy_progress_fingerprint "$task" "$tail40")
+  prev=$(cat "$fpf" 2>/dev/null || true)
+  case "$fp" in
+    counters=0*)
+      case "$prev" in
+        counters=0*) ;;
+        *) triage_log "busy progress unmeasurable (this worker tool renders no progress counters; the completed-turn bound remains its only backstop): $win" ;;
+      esac
+      printf '%s' "$fp" > "$fpf"
+      rm -f "$sincef"
+      return 0
+      ;;
+  esac
+  if [ "$fp" != "$prev" ]; then
+    printf '%s' "$fp" > "$fpf"
+    date +%s > "$sincef"
+    return 0
+  fi
+  since=$(cat "$sincef" 2>/dev/null || true)
+  case "$since" in
+    ''|*[!0-9]*)
+      date +%s > "$sincef"
+      return 0
+      ;;
+  esac
+  age=$(( $(date +%s) - since ))
+  [ "$age" -ge "$BUSY_NO_PROGRESS_SECS" ] || return 0
+  if crew_worktree_written_since "$task" "$STATE" "$sincef"; then
+    date +%s > "$sincef"
+    triage_log "absorbed busy no-progress (its own worktree was written during the frozen-counter window, ${age}s): $win"
+    return 0
+  fi
+  reason="stale: $win (busy but no progress for ${age}s: its tool still reports work in flight while every progress counter it renders has stayed unchanged that whole time - inspect it before acting; reported only, nothing was interrupted, signalled or restarted)"
+  fm_wake_append stale "$win" "$reason" || exit 1
+  date +%s > "$sincef"
+  triage_log "surfaced busy no-progress (${age}s of unchanged counters): $win"
+  wake "$reason"
 }
 
 clear_pause_state() {  # <window-key>
@@ -1528,6 +1664,16 @@ EOF
         if [ "$paused_bound" -ne 0 ] && [ -e "$pf" ] && { [ "$n" -ge 2 ] || ! status_is_paused_or_captain_held "$(last_status_line "$STATE/$(window_to_task "$w" "$STATE").status")"; }; then
           clear_pause_tracking "$key"
         fi
+        # Second, independent question about the same busy pane, asked last so
+        # the completed-turn bound above keeps first claim on an escalation it
+        # was already due: not "how long has this turn run" but "is it getting
+        # anywhere". Only counters answer that; the pane hash cannot, because a
+        # frozen worker's elapsed-time footer keeps ticking.
+        if [ "$busy_now" -eq 0 ]; then
+          busy_progress_check "$w" "$task" "$tail40" "$key"
+        else
+          clear_progress_tracking "$key"
+        fi
       fi
     else
       printf '%s' "$h" > "$hf"
@@ -1549,6 +1695,16 @@ EOF
         # Same rule as the stable-hash branch: never clear pause bookkeeping the
         # declared-pause cadence recorded on this very poll.
         clear_pause_tracking "$key"
+      fi
+      # Second, independent question about the same busy pane, asked last so
+      # the completed-turn bound above keeps first claim on an escalation it
+      # was already due: not "how long has this turn run" but "is it getting
+      # anywhere". Only counters answer that; the pane hash cannot, because a
+      # frozen worker's elapsed-time footer keeps ticking.
+      if [ "$busy_now" -eq 0 ]; then
+        busy_progress_check "$w" "$task" "$tail40" "$key"
+      else
+        clear_progress_tracking "$key"
       fi
     fi
   done < <(recorded_windows)
