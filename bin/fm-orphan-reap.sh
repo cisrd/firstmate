@@ -283,7 +283,7 @@ scan_task() {  # <task-id> <verbose>
   # exists to remove.
   fm_wtproc_collect "${roots[@]}" || {
     SCAN_UNSCANNABLE_ROOT=${FM_WTPROC_FAILED_ROOT:-${roots[0]}}
-    if [ "$(fm_wtproc_resolver)" = none ]; then
+    if [ "$_FM_WTPROC_RESOLVER" = none ]; then
       reason="this host can answer from neither /proc (${FM_PROC_ROOT_OVERRIDE:-/proc}) nor lsof"
     else
       reason="the working-directory scan of that root failed"

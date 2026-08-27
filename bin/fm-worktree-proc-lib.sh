@@ -51,7 +51,10 @@
 # there is still exactly one definition of "processes of this copy".
 #
 # Public surface:
-#   fm_wtproc_resolver                  -> proc | lsof | none
+#   fm_wtproc_resolver                  -> proc | lsof | none (prints; cannot
+#                                          memoise from inside `$( )`)
+#   _fm_wtproc_resolve                  -> settles _FM_WTPROC_RESOLVER in the
+#                                          CALLER's shell; call it bare
 #   fm_wtproc_pids_under <dir>          -> pids, one per line (0 = safe result)
 #   fm_wtproc_session_id <pid>          -> session id
 #   fm_wtproc_is_session_leader <pid>   -> 0 when sid == pid
@@ -163,25 +166,41 @@ _fm_wtproc_proc_lists_cwd_entries() {  # <root>
   return 1
 }
 
-# fm_wtproc_resolver: which cwd source this host can answer with. Memoised per
-# proc root: the self-test is cheap but the answer is asked once per scanned
-# root, and the root only changes under an explicit override.
+# _fm_wtproc_resolve: settle which cwd source this host can answer with, into
+# _FM_WTPROC_RESOLVER, memoised per proc root.
+#
+# THIS MUST BE CALLED BARE, never inside `$( )`. The memo is the whole point:
+# the self-test is not cheap - _fm_wtproc_proc_lists_cwd_entries takes a whole
+# machine listing - and the question is asked once per scanned root, on a host
+# that is already saturated when this code matters most. A command substitution
+# runs it in a subshell, so the assignment dies with that subshell and the
+# listing is retaken every single time; that is exactly what every call site
+# used to do, and the memo never once survived. Callers that ask more than once
+# resolve bare first, then read $_FM_WTPROC_RESOLVER directly.
 _FM_WTPROC_RESOLVER=
 _FM_WTPROC_RESOLVER_ROOT=
-fm_wtproc_resolver() {
+_fm_wtproc_resolve() {
   local root
   root=$(_fm_wtproc_proc_root)
-  if [ -z "$_FM_WTPROC_RESOLVER" ] || [ "$_FM_WTPROC_RESOLVER_ROOT" != "$root" ]; then
-    _FM_WTPROC_RESOLVER_ROOT=$root
-    if [ -d "$root" ] && _fm_wtproc_proc_answers_cwd "$root" \
-       && _fm_wtproc_proc_lists_cwd_entries "$root"; then
-      _FM_WTPROC_RESOLVER=proc
-    elif command -v lsof >/dev/null 2>&1; then
-      _FM_WTPROC_RESOLVER=lsof
-    else
-      _FM_WTPROC_RESOLVER=none
-    fi
+  if [ -n "$_FM_WTPROC_RESOLVER" ] && [ "$_FM_WTPROC_RESOLVER_ROOT" = "$root" ]; then
+    return 0
   fi
+  _FM_WTPROC_RESOLVER_ROOT=$root
+  if [ -d "$root" ] && _fm_wtproc_proc_answers_cwd "$root" \
+     && _fm_wtproc_proc_lists_cwd_entries "$root"; then
+    _FM_WTPROC_RESOLVER=proc
+  elif command -v lsof >/dev/null 2>&1; then
+    _FM_WTPROC_RESOLVER=lsof
+  else
+    _FM_WTPROC_RESOLVER=none
+  fi
+}
+
+# The printing form, kept for callers that ask once and for readability inside a
+# message. It is safe inside `$( )` - it simply cannot memoise from there, which
+# is why the hot paths below use _fm_wtproc_resolve instead.
+fm_wtproc_resolver() {
+  _fm_wtproc_resolve
   printf '%s' "$_FM_WTPROC_RESOLVER"
 }
 
@@ -337,7 +356,8 @@ fm_wtproc_pids_under() {  # <dir>
   local dir=$1 real rc=0
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
-  case "$(fm_wtproc_resolver)" in
+  _fm_wtproc_resolve
+  case "$_FM_WTPROC_RESOLVER" in
     proc) _fm_wtproc_pids_under_proc "$real" || rc=$? ;;
     lsof) _fm_wtproc_pids_under_lsof "$real" || rc=$? ;;
     *) rc=1 ;;
@@ -641,7 +661,11 @@ fm_wtproc_collect() {  # <dir>...
   FM_WTPROC_PIDS=
   FM_WTPROC_FAILED_ROOT=
   _FM_WTPROC_LISTING_PASS=1
-  if [ "$(fm_wtproc_resolver)" = proc ]; then
+  # Bare, and before the loop: fm_wtproc_pids_under runs inside a command
+  # substitution below, so this is the one call whose memo survives to serve
+  # every root of this observation.
+  _fm_wtproc_resolve
+  if [ "$_FM_WTPROC_RESOLVER" = proc ]; then
     _fm_wtproc_listing_load "$(_fm_wtproc_proc_root)" || true
   fi
   for dir in "$@"; do

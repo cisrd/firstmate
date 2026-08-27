@@ -1278,6 +1278,43 @@ test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back() {
   pass "a copy whose owner could not be established says so even when every process in it was held back"
 }
 
+# --- 13. the resolver self-test runs once per observation, not once per root --
+
+test_the_resolver_self_test_is_not_repeated_for_every_root() {
+  local lib probe out baseline
+  lib="$ROOT/bin/fm-worktree-proc-lib.sh"
+  baseline=$(bash -c '. "$1"; fm_wtproc_resolver' _ "$lib" 2>/dev/null || true)
+  if [ "$baseline" != proc ]; then
+    pass "this host does not answer from /proc; the self-test this case counts is not the one that runs"
+    return 0
+  fi
+
+  probe="$TMP_ROOT/resolver-probe.count"
+  : > "$probe"
+  mkdir -p "$TMP_ROOT/r1" "$TMP_ROOT/r2" "$TMP_ROOT/r3"
+
+  # The expensive half of the resolver self-test is stubbed to COUNT its calls
+  # and answer the same way it would have. One observation over three roots must
+  # settle the source once; the count is the whole assertion, because a memo
+  # that is discarded with a subshell is invisible in the scan's own output.
+  out=$(FM_WTPROC_RESOLVER_PROBE="$probe" bash -c '
+    . "$1"
+    _fm_wtproc_proc_lists_cwd_entries() { echo x >> "$FM_WTPROC_RESOLVER_PROBE"; return 0; }
+    fm_wtproc_collect "$2" "$3" "$4" >/dev/null 2>&1
+    printf %s "${_FM_WTPROC_RESOLVER:-EMPTY}"
+  ' _ "$lib" "$TMP_ROOT/r1" "$TMP_ROOT/r2" "$TMP_ROOT/r3" 2>/dev/null || true)
+
+  [ "$out" = proc ] \
+    || fail "resolver-memo: the collect left the resolver unsettled in its own shell (got '$out')"
+
+  local count
+  count=$(wc -l < "$probe" | tr -d ' ')
+  [ "$count" = 1 ] \
+    || fail "resolver-memo: the resolver self-test ran $count times for one observation over three roots; the memo is being discarded"
+
+  pass "the resolver self-test runs once for a whole observation, not once per scanned root"
+}
+
 # --- 11. a recorded root the validation refuses is never silently dropped -----
 #
 # Refusing the root is correct; reporting on the remaining roots as though the
@@ -1396,4 +1433,5 @@ test_a_listing_that_cannot_be_produced_is_never_an_empty_machine
 test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
 test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
+test_the_resolver_self_test_is_not_repeated_for_every_root
 test_a_cleanup_never_signals_the_shell_it_was_started_from

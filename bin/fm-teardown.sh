@@ -1808,7 +1808,12 @@ _reap_task_worktree_processes() {  # <label> <dir>...
   local label=$1 pids pid identity current_pids i pass=1 max_passes=3
   local -a tracked_pids tracked_identities remaining_pids remaining_identities
   shift
-  if [ "$(fm_wtproc_resolver)" = none ]; then
+  # Bare, so the answer is settled in THIS shell and inherited by every
+  # per-root scan below, which all run inside command substitutions. Resolving
+  # from inside one would retake a whole machine listing on each of the three
+  # passes, per root, on a host this reap is often cleaning up after.
+  _fm_wtproc_resolve
+  if [ "$_FM_WTPROC_RESOLVER" = none ]; then
     reap_task_backend_process_group "$label"
     return 0
   fi
