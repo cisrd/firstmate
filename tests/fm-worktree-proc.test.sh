@@ -723,6 +723,71 @@ test_an_undetermined_agent_state_is_never_reported_as_a_clean_copy() {
   pass "an agent state the classifier could not read reports the copy, refuses a stop, and never claims a living owner"
 }
 
+# --- 4f. the second source declining is not the two sources disagreeing ------
+#
+# Only the literal `unknown` used to be treated as the reader declining to
+# answer. A reader that TIMED OUT or exited non-zero sets `unreadable`, and that
+# fell to the "the two disagree" branch and returned the copy CLEAN - a leak
+# hidden by a slow reader. `no-reader` is different in kind and keeps the
+# quieter treatment: it means this installation carries no reader at all, so it
+# answers identically for every task, live or dead, and says nothing about this
+# copy.
+
+test_a_reader_that_could_not_answer_is_not_a_disagreement() {
+  local dir pid out rc
+  dir="$TMP_ROOT/case-reader-unreadable"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-rdr
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid=$(witness "$COPY")
+  write_task_meta rdr "$COPY" "fmses:fm-rdr"
+
+  # A reader that is asked and fails: exactly what a timeout leaves behind.
+  cat > "$dir/crew-state-failing" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$dir/crew-state-failing"
+
+  rc=0
+  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_WTPROC_GRACE=1 \
+    FM_TASK_TMP_ROOT="$FM_TASK_TMP_ROOT" \
+    FAKE_AGENT_FILE="$dir/agent" FAKE_REAL_PS="$(command -v ps)" \
+    FAKE_CREW_STATE_FILE="$dir/crew" FAKE_PANE_PID_FILE="$dir/panepid" \
+    FM_WTPROC_CREW_STATE_BIN="$dir/crew-state-failing" \
+    "$ORPHAN" scan 2>&1) || rc=$?
+  case "$out" in
+    *"UNDETERMINED: rdr"*"$pid"*) ;;
+    *) fail "reader-unreadable: a copy whose state reader could not answer was not reported: $out" ;;
+  esac
+  case "$out" in
+    *"LEFTOVER: rdr"*) fail "reader-unreadable: a copy was called ownerless on a failed state read: $out" ;;
+  esac
+  alive "$pid" || fail "reader-unreadable: a process was stopped although the state reader could not answer"
+
+  # A home with NO reader at all is the other case, and stays quiet: it answers
+  # the same way for every task, so it says nothing about this one.
+  rc=0
+  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$HOME_DIR" \
+    FM_STATE_OVERRIDE="$HOME_DIR/state" FM_WTPROC_GRACE=1 \
+    FM_TASK_TMP_ROOT="$FM_TASK_TMP_ROOT" \
+    FAKE_AGENT_FILE="$dir/agent" FAKE_REAL_PS="$(command -v ps)" \
+    FAKE_CREW_STATE_FILE="$dir/crew" FAKE_PANE_PID_FILE="$dir/panepid" \
+    FM_WTPROC_CREW_STATE_BIN="$dir/no-such-reader" \
+    "$ORPHAN" scan 2>&1) || rc=$?
+  case "$out" in
+    *rdr*) fail "reader-unreadable: a home with no state reader at all alerted on a copy it cannot judge: $out" ;;
+  esac
+  alive "$pid" || fail "reader-unreadable: a process was stopped on a home with no state reader"
+
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/rdr.meta"
+  pass "a state reader that could not answer reports the copy, while a home carrying no reader stays quiet"
+}
+
 # --- 4e. no classifier at all is not a suspicion about the copy --------------
 #
 # `unverified` is what fm_backend_agent_state answers for every backend with no
@@ -1049,8 +1114,8 @@ test_a_process_that_outlives_the_force_stop_is_never_reported_stopped() {
   # a different outcome with a different status.
   make_cwd_source_stub "$dir" "$pid" "$dir/work" forever
   local real_alive
-  real_alive=$(declare -f fm_pid_alive)
-  fm_pid_alive() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+  real_alive=$(declare -f _fm_wtproc_pid_exists)
+  _fm_wtproc_pid_exists() { case "$1" in ''|*[!0-9]*) return 1 ;; *) return 0 ;; esac; }
   rc=0
   with_stubbed_cwd_source "$dir" fm_wtproc_reap "survivor" none "$dir/work" \
     >/dev/null 2>"$err" || rc=$?
@@ -1423,6 +1488,43 @@ test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable() {
   pass "a temp root that no longer exists is not reported as unexaminable, while a present-but-refused one still is"
 }
 
+# --- 12b2. "is it there", never "may I signal it" ----------------------------
+#
+# The library's own rule, stated in its header: liveness here means existence,
+# because `kill -0` answers whether the caller MAY signal the process. Another
+# user's process fails that probe while being very much alive, and dropping it
+# would let a teardown remove a copy with a live foreign process still running
+# in it. Both resolver arms ask through _fm_wtproc_pid_exists for that reason.
+
+test_liveness_asks_whether_a_pid_exists_not_whether_it_may_be_signalled() {
+  local lib out
+  lib="$ROOT/bin/fm-worktree-proc-lib.sh"
+  if [ "$(id -u)" = 0 ]; then
+    pass "running as root, where the two probes cannot disagree; nothing to prove here"
+    return 0
+  fi
+
+  # pid 1 is alive and owned by another user. Nothing is signalled: both probes
+  # below are read-only questions about it.
+  out=$(bash -c '
+    . "$1"
+    if fm_pid_alive 1; then printf "signalprobe=yes "; else printf "signalprobe=no "; fi
+    if _fm_wtproc_pid_exists 1; then printf "exists=yes"; else printf "exists=no"; fi
+  ' _ "$lib" 2>/dev/null || true)
+
+  case "$out" in
+    "signalprobe=no exists=yes") ;;
+    "signalprobe=yes "*)
+      pass "this host lets the signal probe answer for another user's process, so the two cannot be told apart here"
+      return 0
+      ;;
+    *)
+      fail "liveness-probe: a live process owned by another user was not seen as existing ($out); the scan would drop it and a teardown could remove a copy with it still running" ;;
+  esac
+
+  pass "liveness asks whether a pid exists, not whether the caller may signal it"
+}
+
 # --- 12c. the scanner never reports its own helpers as leftovers -------------
 #
 # A scan is itself a process tree. Taking the machine listing needs command
@@ -1671,6 +1773,7 @@ test_a_disagreeing_current_state_vetoes_the_verdict
 test_an_undetermined_current_state_never_authorises_a_stop
 test_an_undetermined_agent_state_is_never_reported_as_a_clean_copy
 test_a_runtime_with_no_classifier_raises_no_alert_but_still_refuses_a_stop
+test_a_reader_that_could_not_answer_is_not_a_disagreement
 test_an_unreadable_working_directory_leaves_the_process_alone
 test_only_the_recorded_endpoint_shell_is_spared
 test_an_unnameable_endpoint_shell_holds_leaders_back_and_says_how_many
@@ -1688,6 +1791,7 @@ test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
 test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
 test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable
+test_liveness_asks_whether_a_pid_exists_not_whether_it_may_be_signalled
 test_a_scan_from_inside_a_copy_never_reports_its_own_helpers
 test_a_scan_whose_last_entry_has_exited_still_reports_success
 test_the_resolver_self_test_is_not_repeated_for_every_root

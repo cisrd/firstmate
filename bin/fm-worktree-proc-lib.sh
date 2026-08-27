@@ -348,7 +348,7 @@ _fm_wtproc_pids_under_proc() {  # <real-dir>
     # between the listing and the read, so it would fire routinely.
     case "$link" in
       "$dir"|"$dir"/*)
-        if [ -e "$root/$pid" ]; then
+        if _fm_wtproc_pid_exists "$pid"; then
           printf '%s\n' "$pid"
         fi
         ;;
@@ -386,9 +386,11 @@ _fm_wtproc_pids_under_lsof() {  # <real-dir>
         # liveness recheck, because `lsof` is itself forked from the caller and
         # walks the process table with the caller's working directory, so a
         # scan run from inside the copy lists lsof's own pid as an occupant of
-        # it. `kill -0` is the test available here: there is no /proc to ask on
-        # the hosts this arm exists for, and it is the same question for the
-        # scanner's own just-exited helper.
+        # it. The existence test is _fm_wtproc_pid_exists, NOT `kill -0`: this
+        # library's own rule, stated at the top of this file, is that liveness
+        # here means "is it there" and never "may I signal it", because the
+        # second drops another user's live process and would let a teardown
+        # remove a copy with one still in it.
         #
         # NOT EXERCISED ON THIS HOST. lsof is absent from the machine this was
         # written and verified on, so this arm has no test coverage here and
@@ -398,7 +400,7 @@ _fm_wtproc_pids_under_lsof() {  # <real-dir>
         # and judged sound.
         case "$path" in
           "$dir"|"$dir"/*)
-            if [ "$pid" != "$self" ] && [ "$pid" != "$$" ] && fm_pid_alive "$pid"; then
+            if [ "$pid" != "$self" ] && [ "$pid" != "$$" ] && _fm_wtproc_pid_exists "$pid"; then
               printf '%s\n' "$pid"
             fi
             ;;
@@ -410,6 +412,25 @@ _fm_wtproc_pids_under_lsof() {  # <real-dir>
   done <<EOF
 $out
 EOF
+}
+
+# _fm_wtproc_pid_exists: is that pid still there?
+#
+# "Is it there", never "may I signal it". `kill -0` answers the second: another
+# user's process fails it while being very much alive, and dropping such a pid
+# would let a teardown remove a copy with a live foreign process still in it.
+# So the proc entry is used where there is one, and `ps -p` - which reports
+# another user's process just as readily - on the hosts this library reaches
+# through lsof, which are exactly the hosts with no /proc to consult.
+_fm_wtproc_pid_exists() {  # <pid>
+  local pid=$1 root
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  root=$(_fm_wtproc_proc_root)
+  if [ -d "$root" ]; then
+    [ -e "$root/$pid" ]
+    return
+  fi
+  ps -p "$pid" >/dev/null 2>&1
 }
 
 # fm_wtproc_pids_under: pids whose real cwd is <dir> or below. An empty result

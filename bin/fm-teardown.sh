@@ -2859,12 +2859,14 @@ fi
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   validate_recorded_reap_roots
-  # Both recorded roots absent means there is nothing on this machine to scan,
-  # not that a scan came back empty; skipping is the honest action, and an empty
-  # expansion into the reap would be read as a scan of no roots at all.
-  if [ "${#REAP_ROOTS[@]}" -gt 0 ]; then
-    reap_task_worktree_processes worktree "${REAP_ROOTS[@]}"
-  fi
+  # Always called, even with no roots left to scan. Its FIRST act, before any
+  # root is looked at, is to route to the backend process-group reap on a host
+  # that can answer the working-directory question from neither /proc nor lsof -
+  # and that fallback is the only cleanup such a host has. Skipping the call
+  # when both recorded roots turned out to be absent made it unreachable in
+  # exactly that case. With no roots and a working source, the scan simply finds
+  # nothing and returns.
+  reap_task_worktree_processes worktree ${REAP_ROOTS[@]+"${REAP_ROOTS[@]}"}
 fi
 
 # Fix 3 (see script header): sweep remote job workers abandoned by an already

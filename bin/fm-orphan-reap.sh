@@ -69,6 +69,11 @@
 #     raises NO alert - alerting on every healthy task at every session start
 #     would bury the leaks this exists to surface - while a reap of it is still
 #     refused. Not alerting and not authorising a stop are independent.
+#   - The same split runs through the SECOND source. A current state of
+#     `unknown` or `unreadable` is the reader failing to answer for this task
+#     and is reported; `no-reader` is this installation carrying no reader at
+#     all, answers identically for every task, and raises no alert. Neither
+#     licenses a stop.
 #   - The shell of the task's OWN recorded endpoint is spared, so a copy stays
 #     relaunchable - identified from that record (the backend's pane pid) and
 #     never inferred from a process's own shape. A session leader that is not
@@ -245,11 +250,12 @@ listening_ports() {  # <pid>...
 #   4  the copy is reported (UNDETERMINED) but its owner could not be
 #      established, so it is for an operator to judge and never for a reap -
 #      whether processes were selected in it or every one of them was held back
-#   5  this task's backend carries no agent classifier at all, so nothing about
-#      this copy can be established in either direction. Nothing is reported -
-#      the absence of an instrument is a fact about the home, not a suspicion
-#      about this copy, and alerting on it every session would bury the real
-#      ones - and a reap is still refused
+#   5  no instrument on this installation can answer for this copy in either
+#      direction: the backend carries no agent classifier, or this home carries
+#      no current-state reader. Both answer the same way for every task under
+#      them, live and dead alike, so neither says anything about THIS copy.
+#      Nothing is reported - alerting every session would bury the real ones -
+#      and a reap is still refused
 #
 # SCAN_UNEXAMINED is set alongside them when SOME recorded root was not looked
 # at while the rest were, which the status alone cannot carry: that copy has an
@@ -377,13 +383,32 @@ scan_task() {  # <task-id> <verbose>
     # either, and the copy of a torn-off worker commonly reads exactly this
     # way. Reporting it and refusing to act on it are the two halves of the
     # same answer: an operator sees the leak, and only an operator judges it.
-    if [ "${FM_WTPROC_CREW_STATE:-}" = unknown ]; then
-      undetermined=1
-      undetermined_why="its endpoint reads '$verdict' but its current state could not be read at all"
-    else
-      [ "$verbose" = 1 ] && echo "task $id's endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; the two disagree, so nothing in its local copy is touched" >&2
-      return 1
-    fi
+    case "${FM_WTPROC_CREW_STATE:-}" in
+      unknown|unreadable)
+        # The second source was ASKED and could not answer for THIS task -
+        # `unknown` from the reader itself, `unreadable` when the call timed
+        # out, exited non-zero, or came back empty. Neither is disagreement,
+        # and only `unknown` used to be treated that way, so a reader that
+        # timed out returned the copy as clean. Real doubt about this copy is
+        # reported, exactly as the header of this file has said all along.
+        undetermined=1
+        undetermined_why="its endpoint reads '$verdict' but its current state could not be determined (the reader answered '${FM_WTPROC_CREW_STATE}')"
+        ;;
+      no-reader)
+        # Not doubt about this copy: this installation carries no current-state
+        # reader at all, so it answers the same way for every task under it,
+        # live and dead alike. That is the `unverified` case one branch above,
+        # and it gets the same treatment for the same reason - alerting on
+        # every copy at every session start would bury the leaks this exists to
+        # surface. No alert; the stop stays refused.
+        [ "$verbose" = 1 ] && echo "task $id: this home carries no current-state reader, so whether its worker is gone cannot be corroborated for any task; nothing is reported and nothing may be stopped" >&2
+        return 5
+        ;;
+      *)
+        [ "$verbose" = 1 ] && echo "task $id's endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; the two disagree, so nothing in its local copy is touched" >&2
+        return 1
+        ;;
+    esac
   fi
   # Only now, for a copy that really has no living owner, is it worth asking the
   # backend which shell belongs to the endpoint - and it is asked of the task's

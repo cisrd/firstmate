@@ -2983,6 +2983,60 @@ EOF
   pass "teardown reaps a leftover but never signals the shell it was started from"
 }
 
+# The same fallback, reached with BOTH recorded roots absent. Validating the
+# recorded roots introduced a real way to lose it: dropping an absent root is
+# right, but skipping the whole reap call once none were left took the
+# process-group fallback with it - and that fallback is the first act of the
+# call, before any root is examined, and the only cleanup such a host has.
+test_no_cwd_source_still_reaps_the_group_when_both_roots_are_absent() {
+  local case_dir rc pid path_without_lsof
+  case_dir=$(make_case lsof-absent-roots-absent)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+
+  perl -e 'setpgrp(0, 0); chdir shift or die; exec "sleep", "300"' "$case_dir" &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "roots-absent-group-reap: setup sleeper did not start"
+  cat > "$case_dir/fakebin/tmux" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = display-message ] && [ "\${*: -1}" = '#{pane_pid}' ]; then
+  printf '%s\n' '$pid'
+fi
+exit 0
+EOF
+  chmod +x "$case_dir/fakebin/tmux"
+
+  # Both recorded roots name paths that are not there. The worktree itself is
+  # recorded as a directory that has already been removed, which is the state a
+  # half-finished cleanup leaves behind.
+  printf '%s\n' "tasktmp=$case_dir/gone-tasktmp" >> "$case_dir/state/task-x1.meta"
+  rm -rf "$case_dir/wt-gone"
+  fm_write_meta "$case_dir/state/task-x1.meta" \
+    "window=firstmate:fm-task-x1" \
+    "endpoint_task_id=task-x1" \
+    "worktree=$case_dir/wt-gone" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "tasktmp=$case_dir/gone-tasktmp"
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "roots-absent-group-reap: the process-group fallback never ran, so the leaked group survived"
+  fi
+  assert_grep "reaping leaked worktree process group" "$case_dir/stderr" \
+    "roots-absent-group-reap: teardown did not use the process-group fallback"
+  pass "a host with no working-directory source still reaps the process group when both recorded roots are gone"
+}
+
 # The process-group fallback is for a host that can answer the cwd question
 # NEITHER from /proc NOR from lsof, so both sources are removed here: /proc is
 # pointed at a path that does not exist and lsof is taken off the search path.
@@ -3416,6 +3470,7 @@ test_leaked_tasktmp_process_is_reaped
 test_a_recorded_root_under_projects_refuses_instead_of_signalling
 test_teardown_never_signals_the_shell_it_was_started_from
 test_no_cwd_source_reaps_tmux_process_group
+test_no_cwd_source_still_reaps_the_group_when_both_roots_are_absent
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
 test_exec_changed_process_is_still_reaped
