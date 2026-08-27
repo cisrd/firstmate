@@ -58,11 +58,17 @@
 #     since handed to a live task reads exactly that way. Such a copy is
 #     reported as UNDETERMINED and a reap of it is refused.
 #   - `alive` is the only reading that means a living owner, and the only one
-#     this command will describe that way. Every other non-gone reading -
-#     ambiguous, unreadable, an unverified backend, a failed classifier call -
-#     is the FIRST source declining to answer, so such a copy is reported as
-#     UNDETERMINED and refused too, rather than reported clean. A copy nobody
-#     could establish an owner for is not a copy known to have one.
+#     this command will describe that way. A reading of `ambiguous`,
+#     `unreadable`, or a failed classifier call is the FIRST source declining to
+#     answer about THIS task, so such a copy is reported as UNDETERMINED and
+#     refused, rather than reported clean: a copy nobody could establish an
+#     owner for is not a copy known to have one.
+#   - `unverified` is different in kind and is treated differently. It is what a
+#     backend with no recovery classifier answers for every task under it, live
+#     or dead, so it carries no information about the copy at all. Such a copy
+#     raises NO alert - alerting on every healthy task at every session start
+#     would bury the leaks this exists to surface - while a reap of it is still
+#     refused. Not alerting and not authorising a stop are independent.
 #   - The shell of the task's OWN recorded endpoint is spared, so a copy stays
 #     relaunchable - identified from that record (the backend's pane pid) and
 #     never inferred from a process's own shape. A session leader that is not
@@ -239,6 +245,11 @@ listening_ports() {  # <pid>...
 #   4  the copy is reported (UNDETERMINED) but its owner could not be
 #      established, so it is for an operator to judge and never for a reap -
 #      whether processes were selected in it or every one of them was held back
+#   5  this task's backend carries no agent classifier at all, so nothing about
+#      this copy can be established in either direction. Nothing is reported -
+#      the absence of an instrument is a fact about the home, not a suspicion
+#      about this copy, and alerting on it every session would bury the real
+#      ones - and a reap is still refused
 #
 # SCAN_UNEXAMINED is set alongside them when SOME recorded root was not looked
 # at while the rest were, which the status alone cannot carry: that copy has an
@@ -322,18 +333,32 @@ scan_task() {  # <task-id> <verbose>
       return 1
       ;;
     dead|missing) ;;
+    unverified)
+      # NOT doubt about this task - the absence of a measuring instrument.
+      # `unverified` is what fm_backend_agent_state answers for every backend
+      # that carries no recovery classifier at all, for a live worker and a
+      # dead one alike, so it says nothing whatever about THIS copy. Reporting
+      # it would put every healthy task on a zellij, orca, or cmux home into the
+      # report at every session start, and a report that cries wolf every
+      # session is one people learn to ignore - which costs exactly the leak
+      # this mechanism exists to surface. So no alert line is raised.
+      #
+      # The safety rule is untouched: rc 5 still refuses a reap. Not alerting
+      # and not authorising a stop are independent, and only the first changes
+      # here.
+      [ "$verbose" = 1 ] && echo "task $id runs on a backend with no agent classifier ('$verdict'), so whether its processes have a living owner cannot be established either way; nothing is reported and nothing may be stopped" >&2
+      return 5
+      ;;
     *)
-      # `ambiguous`, `unreadable`, `unverified`, and the local `unknown` this
-      # script substitutes when the classifier call itself fails. Every one is
-      # the classifier DECLINING to answer - never a reading that the worker is
-      # alive. Both halves of the old behaviour were wrong at once: the copy
-      # returned as clean, so a backend carrying no recovery classifier at all
-      # reported every leaking copy under it as empty; and the diagnostic
-      # asserted "its processes have a living owner", an owner the classifier
-      # had not given and could not give. A copy holding processes whose owner
-      # cannot be established is reported, under the same UNDETERMINED label an
-      # unreadable current state earns, and a reap of it is refused: an operator
-      # sees the leak, and only an operator judges it.
+      # `ambiguous`, `unreadable`, and the local `unknown` this script
+      # substitutes when the classifier call itself fails: the classifier CAN
+      # answer for this backend and could not answer for this task. That is
+      # real doubt about this copy, and it is never a reading that the worker is
+      # alive. It used to return the copy as clean while the diagnostic asserted
+      # "its processes have a living owner" - an owner the classifier had not
+      # given. It is reported under the same UNDETERMINED label an unreadable
+      # current state earns, and a reap of it is refused: an operator sees the
+      # leak, and only an operator judges it.
       undetermined=1
       undetermined_why="its agent state could not be determined (the classifier answered '$verdict')"
       [ "$verbose" = 1 ] && echo "task $id: $undetermined_why; its processes are reported but never stopped" >&2
@@ -482,6 +507,9 @@ cmd_reap() {  # <task-id>
     0) ;;
     4)
       die "task $id's local copy holds processes whose owner could not be established: ${SCAN_UNDETERMINED_WHY:-no reason was recorded}. An undetermined reading is not evidence its worker is gone - it is the same reading a stale record pointing at a copy since handed to a live task produces - so nothing was stopped. Inspect the copy and its processes by hand"
+      ;;
+    5)
+      die "task $id runs on a backend with no agent classifier, so whether its worker is still alive cannot be established at all; a stop needs positive evidence the worker is gone and none can be obtained here. Inspect the copy and its processes by hand"
       ;;
     3)
       # "Nothing to stop" would be a claim about the copy; all that is known

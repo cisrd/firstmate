@@ -153,7 +153,9 @@ write_task_meta() {  # <id> <worktree> <window> [tasktmp]
 # tmux/ps stubs modelling one endpoint whose agent state is whatever
 # $FAKE_AGENT_STATE says. `missing` is a session tmux cannot find; `dead` is a
 # listed window whose foreground group is nothing but a shell; `alive` is the
-# same window running the harness.
+# same window running the harness; `unreadable` is an inventory read that fails
+# for some other reason, which the classifier can neither call gone nor call
+# live.
 make_backend_stub() {  # <dir> <window-name>
   local fb="$1/fakebin" win=$2
   mkdir -p "$fb"
@@ -164,6 +166,12 @@ case "\${1:-}" in
   list-windows)
     if [ "\$state" = missing ]; then
       echo "can't find session: fmses" >&2
+      exit 1
+    fi
+    if [ "\$state" = unreadable ]; then
+      # An inventory failure that is NOT one of the definitive missing-session
+      # signals, which is what fm_backend_tmux_agent_state reads as unreadable.
+      echo "tmux: synthetic inventory failure" >&2
       exit 1
     fi
     printf '%s\n' '$win'
@@ -651,61 +659,127 @@ test_an_undetermined_current_state_never_authorises_a_stop() {
 # CURRENT state gets one case above, for the same reason.
 
 test_an_undetermined_agent_state_is_never_reported_as_a_clean_copy() {
-  local dir pid out
+  local dir pid out rc
   dir="$TMP_ROOT/case-agent-undetermined"
   mkdir -p "$dir"
   make_backend_stub "$dir" fm-agentund
   make_crew_state_stub "$dir"
-  # Both sources would otherwise agree the worker is gone, so nothing but the
-  # backend's inability to classify can account for the outcome below.
-  printf 'dead' > "$dir/agent"
+  # The second source would agree the worker is gone, so nothing but the
+  # endpoint read failing can account for the outcome below.
+  printf 'unreadable' > "$dir/agent"
   printf 'done' > "$dir/crew"
 
   pid=$(witness "$COPY")
   write_task_meta agentund "$COPY" "fmses:fm-agentund"
-  # A backend with no recovery classifier: fm_backend_agent_state answers
-  # `unverified`, which is neither a gone verdict nor a reading of a live agent.
-  sed -i 's/^backend=tmux$/backend=zellij/' "$HOME_DIR/state/agentund.meta"
 
-  out=$(run_orphan "$dir" scan)
-  case "$out" in
-    *"agentund"*) ;;
-    *) fail "agent-undetermined: a copy whose owner could not be established was reported as clean: $out" ;;
-  esac
+  rc=0
+  out=$(run_orphan "$dir" scan) || rc=$?
   case "$out" in
     *"UNDETERMINED: agentund"*"$pid"*) ;;
-    *) fail "agent-undetermined: the copy's processes were not reported under the UNDETERMINED label: $out" ;;
+    *) fail "agent-undetermined: a copy whose owner could not be established was not reported: $out" ;;
   esac
   case "$out" in
-    *"LEFTOVER: agentund"*) fail "agent-undetermined: a copy was called ownerless on an unclassifiable agent state: $out" ;;
+    *"LEFTOVER: agentund"*) fail "agent-undetermined: a copy was called ownerless on an unreadable agent state: $out" ;;
   esac
-  # The diagnostic must not assert what the classifier never gave.
+  # The classifier gave no owner, so no message may claim one. Two things make
+  # this assertion able to fail rather than merely look strict: it is asked of
+  # the --task path, the only one that runs with diagnostics on and so the only
+  # one that can emit the sentence at all; and it matches the exact CLAIM
+  # ("have a living owner and are left alone"), not the bare words "living
+  # owner", which honest messages elsewhere use to say the opposite.
+  out=$(run_orphan "$dir" scan --task agentund)
   case "$out" in
-    *"living owner"*) fail "agent-undetermined: the report claimed a living owner the classifier never gave: $out" ;;
+    *"have a living owner and are left alone"*)
+      fail "agent-undetermined: the report claimed a living owner the classifier never gave: $out" ;;
+  esac
+  case "$out" in
+    *"could not be determined"*) ;;
+    *) fail "agent-undetermined: the diagnostic did not say the state could not be determined: $out" ;;
   esac
 
-  out=$(run_orphan "$dir" reap agentund 2>&1) || true
+  rc=0
+  out=$(run_orphan "$dir" reap agentund) || rc=$?
+  [ "$rc" != 0 ] || fail "agent-undetermined: a cleanup of an unreadable agent state did not refuse: $out"
   case "$out" in
     *"not evidence its worker is gone"*) ;;
-    *) fail "agent-undetermined: an explicit cleanup did not refuse the unclassifiable agent state: $out" ;;
+    *) fail "agent-undetermined: the refusal did not name the undetermined state: $out" ;;
   esac
   sleep 0.3
-  alive "$pid" || fail "agent-undetermined: a process was stopped although the agent state could not be determined"
+  alive "$pid" || fail "agent-undetermined: a process was stopped although the agent state could not be read"
 
-  # Only the backend changes: the same fixture, whose classifier can now answer,
-  # goes through - so this case hinges on the unclassifiable reading alone.
-  sed -i 's/^backend=zellij$/backend=tmux/' "$HOME_DIR/state/agentund.meta"
+  # Only the endpoint read changes: the same fixture, once the classifier can
+  # answer, goes through - so this case hinges on the unreadable reading alone.
+  printf 'dead' > "$dir/agent"
   out=$(run_orphan "$dir" scan)
   case "$out" in
     *"LEFTOVER: agentund"*) ;;
-    *) fail "agent-undetermined: the same copy was not reported once its agent could be classified: $out" ;;
+    *) fail "agent-undetermined: the same copy was not reported once its agent could be read: $out" ;;
   esac
   run_orphan "$dir" reap agentund >/dev/null
   sleep 0.3
-  alive "$pid" && fail "agent-undetermined: the copy's process survived a classifiable, agreeing verdict"
+  alive "$pid" && fail "agent-undetermined: the copy's process survived a readable, agreeing verdict"
 
   rm -f "$HOME_DIR/state/agentund.meta"
-  pass "an unclassifiable agent state reports the copy and refuses a stop, and never claims a living owner"
+  pass "an agent state the classifier could not read reports the copy, refuses a stop, and never claims a living owner"
+}
+
+# --- 4e. no classifier at all is not a suspicion about the copy --------------
+#
+# `unverified` is what fm_backend_agent_state answers for every backend with no
+# recovery classifier, for a live worker exactly as for a dead one, so it says
+# nothing about this copy. Alerting on it would put every healthy task on a
+# zellij, orca, or cmux home into the report at every session start, and a
+# report that cries wolf every session is one people stop reading - which costs
+# the very leak this exists to surface. The two halves are independent: raise no
+# alert, and still never authorise a stop.
+
+test_a_runtime_with_no_classifier_raises_no_alert_but_still_refuses_a_stop() {
+  local dir pid out rc
+  dir="$TMP_ROOT/case-unverified"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-unver
+  make_crew_state_stub "$dir"
+  # Both sources would otherwise agree the worker is gone, so only the missing
+  # classifier can account for the silence.
+  printf 'dead' > "$dir/agent"
+  printf 'done' > "$dir/crew"
+
+  pid=$(witness "$COPY")
+  write_task_meta unver "$COPY" "fmses:fm-unver"
+  sed -i 's/^backend=tmux$/backend=zellij/' "$HOME_DIR/state/unver.meta"
+
+  rc=0
+  out=$(run_orphan "$dir" scan) || rc=$?
+  case "$out" in
+    *unver*) fail "unverified-runtime: a healthy-or-not copy on a runtime with no classifier was alerted on: $out" ;;
+  esac
+  [ "$rc" = 0 ] || fail "unverified-runtime: the sweep exited $rc over a copy it simply cannot judge"
+
+  # ... and the stop is still refused, which is the half that must NOT relax.
+  rc=0
+  out=$(run_orphan "$dir" reap unver) || rc=$?
+  [ "$rc" != 0 ] || fail "unverified-runtime: a cleanup was allowed although no classifier could establish the owner: $out"
+  case "$out" in
+    *"no agent classifier"*) ;;
+    *) fail "unverified-runtime: the refusal did not name the missing classifier: $out" ;;
+  esac
+  sleep 0.3
+  alive "$pid" || fail "unverified-runtime: a process was stopped on a runtime that cannot establish its owner"
+
+  # Only the backend changes: the same fixture on a runtime that CAN classify is
+  # reported and cleaned, so the silence above is the missing classifier alone.
+  sed -i 's/^backend=zellij$/backend=tmux/' "$HOME_DIR/state/unver.meta"
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"LEFTOVER: unver"*) ;;
+    *) fail "unverified-runtime: the same copy was not reported once its runtime could classify: $out" ;;
+  esac
+  run_orphan "$dir" reap unver >/dev/null
+  sleep 0.3
+  alive "$pid" && fail "unverified-runtime: the copy's process survived on a runtime that could classify it"
+
+  rm -f "$HOME_DIR/state/unver.meta"
+  pass "a runtime with no agent classifier raises no alert, still refuses a stop, and does not mask a copy its runtime can judge"
 }
 
 # --- 8. the per-task temp root is a reap root and gets the same refusals ------
@@ -1479,6 +1553,7 @@ test_a_live_workers_processes_are_never_stopped
 test_a_disagreeing_current_state_vetoes_the_verdict
 test_an_undetermined_current_state_never_authorises_a_stop
 test_an_undetermined_agent_state_is_never_reported_as_a_clean_copy
+test_a_runtime_with_no_classifier_raises_no_alert_but_still_refuses_a_stop
 test_an_unreadable_working_directory_leaves_the_process_alone
 test_only_the_recorded_endpoint_shell_is_spared
 test_an_unnameable_endpoint_shell_holds_leaders_back_and_says_how_many
