@@ -1634,6 +1634,59 @@ test_relaunch_holds_leaders_back_when_the_record_cannot_name_the_endpoint_shell(
   pass "fm-control relaunch: a session leader is held back and recorded when the endpoint's shell cannot be named"
 }
 
+# A cleanup that could not be completed AND held session leaders back has to
+# record both. The durable journal is what an operator reads afterwards, so a
+# failure arm that dropped the leader count would leave a copy whose leaders
+# were never classified looking like one whose cleanup merely went wrong.
+test_a_failed_cleanup_still_records_the_leaders_it_never_classified() {
+  local dir out rc leader leftover wt_real real_ls
+  dir=$(new_case leftover-failed-record rl94)
+  add_ship_task "$dir" rl94 claude
+  # The record cannot name the endpoint's shell, so every session leader is held
+  # back and counted.
+  printf 'fakepane' > "$dir/fake/panepid"
+  wt_real=$(cd "$dir/wt" && pwd -P)
+  leader=$(session_leader_witness "$dir/wt")
+  leftover=$(witness "$dir/wt")
+
+  # A working-directory listing that stops answering the moment the leftover it
+  # was naming dies: the reap signals, and then cannot establish what happened -
+  # the "signalled, fate unknown" outcome, reached without wedging anything.
+  real_ls=$(command -v ls)
+  cat > "$dir/fakebin/ls" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = -l ]; then
+  case "\${2:-}" in
+    /proc/*/cwd)
+      if kill -0 $leftover 2>/dev/null; then
+        printf 'lrwxrwxrwx 1 u u 0 Jan 1 00:00 /proc/%s/cwd -> %s\n' $leftover "$wt_real"
+        printf 'lrwxrwxrwx 1 u u 0 Jan 1 00:00 /proc/%s/cwd -> %s\n' $leader "$wt_real"
+        exit 0
+      fi
+      echo "ls: synthetic listing failure" >&2
+      exit 1
+      ;;
+  esac
+fi
+exec "$real_ls" "\$@"
+SH
+  chmod +x "$dir/fakebin/ls"
+
+  export FM_WTPROC_GRACE=1
+  out=$(run_control "$dir" rl94 relaunch --note "engine stopped overnight"); rc=$?
+  unset FM_WTPROC_GRACE
+  rm -f "$dir/fakebin/ls"
+  expect_code 0 "$rc" "a relaunch should still succeed when its cleanup cannot be verified"$'\n'"$out"
+  assert_grep "reap=indeterminate:$leftover" "$dir/home/state/rl94.control-relaunch" \
+    "the record should say the cleanup was signalled and could not be verified, so this case proves nothing otherwise"
+  assert_grep "indeterminate:$leftover+leaders-unclassified:1" "$dir/home/state/rl94.control-relaunch" \
+    "a cleanup that failed AND held a session leader back should record both, not only the failure"
+  witness_alive "$leader" \
+    || fail "a session leader was stopped although the record could not name the endpoint's shell"
+  kill -KILL "$leader" 2>/dev/null || true
+  pass "fm-control relaunch: a cleanup that could not be verified still records the leaders it never classified"
+}
+
 test_an_already_stopped_agent_needs_a_second_source_before_any_cleanup() {
   local dir out rc leftover
   dir=$(new_case leftover-unconfirmed rl92)
@@ -1720,3 +1773,4 @@ test_relaunch_stops_what_the_previous_incarnation_left_running
 test_relaunch_spares_the_endpoint_shell_and_everything_outside_the_copy
 test_relaunch_holds_leaders_back_when_the_record_cannot_name_the_endpoint_shell
 test_an_already_stopped_agent_needs_a_second_source_before_any_cleanup
+test_a_failed_cleanup_still_records_the_leaders_it_never_classified

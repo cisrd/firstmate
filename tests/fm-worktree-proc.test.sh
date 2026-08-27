@@ -738,8 +738,12 @@ test_a_scan_that_breaks_between_selecting_and_signalling_names_the_root() {
     *"nothing was signalled"*) ;;
     *) fail "reap-outcome: the failure between selecting and signalling said nothing about what it did: $(cat "$err")" ;;
   esac
+  # The root has to be named by the ABANDONMENT diagnostic itself. Asserting the
+  # bare path would pass on the "stopping ... left in <roots>" line printed a
+  # moment earlier on the same stream, and would go on passing with this
+  # diagnostic removed entirely; only the sentence below can produce this.
   case "$(cat "$err")" in
-    *"$dir/work"*) ;;
+    *"processes under $dir/work stopped being listable"*) ;;
     *) fail "reap-outcome: the abandoned cleanup did not name the root that stopped answering: $(cat "$err")" ;;
   esac
   alive "$pid" || fail "reap-outcome: a process was signalled after the scan stopped answering"
@@ -910,6 +914,102 @@ test_each_collect_looks_at_the_machine_again() {
   pass "every collect looks at the machine again; a process that has died since the last one is gone from the next"
 }
 
+# --- 13. a listing that could not be produced is not an empty machine --------
+#
+# The cwd LINK resolving proves the kernel exposes the working directory; it does
+# not prove the listing this library reads that fact THROUGH can be produced. A
+# host where it cannot has to say so, because "the listing came back with
+# nothing" and "no process has a working directory here" are the same bytes and
+# opposite facts - and every caller reads the second as a copy it may destroy.
+
+test_a_listing_that_cannot_be_produced_is_never_an_empty_machine() {
+  local lib stub cmd pid out rc baseline
+  lib="$ROOT/bin/fm-worktree-proc-lib.sh"
+  baseline=$(bash -c '. "$1"; fm_wtproc_resolver' _ "$lib" 2>/dev/null || true)
+  if [ "$baseline" != proc ]; then
+    pass "this host does not answer from /proc; the listing case does not apply"
+    return 0
+  fi
+
+  pid=$(witness "$COPY")
+  # The same fixture on an unhampered host, so what follows is proven to hinge
+  # on the listing and on nothing else.
+  out=$(bash -c '. "$1"; fm_wtproc_pids_under "$2"' _ "$lib" "$COPY") \
+    || fail "no-listing: the baseline scan failed, so this case proves nothing"
+  contains_pid "$out" "$pid" \
+    || fail "no-listing: the baseline scan did not find the witness, so this case proves nothing"
+
+  # The listing command cannot run at all, and the only other cwd source
+  # refuses: nothing on this host can answer the question now.
+  stub="$TMP_ROOT/no-listing-bin"
+  mkdir -p "$stub"
+  for cmd in ls lsof; do
+    cat > "$stub/$cmd" <<SH
+#!/usr/bin/env bash
+echo "$cmd: synthetic failure" >&2
+exit 1
+SH
+    chmod +x "$stub/$cmd"
+  done
+
+  rc=0
+  out=$(PATH="$stub:$PATH" bash -c '. "$1"; fm_wtproc_pids_under "$2"' _ "$lib" "$COPY" 2>/dev/null) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "no-listing: a host that could not produce a listing answered '$out' with success, which every caller reads as a copy with nothing running in it"
+
+  alive "$pid" || fail "no-listing: the witness was stopped by a scan that could not look at the machine"
+  kill -KILL "$pid" 2>/dev/null || true
+  pass "a listing that could not be produced is unanswerable, and never an empty machine"
+}
+
+# --- 14. a reap that never selects reports nothing from the copy before it ---
+#
+# The reap returns before the selector on two ordinary paths - a scan that
+# failed, and a copy with nothing running in it - and callers quote what the
+# selector sets straight into their durable record. Carried over from an earlier
+# call in the same shell, those would name a previous copy's held-back shell.
+
+test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it() {
+  local empty leader
+  empty="$TMP_ROOT/empty-copy"
+  mkdir -p "$empty"
+  leader=$(session_leader_witness "$COPY")
+  # An ordinary leftover, so the reap below has something to select; the witness
+  # registry owns it from here.
+  witness "$COPY" >/dev/null
+
+  # A reap that DOES select and DOES hold a named shell back, so what follows is
+  # proven to clear a real previous answer rather than an initial value.
+  fm_wtproc_reap "previous" "$leader" "$COPY" >/dev/null 2>&1 \
+    || fail "stale-globals: the reap that names an endpoint shell could not be completed"
+  [ "$FM_WTPROC_SPARED_ENDPOINT" = "$leader" ] \
+    || fail "stale-globals: the first reap held no endpoint shell back, so this case proves nothing"
+  [ -n "$FM_WTPROC_SELECTED" ] \
+    || fail "stale-globals: the first reap selected nothing, so this case proves nothing"
+
+  fm_wtproc_reap "empty" none "$empty" >/dev/null 2>&1 \
+    || fail "stale-globals: a reap of a copy with nothing running in it failed"
+  [ -z "$FM_WTPROC_SELECTED" ] \
+    || fail "stale-globals: a reap that never selected anything still names '$FM_WTPROC_SELECTED' as selected"
+  [ -z "$FM_WTPROC_SPARED_ENDPOINT" ] \
+    || fail "stale-globals: a reap that never selected anything still names an earlier copy's held-back shell '$FM_WTPROC_SPARED_ENDPOINT'"
+
+  # And the same for the leader count, which the relaunch journal quotes.
+  witness "$COPY" >/dev/null
+  fm_wtproc_reap "previous" unknown "$COPY" >/dev/null 2>&1 \
+    || fail "stale-globals: the reap that holds leaders back could not be completed"
+  [ "$FM_WTPROC_SPARED_LEADERS" = 1 ] \
+    || fail "stale-globals: the second reap held $FM_WTPROC_SPARED_LEADERS leader(s) back, not 1, so this case proves nothing"
+
+  fm_wtproc_reap "empty" none "$empty" >/dev/null 2>&1 \
+    || fail "stale-globals: the second reap of a copy with nothing running in it failed"
+  [ "$FM_WTPROC_SPARED_LEADERS" = 0 ] \
+    || fail "stale-globals: a reap that never selected anything still reports $FM_WTPROC_SPARED_LEADERS leader(s) held back from an earlier copy"
+
+  kill -KILL "$leader" 2>/dev/null || true
+  pass "a reap that never reaches the selector reports nothing left over from the copy before it"
+}
+
 test_only_a_linked_worktree_is_a_disposable_copy
 test_a_process_in_a_disposable_copy_is_found_and_stopped
 test_a_primary_checkout_is_never_a_target
@@ -926,3 +1026,5 @@ test_a_process_that_outlives_the_force_stop_is_never_reported_stopped
 test_a_copy_this_host_cannot_list_is_never_reported_clean
 test_a_removed_working_directory_does_not_make_the_host_unanswerable
 test_each_collect_looks_at_the_machine_again
+test_a_listing_that_cannot_be_produced_is_never_an_empty_machine
+test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it

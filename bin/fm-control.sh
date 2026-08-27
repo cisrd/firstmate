@@ -862,31 +862,31 @@ reap_previous_incarnation() {  # <exit-result>
   spare=$(fm_wtproc_endpoint_shell_pid "$BACKEND" "$T" 2>/dev/null) || spare=unknown
   fm_wtproc_reap "task $ID leftover" "$spare" "${roots[@]}" >/dev/null || rc=$?
   case "$rc" in
-    0) ;;
+    0)
+      if [ -n "$FM_WTPROC_REAPED" ]; then
+        REAP_RESULT="stopped:$(printf '%s' "$FM_WTPROC_REAPED" | tr ' ' ',')"
+      else
+        REAP_RESULT=clean
+      fi
+      ;;
     2)
       echo "warning: leftover processes in task $ID's local copy were signalled but could not be re-checked afterwards; the relaunch continues and their state is unknown" >&2
       REAP_RESULT="indeterminate:$(printf '%s' "$FM_WTPROC_REAPED" | tr ' ' ',')"
-      return 0
       ;;
     3)
       echo "warning: leftover processes in task $ID's local copy did not stop even when force-stopped; the relaunch continues and they are still running" >&2
       REAP_RESULT="survived:$(printf '%s' "$FM_WTPROC_SURVIVORS" | tr ' ' ',')"
-      return 0
       ;;
     *)
       echo "warning: leftover processes in task $ID's local copy could not be accounted for; nothing was signalled, the relaunch continues and they are left running" >&2
       REAP_RESULT=unresolved
-      return 0
       ;;
   esac
-  if [ -n "$FM_WTPROC_REAPED" ]; then
-    REAP_RESULT="stopped:$(printf '%s' "$FM_WTPROC_REAPED" | tr ' ' ',')"
-  else
-    REAP_RESULT=clean
-  fi
   # fm_wtproc_reap already warned about these on stderr; the journal has to
   # carry them too, so a copy read as clean is never confused with one whose
-  # session leaders were never classified at all.
+  # session leaders were never classified at all - and a cleanup that ALSO
+  # failed has to say both, so this is appended on every outcome rather than on
+  # the one that succeeded.
   [ "$FM_WTPROC_SPARED_LEADERS" -gt 0 ] \
     && REAP_RESULT="$REAP_RESULT+leaders-unclassified:$FM_WTPROC_SPARED_LEADERS"
   return 0

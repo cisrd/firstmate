@@ -80,8 +80,9 @@
 #
 # Environment knobs:
 #   FM_PROC_ROOT_OVERRIDE   proc root (default /proc); a path that is not a
-#                           directory, or one that does not answer the cwd
-#                           question, selects the lsof fallback
+#                           directory, one that does not answer the cwd
+#                           question, or one whose cwd listing cannot be
+#                           produced at all, selects the lsof fallback
 #   FM_WTPROC_GRACE         seconds between TERM and KILL (default 3)
 #   FM_WTPROC_KILL_SETTLE   seconds to wait before confirming the KILL (default 1)
 #   FM_WTPROC_CREW_STATE_TIMEOUT  bound on the current-state read (default 20)
@@ -138,6 +139,25 @@ _fm_wtproc_proc_answers_cwd() {  # <root>
   [ "$target" = "$probe" ]
 }
 
+# _fm_wtproc_proc_lists_cwd_entries: can the scan's OWN mechanism be run here?
+#
+# A cwd link that resolves proves the kernel exposes the fact; it does not prove
+# the listing this library reads that fact through can be produced. `ls`
+# unresolvable on PATH would leave the self-test satisfied and every scan
+# answering "nothing is running there" with status 0 - the same silent
+# degradation the cwd probe exists to refuse, reached one step further along. So
+# the verdict is gated on the listing too, taken once here and thrown away
+# rather than cached: the resolver is memoised for the life of the shell and a
+# listing may never outlive one observation.
+_fm_wtproc_proc_lists_cwd_entries() {  # <root>
+  local root=$1 listing
+  listing=$(_fm_wtproc_listing_run "$root") || return 1
+  case "$listing" in
+    *"$root"/[0-9]*/cwd*) return 0 ;;
+  esac
+  return 1
+}
+
 # fm_wtproc_resolver: which cwd source this host can answer with. Memoised per
 # proc root: the self-test is cheap but the answer is asked once per scanned
 # root, and the root only changes under an explicit override.
@@ -148,7 +168,8 @@ fm_wtproc_resolver() {
   root=$(_fm_wtproc_proc_root)
   if [ -z "$_FM_WTPROC_RESOLVER" ] || [ "$_FM_WTPROC_RESOLVER_ROOT" != "$root" ]; then
     _FM_WTPROC_RESOLVER_ROOT=$root
-    if [ -d "$root" ] && _fm_wtproc_proc_answers_cwd "$root"; then
+    if [ -d "$root" ] && _fm_wtproc_proc_answers_cwd "$root" \
+       && _fm_wtproc_proc_lists_cwd_entries "$root"; then
       _FM_WTPROC_RESOLVER=proc
     elif command -v lsof >/dev/null 2>&1; then
       _FM_WTPROC_RESOLVER=lsof
@@ -182,11 +203,30 @@ _FM_WTPROC_LISTING_ROOT=
 _FM_WTPROC_LISTING_HELD=0
 _FM_WTPROC_LISTING_PASS=0
 
+# Take the listing, and answer whether it could be taken at all.
+#
+# `ls` exits non-zero as soon as it meets one link it may not read, which is the
+# ordinary case on a multi-user host and must never fail a scan - the entry is
+# still listed, with no `-> target`, and an unreadable working directory is not
+# evidence of anything. So the exit status is deliberately discarded. What may
+# NOT be discarded is the listing coming back with nothing at all: the scanning
+# process's own entry is always in it (it is filtered out of the results, not
+# out of the listing), so an empty listing means the command did not run - `ls`
+# unresolvable on PATH, the proc root gone since the resolver answered - and
+# that is unanswerable, never a clean machine.
+_fm_wtproc_listing_run() {  # <root>
+  local out
+  out=$(ls -l "$1"/[0-9]*/cwd 2>/dev/null || true)
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
 _fm_wtproc_listing_load() {  # <root>
-  local root=$1
+  local root=$1 out
   [ -d "$root" ] || return 1
   [ "$_FM_WTPROC_LISTING_ROOT" = "$root" ] && return 0
-  _FM_WTPROC_LISTING=$(ls -l "$root"/[0-9]*/cwd 2>/dev/null || true)
+  out=$(_fm_wtproc_listing_run "$root") || return 1
+  _FM_WTPROC_LISTING=$out
   _FM_WTPROC_LISTING_ROOT=$root
 }
 
@@ -618,6 +658,14 @@ fm_wtproc_reap() {  # <label> <spare> <dir>...
   shift 2
   FM_WTPROC_REAPED=
   FM_WTPROC_SURVIVORS=
+  # The selection globals are reset here as well as inside fm_wtproc_select,
+  # because the paths below return before the selector ever runs - a scan that
+  # failed, a copy with nothing in it - and a caller quoting them afterwards
+  # must never be handed a previous copy's held-back shell or leader count.
+  FM_WTPROC_SELECTED=
+  FM_WTPROC_SPARED_LEADERS=0
+  # shellcheck disable=SC2034 # Consumed by sourcing callers.
+  FM_WTPROC_SPARED_ENDPOINT=
   # A reap observes the machine again between every pass, so it never reads a
   # listing some outer report is holding: whatever a caller snapshotted, this
   # drops it.
