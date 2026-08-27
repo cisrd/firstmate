@@ -67,8 +67,12 @@
 #     leader is left alone and the report SAYS how many, because a silently
 #     empty result would read as "this copy is clean".
 #   - An unreadable /proc/<pid>/cwd means the process is left alone.
-#   - A copy this host cannot list AT ALL is reported as UNSCANNABLE and makes
-#     the scan exit non-zero. "I could not look" is never reported as "I looked
+#   - This command's own ancestor chain is held back too, so a sweep started
+#     from a shell sitting inside the copy never signals the terminal the
+#     operator is typing in.
+#   - A root that was not examined AT ALL is reported as UNSCANNABLE and makes
+#     the scan exit non-zero, whether this host could not list it or the record
+#     naming it was refused. "I could not look" is never reported as "I looked
 #     and found nothing", because the only reader of an empty result - the
 #     session-start digest - would print "(none)" for a fleet nobody examined.
 #   - Processes only. This script never removes a file, never touches git, and
@@ -102,8 +106,18 @@ die() {  # <message>
 # Resolve the roots this task's processes may legitimately be attributed to.
 # Prints them one per line; a task that cannot qualify prints nothing and
 # returns 1, with the reason on stderr only when <verbose> is 1.
+#
+# A recorded temp root that validation REFUSES is not silently dropped. Doing so
+# would narrow the scan to fewer roots than the record names while leaving the
+# report unchanged, so a copy with an unexamined root would read exactly like a
+# clean one - the same silent degradation the UNSCANNABLE line exists to remove,
+# reached through a refused root instead of an unproducible listing. It is
+# reported back to the caller on the two `!tmp-refused-*` marker lines, which
+# travel on stdout because this function is read through a pipe and a global set
+# in that subshell would never reach the caller. Absolute roots start with `/`,
+# so no real root can be mistaken for a marker.
 task_roots() {  # <task-id> <meta> <verbose>
-  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_real tmp_real
+  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_real tmp_out
   kind=$(fm_meta_get "$meta" kind)
   [ -n "$kind" ] || kind=ship
   case "$kind" in
@@ -122,9 +136,19 @@ task_roots() {  # <task-id> <meta> <verbose>
   fi
   printf '%s\n' "$wt_real"
   tmp=$(fm_meta_get "$meta" tasktmp)
-  if [ -n "$tmp" ] && tmp_real=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" 2>/dev/null); then
-    printf '%s\n' "$tmp_real"
+  [ -n "$tmp" ] || return 0
+  # On success fm_wtproc_task_tmp prints the resolved path and nothing else; on
+  # refusal it prints only its reason, so one capture carries both.
+  if tmp_out=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" 2>&1); then
+    printf '%s\n' "$tmp_out"
+    return 0
   fi
+  printf '!tmp-refused-path %s\n' "$tmp"
+  printf '!tmp-refused-reason %s\n' "${tmp_out:-no reason was given}"
+  if [ "$verbose" = 1 ]; then
+    echo "task $id's recorded temp root '$tmp' was refused, so it was NOT examined: ${tmp_out:-no reason was given}" >&2
+  fi
+  return 0
 }
 
 # The pid of the shell this task's OWN endpoint runs, read from the record, or
@@ -178,12 +202,19 @@ listening_ports() {  # <pid>...
 #   0  something is reported on stdout (LEFTOVER, UNRESOLVED, UNSCANNABLE)
 #   1  this copy was looked at and has nothing to report
 #   3  this copy could NOT be looked at, so it is not known to be clean
-#   4  processes are reported (UNDETERMINED) but the copy's owner could not be
-#      established, so they are for an operator to judge and never for a reap
+#   4  the copy is reported (UNDETERMINED) but its owner could not be
+#      established, so it is for an operator to judge and never for a reap -
+#      whether processes were selected in it or every one of them was held back
+#
+# SCAN_UNEXAMINED is set alongside them when SOME recorded root was not looked
+# at while the rest were, which the status alone cannot carry: that copy has an
+# UNSCANNABLE line of its own and callers must not present it as fully examined.
 scan_task() {  # <task-id> <verbose>
   local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
-  local undetermined=0 label
+  local undetermined=0 label refused_path="" refused_reason=""
   local -a roots=()
+  SCAN_REFUSED_ROOT=
+  SCAN_UNEXAMINED=0
   meta="$STATE/$id.meta"
   [ -f "$meta" ] || {
     [ "$verbose" = 1 ] && echo "no durable record for task $id in $STATE" >&2
@@ -191,8 +222,26 @@ scan_task() {  # <task-id> <verbose>
   }
   while IFS= read -r line; do
     [ -n "$line" ] || continue
+    case "$line" in
+      '!tmp-refused-path '*) refused_path=${line#'!tmp-refused-path '}; continue ;;
+      '!tmp-refused-reason '*) refused_reason=${line#'!tmp-refused-reason '}; continue ;;
+    esac
+    # Only an absolute path resolved by a validator is ever a root. Anything
+    # else on this stream is a diagnostic that grew a newline, and a scan root
+    # is the last place to be lenient about what it accepts.
+    case "$line" in /*) ;; *) continue ;; esac
     roots+=("$line")
   done < <(task_roots "$id" "$meta" "$verbose" || true)
+  # Reported on its own line, ahead of anything the remaining roots yield: a
+  # root the record names and validation refuses was NOT examined, and that is a
+  # fact about the copy whether or not the roots that WERE examined turn out to
+  # hold anything.
+  if [ -n "$refused_path" ]; then
+    SCAN_REFUSED_ROOT=$refused_path
+    SCAN_UNEXAMINED=1
+    printf 'UNSCANNABLE: %s copy=%s (%s, so this recorded root was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
+      "$id" "$refused_path" "$refused_reason"
+  fi
   [ "${#roots[@]}" -gt 0 ] || return 1
   # Cheapest question first: an empty copy needs no backend call at all, so a
   # healthy fleet costs one /proc pass per copy and nothing else.
@@ -253,11 +302,24 @@ scan_task() {  # <task-id> <verbose>
   SCAN_VERDICT=$verdict
   SCAN_SPARE=$spare
   SCAN_SKIPPED_LEADERS=$skipped
+  # The label is settled BEFORE the empty-selection branch below. Whether this
+  # copy's owner could be established is a fact about the copy, not about
+  # whether anything was selected in it, so an undetermined owner has to survive
+  # the path where every process was held back - otherwise the one copy a reap
+  # must refuse is reported as the one that merely wants a look by hand, and the
+  # rc=4 that refuses it never fires.
+  label=LEFTOVER
+  [ "$undetermined" = 1 ] && label=UNDETERMINED
   if [ -z "$pids" ]; then
     # Never a silent "(none)": leaders held back because the endpoint's shell
     # could not be named are the one case where an empty set is not evidence of
     # a clean copy, and the report has to say so.
     [ "$skipped" -gt 0 ] || return 1
+    if [ "$undetermined" = 1 ]; then
+      printf 'UNDETERMINED: %s agent=%s copy=%s leaders_skipped=%s (its current state could not be read at all AND the endpoint shell could not be identified from the record, so no session leader in this copy was classified; inspect them by hand)\n' \
+        "$id" "$verdict" "${roots[0]}" "$skipped"
+      return 4
+    fi
     printf 'UNRESOLVED: %s agent=%s copy=%s leaders_skipped=%s (the endpoint shell could not be identified from the record, so no session leader in this copy was classified; inspect them by hand)\n' \
       "$id" "$verdict" "${roots[0]}" "$skipped"
     return 0
@@ -266,8 +328,6 @@ scan_task() {  # <task-id> <verbose>
   ports=$(listening_ports $pids)
   note=""
   [ "$skipped" -gt 0 ] && note=" leaders_skipped=$skipped"
-  label=LEFTOVER
-  [ "$undetermined" = 1 ] && label=UNDETERMINED
   printf '%s: %s agent=%s copy=%s pids=%s%s%s\n' \
     "$label" "$id" "$verdict" "${roots[0]}" "$(printf '%s' "$pids" | tr ' ' ',')" \
     "${ports:+ listening=$ports}" "$note"
@@ -291,6 +351,7 @@ cmd_scan() {
       3) found=1; unscannable=1 ;;
       4) found=1; undetermined=1 ;;
     esac
+    if [ "$SCAN_UNEXAMINED" = 1 ]; then found=1; unscannable=1; fi
   else
     # One listing of the machine for the whole sweep: this command signals
     # nothing, so every copy in it may be answered from the same instant, and a
@@ -308,6 +369,7 @@ cmd_scan() {
         3) found=1; unscannable=1 ;;
         4) found=1; undetermined=1 ;;
       esac
+      if [ "$SCAN_UNEXAMINED" = 1 ]; then found=1; unscannable=1; fi
     done
     fm_wtproc_snapshot_end
   fi
@@ -318,7 +380,7 @@ cmd_scan() {
     echo "An UNDETERMINED line names one whose endpoint is gone while its current state could not be read at all; its processes are reported but never stopped for you, because an undetermined state is not evidence the worker is gone."
   fi
   if [ "$unscannable" = 1 ]; then
-    echo "An UNSCANNABLE line names a copy this host could not list at all; it was not examined, so nothing about it - clean or leaking - was established."
+    echo "An UNSCANNABLE line names a recorded root that was not examined at all - this host could not list it, or the record naming it was refused - so nothing about it, clean or leaking, was established."
   fi
   echo "Stop one with: FM_HOME=$FM_HOME $SCRIPT_DIR/fm-orphan-reap.sh reap <task-id>"
   # Non-zero so a caller that only reads the status - bin/fm-session-start.sh's
@@ -335,7 +397,15 @@ cmd_reap() {  # <task-id>
   SCAN_SPARE=unknown
   SCAN_SKIPPED_LEADERS=0
   SCAN_UNSCANNABLE_ROOT=
+  SCAN_REFUSED_ROOT=
+  SCAN_UNEXAMINED=0
   scan_task "$id" 1 >/dev/null || scan_rc=$?
+  # Said before any outcome below, including the ones that stop the command: a
+  # cleanup that covered fewer roots than the record names has to say so, or a
+  # copy with an unexamined root reads afterwards like a fully cleaned one.
+  if [ -n "$SCAN_REFUSED_ROOT" ]; then
+    echo "warning: task $id's recorded temp root $SCAN_REFUSED_ROOT was refused, so nothing in it was examined or stopped; correct the record or inspect it by hand" >&2
+  fi
   case "$scan_rc" in
     0) ;;
     4)

@@ -70,8 +70,9 @@ It is not deterministic across the verified adapters: codex, grok, and gemini re
    A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
 5. **Stop what the previous incarnation left running** in that same local copy, so the replacement never inherits a server, watcher, or queue worker it did not start.
-   Attribution is the process's real working directory and nothing else, never a command name; this task's own endpoint shell is spared because the relaunch reuses it; a `kind=secondmate` task is skipped because its recorded worktree is its firstmate home rather than a disposable copy.
+   Attribution is the process's real working directory and nothing else, never a command name; this task's own endpoint shell is spared because the relaunch reuses it; the invoking command's own ancestor chain is spared too, so a relaunch typed into a terminal sitting inside that copy never closes it; a `kind=secondmate` task is skipped because its recorded worktree is its firstmate home rather than a disposable copy.
    A cleanup that cannot be completed warns, records what it did as the journal's `reap=` field, and lets the relaunch finish rather than stranding the task with no agent.
+   That field also carries what the cleanup did NOT cover: `+leaders-unclassified:<n>` when the endpoint's own shell could not be named, and `+tmp-root-refused:<path>` when a recorded root failed validation and was therefore never examined.
    [`bin/fm-worktree-proc-lib.sh`](../bin/fm-worktree-proc-lib.sh)'s header owns which processes belong to a copy and the guards that keep every answer inside it.
 6. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
 

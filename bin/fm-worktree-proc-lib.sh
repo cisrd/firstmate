@@ -361,6 +361,55 @@ fm_wtproc_session_id() {  # <pid>
   printf '%s' "$sess"
 }
 
+# fm_wtproc_ppid: the process's parent pid, from /proc stat field 4 where a
+# compatible /proc exists and from ps otherwise.
+fm_wtproc_ppid() {  # <pid>
+  local pid=$1 root stat_line ppid
+  local -a stat_fields
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  root=$(_fm_wtproc_proc_root)
+  if [ -r "$root/$pid/stat" ]; then
+    stat_line=$(cat "$root/$pid/stat" 2>/dev/null) || return 1
+    # After the final comm delimiter, array index 1 is proc stat field 4.
+    read -r -a stat_fields <<< "${stat_line##*)}"
+    [ "${#stat_fields[@]}" -ge 2 ] || return 1
+    ppid=${stat_fields[1]}
+  else
+    ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d '[:space:]') || return 1
+  fi
+  case "$ppid" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s' "$ppid"
+}
+
+# fm_wtproc_ancestry: this process and every parent above it, up to init.
+#
+# The reaping process is already kept out of its own results, but its PARENTS
+# are not, and a cleanup is routinely started from inside the very copy it is
+# cleaning: `cd <home>/worktrees/fm-x1 && fm-control.sh x1 relaunch` is what the
+# stuck-crewmate recovery does, and that interactive shell's cwd is under the
+# root exactly like a leaked server's. The endpoint spare names ONE pid, so it
+# cannot stand in for a chain. Signalling the terminal an operator is typing in,
+# mid-relaunch, is the same class of harm as reaching outside the copy, so the
+# whole chain is held back - and a chain member is a process with a live owner
+# by definition, which is the one thing this mechanism never touches.
+#
+# Bounded so a /proc that reports a cycle cannot spin here.
+fm_wtproc_ancestry() {
+  local pid=${BASHPID:-$$} hops=0 ppid
+  printf '%s\n' "$pid"
+  if [ "$pid" != "$$" ]; then
+    printf '%s\n' "$$"
+  fi
+  pid=$$
+  while [ "$hops" -lt 64 ]; do
+    ppid=$(fm_wtproc_ppid "$pid") || break
+    case "$ppid" in 0|1) break ;; esac
+    printf '%s\n' "$ppid"
+    pid=$ppid
+    hops=$((hops + 1))
+  done
+}
+
 # fm_wtproc_is_session_leader: a terminal endpoint's shell is the session leader
 # of the pty the backend opened for it, and its cwd is the task worktree - so it
 # is indistinguishable from a leaked server by cwd alone. This is the LAST
@@ -410,10 +459,18 @@ fm_wtproc_endpoint_shell_pid() {  # <backend> <target>
 # live. The remaining guards refuse the paths whose shape alone makes them
 # implausible as a task copy.
 #
-# Every root a caller may signal into passes _fm_wtproc_refuse_sensitive_root
-# first, whatever kind of root it is: the shape refusals are what keep a record
-# that names the operator's own tree from turning into a kill root, and a second
-# root that skipped them would be a hole in the same wall.
+# The shape refusals are what keep a record that names the operator's own tree
+# from turning into a kill root, and both VALIDATED entry points run them:
+# fm_wtproc_disposable_worktree for a task's copy and fm_wtproc_task_tmp for its
+# temp root, each before it hands the path back.
+#
+# They are deliberately NOT applied inside fm_wtproc_pids_under, so a caller that
+# hands a recorded path straight to the scan clears no wall at all.
+# bin/fm-teardown.sh is such a caller: it passes the `worktree=` and `tasktmp=`
+# values off a task's meta to its own reap loop unvalidated. That predates this
+# library and closing it would change teardown's behaviour, so it stands as it
+# is - but nothing NEW may rely on this wall being behind it. A new caller that
+# may signal into a root resolves it through one of the two validators above.
 _fm_wtproc_refuse_sensitive_root() {  # <real-path> <fm-home> <what>
   local real=$1 home=$2 what=$3 home_real
   case "$real" in
@@ -608,15 +665,17 @@ _fm_wtproc_contains() {  # <pid-list> <pid>
 # One implementation for the report and for the reap: `scan` naming a copy as
 # leaking and `reap` stopping what is in it have to be talking about the same
 # set of processes, and two filters written twice would eventually disagree
-# about which. Sets FM_WTPROC_SPARED_ENDPOINT to the endpoint shell it held back
-# and FM_WTPROC_SPARED_LEADERS to the number of session leaders it could not
-# rule out - a count callers are required to report rather than fold into an
-# empty result.
+# about which. Sets FM_WTPROC_SPARED_ENDPOINT to the endpoint shell it held back,
+# FM_WTPROC_SPARED_LEADERS to the number of session leaders it could not rule out
+# - a count callers are required to report rather than fold into an empty result
+# - and FM_WTPROC_SPARED_ANCESTORS to the number of the caller's own ancestors it
+# found sitting in the copy (see fm_wtproc_ancestry).
 FM_WTPROC_SELECTED=
 FM_WTPROC_SPARED_LEADERS=0
 FM_WTPROC_SPARED_ENDPOINT=
+FM_WTPROC_SPARED_ANCESTORS=0
 fm_wtproc_select() {  # <spare>
-  local spare=$1 pid out=""
+  local spare=$1 pid out="" ancestry
   case "$spare" in
     none|unknown) ;;
     ''|*[!0-9]*) spare=unknown ;;
@@ -624,9 +683,20 @@ fm_wtproc_select() {  # <spare>
   FM_WTPROC_SELECTED=
   FM_WTPROC_SPARED_LEADERS=0
   FM_WTPROC_SPARED_ENDPOINT=
+  FM_WTPROC_SPARED_ANCESTORS=0
   [ -n "$FM_WTPROC_PIDS" ] || return 0
+  # Read once, before the loop: the chain is the same for every candidate, and a
+  # /proc walk per pid would cost a fork per process on the saturated host this
+  # runs on.
+  ancestry=$(fm_wtproc_ancestry)
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
+    # Ahead of the spare arms, and of `none`: a caller that holds nothing back
+    # still may not signal the shell it was invoked from.
+    if _fm_wtproc_contains "$ancestry" "$pid"; then
+      FM_WTPROC_SPARED_ANCESTORS=$((FM_WTPROC_SPARED_ANCESTORS + 1))
+      continue
+    fi
     case "$spare" in
       none) ;;
       unknown)
@@ -659,7 +729,9 @@ EOF
 #
 # <spare> is passed straight to fm_wtproc_select: the endpoint shell's pid when
 # the caller reuses that endpoint and the record could name it, `unknown` when
-# it could not, `none` when nothing is held back.
+# it could not, `none` when nothing is held back. `none` still holds back this
+# cleanup's own ancestor chain (fm_wtproc_ancestry) - a shell the operator is
+# typing in is never a leftover, whatever the caller asked for.
 #
 # Prints one human-readable line per action on stderr and the reaped pids on
 # stdout, and sets FM_WTPROC_REAPED and FM_WTPROC_SURVIVORS for callers that
@@ -685,6 +757,7 @@ fm_wtproc_reap() {  # <label> <spare> <dir>...
   # must never be handed a previous copy's held-back shell or leader count.
   FM_WTPROC_SELECTED=
   FM_WTPROC_SPARED_LEADERS=0
+  FM_WTPROC_SPARED_ANCESTORS=0
   # shellcheck disable=SC2034 # Consumed by sourcing callers.
   FM_WTPROC_SPARED_ENDPOINT=
   # A reap observes the machine again between every pass, so it never reads a
@@ -699,6 +772,9 @@ fm_wtproc_reap() {  # <label> <spare> <dir>...
   fm_wtproc_select "$spare"
   if [ "$FM_WTPROC_SPARED_LEADERS" -gt 0 ]; then
     echo "fm-worktree-proc: $FM_WTPROC_SPARED_LEADERS session leader(s) in ${*} were left alone because the endpoint's own shell could not be identified from the task record; inspect them by hand rather than assuming the copy is clean" >&2
+  fi
+  if [ "$FM_WTPROC_SPARED_ANCESTORS" -gt 0 ]; then
+    echo "fm-worktree-proc: $FM_WTPROC_SPARED_ANCESTORS process(es) in ${*} are this cleanup's own ancestors - it was started from inside the copy - and were left alone" >&2
   fi
   sel_pids=()
   sel_ids=()

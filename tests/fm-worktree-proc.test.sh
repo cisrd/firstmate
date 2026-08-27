@@ -32,6 +32,12 @@
 #   9. The reap tells the truth about its own outcome: a scan that broke BEFORE
 #      anything was signalled, a scan that broke AFTER, and a process that
 #      outlived the force-stop are three different answers, never one "done".
+#  10. A copy whose owner could not be established keeps that label and keeps
+#      refusing a cleanup even when every process in it was held back.
+#  11. A recorded root the validation refuses is reported as unexamined rather
+#      than quietly dropped from the scan.
+#  12. A cleanup started from a shell inside the copy stops the leftovers and
+#      never that shell.
 #
 # Every negative case is asserted beside a positive one in the same fixture, so
 # a guard that started refusing everything would fail this suite rather than
@@ -654,11 +660,21 @@ test_a_temp_root_in_the_operators_tree_is_never_a_reap_root() {
     *) fail "temp-root: the projects/ refusal did not name its cause: $out" ;;
   esac
 
+  # The recorded path IS the path fm-spawn would build for this task here
+  # (FM_TASK_TMP_ROOT points at the home for this one call), so the path binding
+  # is satisfied and only the home refusal can turn it away - and the assertion
+  # names that refusal's own cause, so deleting the refusal fails this case
+  # instead of passing it on a missing directory.
   home_tmp="$HOME_DIR/fm-tmphome"
   mkdir -p "$home_tmp"
   rc=0
-  out=$(HOME="$HOME_DIR" fm_wtproc_task_tmp tmphome "$home_tmp" "$HOME_DIR" 2>&1) || rc=$?
+  out=$(HOME="$HOME_DIR" FM_TASK_TMP_ROOT="$HOME_DIR" \
+    fm_wtproc_task_tmp tmphome "$home_tmp" "$HOME_DIR" 2>&1) || rc=$?
   [ "$rc" != 0 ] || fail "temp-root: a temp root sitting directly in the home directory was accepted"
+  case "$out" in
+    *"sits directly in the home directory"*) ;;
+    *) fail "temp-root: the home-directory refusal did not name its cause: $out" ;;
+  esac
 
   # End to end: a record naming the operator's own tree as this task's second
   # reap root reaches nothing in it, while the real copy is still cleaned.
@@ -1133,6 +1149,161 @@ test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it() {
   pass "a reap that never reaches the selector reports nothing left over from the copy before it"
 }
 
+# --- 10. an undetermined owner keeps its label on every path -----------------
+#
+# The two facts are independent: whether this copy's owner could be established,
+# and whether anything in it could be classified. A copy where BOTH are open -
+# the current state unreadable AND the endpoint shell unnameable - must still be
+# reported as undetermined and must still refuse a cleanup, because "its session
+# leaders want a look by hand" and "nobody knows whether this copy has a live
+# owner" send an operator to different places.
+
+test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back() {
+  local dir copy leader out rc
+  dir="$TMP_ROOT/case-undet-held"
+  copy="$TMP_ROOT/copy-undet-held"
+  mkdir -p "$dir"
+  git -C "$PRIMARY" worktree add --quiet -b undet-held "$copy"
+  make_backend_stub "$dir" fm-uh
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+  printf 'unknown' > "$dir/crew"
+  # The backend cannot name the pane's shell either, so every leader is held
+  # back and the selected set comes out empty.
+  printf 'fakepane' > "$dir/panepid"
+
+  leader=$(session_leader_witness "$copy")
+  write_task_meta uh "$copy" "fmses:fm-uh"
+
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"UNRESOLVED: uh"*) fail "undetermined-held: an undetermined copy lost its label to the held-back leaders: $out" ;;
+  esac
+  case "$out" in
+    *"UNDETERMINED: uh"*"leaders_skipped=1"*) ;;
+    *) fail "undetermined-held: the copy was not reported as undetermined with its held-back leader: $out" ;;
+  esac
+
+  rc=0
+  out=$(run_orphan "$dir" reap uh) || rc=$?
+  [ "$rc" != 0 ] || fail "undetermined-held: a cleanup of an undetermined copy did not refuse: $out"
+  case "$out" in
+    *"not evidence its worker is gone"*) ;;
+    *) fail "undetermined-held: the refusal did not name the undetermined state: $out" ;;
+  esac
+  sleep 0.3
+  alive "$leader" || fail "undetermined-held: a held-back leader was stopped anyway"
+
+  # Only the second source changes: with a determined state the same fixture
+  # reports the ordinary unresolved copy again, so this case hinges on `unknown`.
+  printf 'done' > "$dir/crew"
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"UNRESOLVED: uh"*"leaders_skipped=1"*) ;;
+    *) fail "undetermined-held: a determined state did not restore the unresolved report: $out" ;;
+  esac
+
+  kill -KILL "$leader" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/uh.meta"
+  git -C "$PRIMARY" worktree remove --force "$copy" 2>/dev/null || true
+  pass "a copy whose owner could not be established says so even when every process in it was held back"
+}
+
+# --- 11. a recorded root the validation refuses is never silently dropped -----
+#
+# Refusing the root is correct; reporting on the remaining roots as though the
+# record had named no other is not. The scan would then cover strictly less than
+# the record claims while reading exactly like a clean copy.
+
+test_a_refused_recorded_root_is_reported_rather_than_dropped() {
+  local dir copy elsewhere out rc pid_elsewhere pid_in_copy
+  dir="$TMP_ROOT/case-refused-root"
+  copy="$TMP_ROOT/copy-refused-root"
+  elsewhere="$TMP_ROOT/elsewhere-tmp/fm-rr"
+  mkdir -p "$dir" "$elsewhere"
+  git -C "$PRIMARY" worktree add --quiet -b refused-root "$copy"
+  make_backend_stub "$dir" fm-rr
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid_elsewhere=$(witness "$elsewhere")
+  pid_in_copy=$(witness "$copy")
+  # Correctly named for this task, but not the path fm-spawn would have built
+  # for it ($FM_TASK_TMP_ROOT/fm-rr), so fm_wtproc_task_tmp refuses it.
+  write_task_meta rr "$copy" "fmses:fm-rr" "$elsewhere"
+
+  rc=0
+  out=$(run_orphan "$dir" scan --task rr) || rc=$?
+  case "$out" in
+    *"UNSCANNABLE: rr"*"$elsewhere"*) ;;
+    *) fail "refused-root: a refused recorded root was dropped without a trace: $out" ;;
+  esac
+  [ "$rc" = 3 ] \
+    || fail "refused-root: a scan with an unexamined root exited $rc, so a caller reading only the status sees a clean fleet"
+  case "$out" in
+    *"$pid_elsewhere"*) fail "refused-root: a process under the refused root was attributed to the task: $out" ;;
+  esac
+  case "$out" in
+    *"LEFTOVER: rr"*"$pid_in_copy"*) ;;
+    *) fail "refused-root: the roots that WERE examined stopped being reported: $out" ;;
+  esac
+
+  out=$(run_orphan "$dir" reap rr)
+  case "$out" in
+    *"recorded temp root"*"was refused"*) ;;
+    *) fail "refused-root: the cleanup did not say it had covered less than the record names: $out" ;;
+  esac
+  sleep 0.3
+  alive "$pid_elsewhere" || fail "refused-root: a process under the refused root was stopped"
+  alive "$pid_in_copy" && fail "refused-root: the examined root was not cleaned, so this case proves nothing"
+
+  kill -KILL "$pid_elsewhere" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/rr.meta"
+  git -C "$PRIMARY" worktree remove --force "$copy" 2>/dev/null || true
+  pass "a recorded root the validation refuses is reported as unexamined instead of quietly narrowing the scan"
+}
+
+# --- 12. a cleanup never signals the shell it was started from ---------------
+#
+# `cd <home>/worktrees/fm-x1 && ... reap x1` is how the stuck-crewmate recovery
+# reaches a wedged copy, and that shell's working directory is inside the copy
+# like any leftover's. The endpoint spare names one pid, so it cannot cover a
+# chain.
+
+test_a_cleanup_never_signals_the_shell_it_was_started_from() {
+  local dir copy out pane leftover
+  dir="$TMP_ROOT/case-invoker"
+  copy="$TMP_ROOT/copy-invoker"
+  mkdir -p "$dir"
+  git -C "$PRIMARY" worktree add --quiet -b invoker "$copy"
+  make_backend_stub "$dir" fm-inv
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+  # A real, live pid for the endpoint's own shell, so the selection runs on the
+  # numeric-spare arm and the invoking shell is a different number entirely.
+  pane=$(witness "$TMP_ROOT")
+  printf '%s' "$pane" > "$dir/panepid"
+
+  leftover=$(witness "$copy")
+  write_task_meta inv "$copy" "fmses:fm-inv"
+
+  # The subshell IS the invoker: its working directory is inside the copy, and
+  # it only reaches the marker if it outlived the cleanup it started.
+  out=$(cd "$copy" && run_orphan "$dir" reap inv && printf 'INVOKER-ALIVE\n')
+  case "$out" in
+    *INVOKER-ALIVE*) ;;
+    *) fail "invoker: the shell the cleanup was started from did not survive it: $out" ;;
+  esac
+  sleep 0.3
+  alive "$leftover" && fail "invoker: the leftover was not stopped, so this case proves nothing"
+  alive "$pane" || fail "invoker: the recorded endpoint's own shell was stopped"
+
+  kill -KILL "$pane" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/inv.meta"
+  git -C "$PRIMARY" worktree remove --force "$copy" 2>/dev/null || true
+  pass "a cleanup started from inside the copy stops the leftovers and never the shell that started it"
+}
+
 test_only_a_linked_worktree_is_a_disposable_copy
 test_a_process_in_a_disposable_copy_is_found_and_stopped
 test_a_primary_checkout_is_never_a_target
@@ -1153,3 +1324,6 @@ test_a_removed_working_directory_does_not_make_the_host_unanswerable
 test_each_collect_looks_at_the_machine_again
 test_a_listing_that_cannot_be_produced_is_never_an_empty_machine
 test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
+test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
+test_a_refused_recorded_root_is_reported_rather_than_dropped
+test_a_cleanup_never_signals_the_shell_it_was_started_from

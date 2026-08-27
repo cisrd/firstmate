@@ -809,7 +809,12 @@ record_note() {
 # live owner. Attribution is by working directory alone
 # (bin/fm-worktree-proc-lib.sh); no command name is ever matched.
 #
-# Two things are deliberately spared. The shell of this task's OWN endpoint,
+# Three things are deliberately spared. This invocation's own ancestor chain,
+# because `cd <home>/worktrees/fm-x1 && fm-control.sh x1 relaunch` is exactly how
+# the stuck-crewmate recovery reaches a wedged copy, and the interactive shell it
+# is typed into has its working directory inside that copy like any leftover
+# does; losing the operator's terminal mid-relaunch is not a cleanup. The shell
+# of this task's OWN endpoint,
 # because that endpoint sits in this worktree and the relaunch reuses it - asked
 # of the backend for the recorded target, never inferred from a process's own
 # shape, so a daemon that made itself a session leader inside the copy is still
@@ -830,7 +835,7 @@ record_note() {
 # an operator to different places.
 REAP_RESULT=none
 reap_previous_incarnation() {  # <exit-result>
-  local exit_result=$1 wt_real tmp_real spare agent_now rc=0
+  local exit_result=$1 wt_real tmp_real spare agent_now rc=0 tmp_refused=0
   local -a roots=()
   REAP_RESULT=none
   case "$KIND" in
@@ -856,8 +861,19 @@ reap_previous_incarnation() {  # <exit-result>
     return 0
   fi
   roots+=("$wt_real")
-  if [ -n "$TASK_TMP" ] && tmp_real=$(fm_wtproc_task_tmp "$ID" "$TASK_TMP" "$FM_HOME" 2>/dev/null); then
-    roots+=("$tmp_real")
+  # A recorded temp root that validation turns away is NOT the same as a record
+  # naming no temp root at all: the cleanup below then covers strictly less than
+  # the record claims, and dropping it in silence would let a copy one of whose
+  # roots was never examined be reported as cleaned. On success
+  # fm_wtproc_task_tmp prints the resolved path and nothing else; on refusal it
+  # prints only its reason, so one capture carries both.
+  if [ -n "$TASK_TMP" ]; then
+    if tmp_real=$(fm_wtproc_task_tmp "$ID" "$TASK_TMP" "$FM_HOME" 2>&1); then
+      roots+=("$tmp_real")
+    else
+      tmp_refused=1
+      echo "warning: task $ID's recorded temp root $TASK_TMP was refused, so nothing in it was examined or stopped: ${tmp_real:-no reason given}" >&2
+    fi
   fi
   spare=$(fm_wtproc_endpoint_shell_pid "$BACKEND" "$T" 2>/dev/null) || spare=unknown
   fm_wtproc_reap "task $ID leftover" "$spare" "${roots[@]}" >/dev/null || rc=$?
@@ -889,6 +905,11 @@ reap_previous_incarnation() {  # <exit-result>
   # the one that succeeded.
   [ "$FM_WTPROC_SPARED_LEADERS" -gt 0 ] \
     && REAP_RESULT="$REAP_RESULT+leaders-unclassified:$FM_WTPROC_SPARED_LEADERS"
+  # Same rule for a recorded root the validation refused: the journal has to say
+  # the cleanup covered less than the record names, or a copy with an unexamined
+  # root reads afterwards exactly like one that was fully cleaned.
+  [ "$tmp_refused" = 1 ] \
+    && REAP_RESULT="$REAP_RESULT+tmp-root-refused:$TASK_TMP"
   return 0
 }
 
