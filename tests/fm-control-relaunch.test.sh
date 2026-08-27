@@ -1706,8 +1706,21 @@ test_an_already_stopped_agent_needs_a_second_source_before_any_cleanup() {
   assert_grep "reap=unconfirmed-stop" "$dir/home/state/rl92.control-relaunch" \
     "the transaction record should say the cleanup was withheld"
 
-  # Only the second source changes.
+  # An undetermined current state is the reader failing to answer, not a second
+  # source agreeing: it must not license the cleanup either.
   printf 'unknown' > "$dir/crew"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(FM_WTPROC_CREW_STATE_BIN="$dir/crew-state" FAKE_CREW_STATE_FILE="$dir/crew" \
+    run_control "$dir" rl92 relaunch --note "undetermined state"); rc=$?
+  expect_code 0 "$rc" "the relaunch should still succeed"$'\n'"$out"
+  /bin/sleep 0.3
+  witness_alive "$leftover" \
+    || fail "a process was stopped although the current state could not be determined"
+  assert_grep "reap=unconfirmed-stop" "$dir/home/state/rl92.control-relaunch" \
+    "the transaction record should say the cleanup was withheld"
+
+  # Only the second source changes.
+  printf 'done' > "$dir/crew"
   printf 'zsh' > "$dir/fake/command"
   out=$(FM_WTPROC_CREW_STATE_BIN="$dir/crew-state" FAKE_CREW_STATE_FILE="$dir/crew" \
     run_control "$dir" rl92 relaunch --note "second pass"); rc=$?

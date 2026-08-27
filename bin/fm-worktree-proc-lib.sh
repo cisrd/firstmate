@@ -474,25 +474,36 @@ fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
 }
 
 # fm_wtproc_task_tmp: the per-task temp root fm-spawn records, accepted only when
-# it still resolves to a directory named for this exact task AND clears the same
-# shape refusals the worktree root does.
+# it clears the same shape refusals the worktree root does AND resolves to the
+# one path fm-spawn actually creates for this task.
 #
 # This root cannot prove itself a linked git worktree - it is not a checkout at
-# all - so the name and the depth are all its structure gives. That is precisely
-# why the home and projects/ refusals have to apply here too: without them a
-# record reading `tasktmp=$HOME/projects/fm-x1` would turn every process under
-# the operator's own stack into a target, which is the one thing no root is ever
-# allowed to do.
+# all - so nothing in its own structure vouches for it. A name test cannot
+# stand in for that: matching any directory whose name ends in `fm-<id>` accepts
+# a correctly named root anywhere on the machine, so a stale or hand-edited
+# `tasktmp=` reaches processes that were never this task's. The binding is to
+# the exact path bin/fm-spawn.sh builds - `$FM_TASK_TMP_ROOT/fm-<id>`, with the
+# same /tmp default both sides read - and a record naming anything else is
+# refused rather than reconciled.
+#
+# The home and projects/ refusals still run first, so a record reading
+# `tasktmp=$HOME/projects/fm-x1` is turned away by the boundary that names the
+# operator's own stack, not merely by failing to be the recorded path.
 fm_wtproc_task_tmp() {  # <task-id> <dir> [fm-home]
-  local id=$1 dir=$2 home=${3:-${FM_HOME:-}} real
+  local id=$1 dir=$2 home=${3:-${FM_HOME:-}} real expect expect_real
   [ -n "$id" ] && [ -n "$dir" ] || return 1
   [ -d "$dir" ] || return 1
   real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
-  case "$real" in
-    */"fm-$id") ;;
-    *) echo "fm-worktree-proc: temp root '$real' is not named for task $id" >&2; return 1 ;;
-  esac
   _fm_wtproc_refuse_sensitive_root "$real" "$home" "a task's temp root" || return 1
+  expect="${FM_TASK_TMP_ROOT:-/tmp}/fm-$id"
+  expect_real=$(cd "$expect" 2>/dev/null && pwd -P) || {
+    echo "fm-worktree-proc: task $id has no temp root at $expect" >&2
+    return 1
+  }
+  [ "$real" = "$expect_real" ] || {
+    echo "fm-worktree-proc: temp root '$real' is not task $id's own temp root $expect_real" >&2
+    return 1
+  }
   printf '%s' "$real"
 }
 
@@ -509,11 +520,21 @@ fm_wtproc_task_tmp() {  # <task-id> <dir> [fm-home]
 # whole mechanism exists to stop.
 #
 # <agent-state> is the backend classifier's verdict, read by the caller. Only
-# `dead` and `missing` pass it. Current state then has to agree: `working`,
-# `parked`, `blocked`, and `paused` all mean something is still going on and
-# veto the verdict, as does a read that times out or cannot be taken at all.
-# `done`, `failed`, and `unknown` - the last being what a torn-off worker with no
-# attributed run reads as - let it stand.
+# `dead` and `missing` pass it. Current state then has to agree, and only `done`
+# and `failed` do: they are positive readings of a finished worker. Everything
+# else vetoes the verdict - `working`, `parked`, `blocked`, and `paused` because
+# something is still going on, a read that times out or cannot be taken because
+# there is no second source at all, and `unknown` because it is the reader
+# saying it could not determine the state, which is not agreement that the
+# worker is gone.
+#
+# `unknown` used to let the verdict stand, on the reading that a torn-off worker
+# with no attributed run surfaces that way. It also surfaces that way when the
+# record is stale: observed 2026-08-27 on the captain's host, bin/fm-crew-state.sh
+# read `unknown · backend target gone` for a task whose recorded copy had since
+# been handed to a live task, and treating that as corroboration would have
+# stopped the new owner's processes. An undetermined state is left to the
+# operator, at the cost of reporting a leak instead of clearing it.
 #
 # FM_WTPROC_CREW_STATE is set on EVERY path, including the ones that never reach
 # the reader, so a caller quoting it can never name the wrong blocker: a live
@@ -542,7 +563,7 @@ fm_wtproc_worker_is_gone() {  # <task-id> <agent-state>
   # Exposed so a caller can name the state that vetoed it.
   FM_WTPROC_CREW_STATE=$state
   case "$state" in
-    done|failed|unknown) return 0 ;;
+    done|failed) return 0 ;;
     *) return 1 ;;
   esac
 }

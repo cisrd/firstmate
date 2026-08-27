@@ -2654,14 +2654,41 @@ test_the_digest_names_a_copy_a_gone_worker_left_processes_in() {
   disown
   sleep 0.3
 
-  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  kill -KILL "$pid" 2>/dev/null || true
+  # A current-state reader that answers from a file, so the digest can be shown
+  # both readings of the same copy. `done` is a positive reading of a finished
+  # worker; `unknown` is the reader saying it could not determine the state at
+  # all, which is what a stale record pointing at a reassigned copy also
+  # produces and is never evidence the worker is gone.
+  cat > "$fakebin/crew-state-stub" <<'SH'
+#!/usr/bin/env bash
+printf 'state: %s · source: pane · stub\n' "$(cat "$FAKE_CREW_STATE_FILE" 2>/dev/null || echo unknown)"
+SH
+  chmod +x "$fakebin/crew-state-stub"
+  printf 'done' > "$TMP_ROOT/orphan-leftovers/crew"
+
+  out=$(FM_WTPROC_CREW_STATE_BIN="$fakebin/crew-state-stub" \
+    FAKE_CREW_STATE_FILE="$TMP_ROOT/orphan-leftovers/crew" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "LEFTOVER: lo1" \
     "the digest did not name the copy whose gone worker left a process running"
   assert_contains "$out" "$pid" \
     "the digest named the copy but not the process still running in it"
 
-  pass "the digest names a copy whose gone worker left processes running, and says so when none did"
+  # Same copy, same process, only the current-state reading changes: it is
+  # still reported, but never as a copy whose worker is known to be gone.
+  printf 'unknown' > "$TMP_ROOT/orphan-leftovers/crew"
+  out=$(FM_WTPROC_CREW_STATE_BIN="$fakebin/crew-state-stub" \
+    FAKE_CREW_STATE_FILE="$TMP_ROOT/orphan-leftovers/crew" \
+    run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill -KILL "$pid" 2>/dev/null || true
+  assert_not_contains "$out" "LEFTOVER: lo1" \
+    "a copy was called ownerless although its current state could not be determined"
+  assert_contains "$out" "UNDETERMINED: lo1" \
+    "the digest dropped a copy whose current state could not be determined instead of reporting it"
+  assert_contains "$out" "$pid" \
+    "the digest reported the copy but not the process still running in it"
+
+  pass "the digest names a copy whose gone worker left processes running, separates one whose owner could not be determined, and says so when none did"
 }
 
 test_the_digest_names_a_copy_a_gone_worker_left_processes_in

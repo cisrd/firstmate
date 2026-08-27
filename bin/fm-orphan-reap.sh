@@ -53,7 +53,10 @@
 #   - The agent must read positively dead or missing AND the task's current
 #     state must agree, from a second, independent source. A backend classifier
 #     was observed calling a running worker dead, so neither source decides
-#     alone.
+#     alone. Only `done` and `failed` agree: an undetermined reading is the
+#     second source declining to answer, and a stale record pointing at a copy
+#     since handed to a live task reads exactly that way. Such a copy is
+#     reported as UNDETERMINED and a reap of it is refused.
 #   - The shell of the task's OWN recorded endpoint is spared, so a copy stays
 #     relaunchable - identified from that record (the backend's pane pid) and
 #     never inferred from a process's own shape. A session leader that is not
@@ -170,13 +173,16 @@ listening_ports() {  # <pid>...
   '
 }
 
-# scan_task answers with three different facts, and they may never be folded
+# scan_task answers with four different facts, and they may never be folded
 # into one:
 #   0  something is reported on stdout (LEFTOVER, UNRESOLVED, UNSCANNABLE)
 #   1  this copy was looked at and has nothing to report
 #   3  this copy could NOT be looked at, so it is not known to be clean
+#   4  processes are reported (UNDETERMINED) but the copy's owner could not be
+#      established, so they are for an operator to judge and never for a reap
 scan_task() {  # <task-id> <verbose>
   local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
+  local undetermined=0 label
   local -a roots=()
   meta="$STATE/$id.meta"
   [ -f "$meta" ] || {
@@ -221,8 +227,18 @@ scan_task() {  # <task-id> <verbose>
   # bin/fm-worktree-proc-lib.sh's fm_wtproc_worker_is_gone for the observed
   # misclassification that makes this gate load-bearing.
   if ! fm_wtproc_worker_is_gone "$id" "$verdict"; then
-    [ "$verbose" = 1 ] && echo "task $id's endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; the two disagree, so nothing in its local copy is touched" >&2
-    return 1
+    # `unknown` is the current-state reader saying it could not determine the
+    # state. That is not a second source agreeing the worker is gone, so it
+    # never licenses a stop - but it is not a positive reading of a live worker
+    # either, and the copy of a torn-off worker commonly reads exactly this
+    # way. Reporting it and refusing to act on it are the two halves of the
+    # same answer: an operator sees the leak, and only an operator judges it.
+    if [ "${FM_WTPROC_CREW_STATE:-}" = unknown ]; then
+      undetermined=1
+    else
+      [ "$verbose" = 1 ] && echo "task $id's endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; the two disagree, so nothing in its local copy is touched" >&2
+      return 1
+    fi
   fi
   # Only now, for a copy that really has no living owner, is it worth asking the
   # backend which shell belongs to the endpoint - and it is asked of the task's
@@ -250,13 +266,16 @@ scan_task() {  # <task-id> <verbose>
   ports=$(listening_ports $pids)
   note=""
   [ "$skipped" -gt 0 ] && note=" leaders_skipped=$skipped"
-  printf 'LEFTOVER: %s agent=%s copy=%s pids=%s%s%s\n' \
-    "$id" "$verdict" "${roots[0]}" "$(printf '%s' "$pids" | tr ' ' ',')" \
+  label=LEFTOVER
+  [ "$undetermined" = 1 ] && label=UNDETERMINED
+  printf '%s: %s agent=%s copy=%s pids=%s%s%s\n' \
+    "$label" "$id" "$verdict" "${roots[0]}" "$(printf '%s' "$pids" | tr ' ' ',')" \
     "${ports:+ listening=$ports}" "$note"
+  [ "$undetermined" = 0 ] || return 4
 }
 
 cmd_scan() {
-  local want="" found=0 unscannable=0 meta id rc
+  local want="" found=0 unscannable=0 undetermined=0 meta id rc
   while [ $# -gt 0 ]; do
     case "$1" in
       --task) shift; want=${1:-}; [ -n "$want" ] || die "--task needs a task id" ;;
@@ -270,6 +289,7 @@ cmd_scan() {
     case "$rc" in
       0) found=1 ;;
       3) found=1; unscannable=1 ;;
+      4) found=1; undetermined=1 ;;
     esac
   else
     # One listing of the machine for the whole sweep: this command signals
@@ -286,6 +306,7 @@ cmd_scan() {
       case "$rc" in
         0) found=1 ;;
         3) found=1; unscannable=1 ;;
+        4) found=1; undetermined=1 ;;
       esac
     done
     fm_wtproc_snapshot_end
@@ -293,6 +314,9 @@ cmd_scan() {
   [ "$found" = 1 ] || return 0
   echo "Each LEFTOVER line names a local copy whose worker is gone while processes it started are still running."
   echo "An UNRESOLVED line names one where the endpoint's own shell could not be identified from the record, so its session leaders were left unclassified rather than guessed at; inspect those by hand."
+  if [ "$undetermined" = 1 ]; then
+    echo "An UNDETERMINED line names one whose endpoint is gone while its current state could not be read at all; its processes are reported but never stopped for you, because an undetermined state is not evidence the worker is gone."
+  fi
   if [ "$unscannable" = 1 ]; then
     echo "An UNSCANNABLE line names a copy this host could not list at all; it was not examined, so nothing about it - clean or leaking - was established."
   fi
@@ -314,6 +338,9 @@ cmd_reap() {  # <task-id>
   scan_task "$id" 1 >/dev/null || scan_rc=$?
   case "$scan_rc" in
     0) ;;
+    4)
+      die "task $id's endpoint is gone but its current state could not be determined; an undetermined state is not evidence its worker is gone - the same reading a stale record pointing at a reassigned copy produces - so nothing was stopped. Inspect the copy and its processes by hand"
+      ;;
     3)
       # "Nothing to stop" would be a claim about the copy; all that is known
       # here is that the copy could not be read.

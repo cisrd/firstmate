@@ -26,7 +26,9 @@
 #      never classified is never mistaken for a clean one.
 #   8. A per-task temp root gets the same home and projects/ refusals the
 #      worktree root gets, so a record naming the operator's own tree as a
-#      second reap root reaches nothing.
+#      second reap root reaches nothing - and it has to BE the one path
+#      fm-spawn creates for that task, so a correctly named directory anywhere
+#      else on the machine is refused rather than reaped.
 #   9. The reap tells the truth about its own outcome: a scan that broke BEFORE
 #      anything was signalled, a scan that broke AFTER, and a process that
 #      outlived the force-stop are three different answers, never one "done".
@@ -51,6 +53,13 @@ COPY="$TMP_ROOT/copy"
 HOME_DIR="$TMP_ROOT/home"
 IN_PROJECTS="$HOME_DIR/projects/clone"
 PLAIN="$TMP_ROOT/plain"
+
+# bin/fm-spawn.sh builds each task's temp root as $FM_TASK_TMP_ROOT/fm-<id> and
+# fm_wtproc_task_tmp rebuilds the same path to check a record against it. Point
+# both at this suite's own tree so the binding is exercised for real instead of
+# writing into the host's /tmp.
+FM_TASK_TMP_ROOT="$TMP_ROOT"
+export FM_TASK_TMP_ROOT
 
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/projects" "$PLAIN"
 fm_git_worktree "$PRIMARY" "$COPY" task-branch
@@ -198,13 +207,14 @@ printf 'state: %s · source: pane · stub
 ' "$(cat "$FAKE_CREW_STATE_FILE" 2>/dev/null || echo unknown)"
 SH
   chmod +x "$1/crew-state"
-  printf 'unknown' > "$1/crew"
+  printf 'done' > "$1/crew"
 }
 
 run_orphan() {  # <case-dir> <args...>
   local dir=$1; shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$HOME_DIR" \
       FM_STATE_OVERRIDE="$HOME_DIR/state" FM_WTPROC_GRACE=1 \
+      FM_TASK_TMP_ROOT="$FM_TASK_TMP_ROOT" \
       FAKE_AGENT_FILE="$dir/agent" FAKE_REAL_PS="$(command -v ps)" \
       FAKE_CREW_STATE_FILE="$dir/crew" FAKE_PANE_PID_FILE="$dir/panepid" \
       FM_WTPROC_CREW_STATE_BIN="$dir/crew-state" \
@@ -395,7 +405,7 @@ test_a_disagreeing_current_state_vetoes_the_verdict() {
 
   # Only the second source changes: the case is proven to hinge on the
   # agreement and not on anything else in the fixture.
-  printf 'unknown' > "$dir/crew"
+  printf 'done' > "$dir/crew"
   out=$(run_orphan "$dir" scan)
   case "$out" in
     *"LEFTOVER: dis"*) ;;
@@ -568,6 +578,61 @@ test_a_copy_with_only_unclassifiable_leaders_is_never_reported_clean() {
   pass "a session-leader daemon is reported and stopped once the record names the endpoint's shell, and that shell never is"
 }
 
+# --- 4c. an undetermined current state is not agreement ----------------------
+#
+# `unknown` is the current-state reader saying it could not determine the state,
+# not a second source agreeing the worker is gone. Observed 2026-08-27 on the
+# captain's host: bin/fm-crew-state.sh read `unknown - backend target gone` for
+# a task whose recorded copy had since been handed to a live task, so treating
+# that reading as corroboration would have stopped the new owner's processes.
+
+test_an_undetermined_current_state_never_authorises_a_stop() {
+  local dir pid out
+  dir="$TMP_ROOT/case-undetermined"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-und
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+  printf 'unknown' > "$dir/crew"
+
+  pid=$(witness "$COPY")
+  write_task_meta und "$COPY" "fmses:fm-und"
+
+  # The leak is still REPORTED - a torn-off worker's copy commonly reads this
+  # way, and hiding it would trade one silent failure for another - but it is
+  # never called ownerless and never stopped for the operator.
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"LEFTOVER: und"*) fail "undetermined: a copy was called ownerless on an undetermined current state: $out" ;;
+  esac
+  case "$out" in
+    *"UNDETERMINED: und"*"$pid"*) ;;
+    *) fail "undetermined: the copy's processes were not reported at all: $out" ;;
+  esac
+  out=$(run_orphan "$dir" reap und 2>&1) || true
+  case "$out" in
+    *"not evidence its worker is gone"*) ;;
+    *) fail "undetermined: an explicit cleanup did not refuse the undetermined state: $out" ;;
+  esac
+  sleep 0.3
+  alive "$pid" || fail "undetermined: a process was stopped although the current state could not be determined"
+
+  # Only the second source changes: a state the reader could actually determine
+  # lets the same fixture through, so this case hinges on `unknown` alone.
+  printf 'done' > "$dir/crew"
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"LEFTOVER: und"*) ;;
+    *) fail "undetermined: the same copy was not reported once the state was determined: $out" ;;
+  esac
+  run_orphan "$dir" reap und >/dev/null
+  sleep 0.3
+  alive "$pid" && fail "undetermined: the copy's process survived a determined agreeing state"
+
+  rm -f "$HOME_DIR/state/und.meta"
+  pass "an undetermined current state reports the leak but never authorises a stop, while a determined one does"
+}
+
 # --- 8. the per-task temp root is a reap root and gets the same refusals ------
 
 test_a_temp_root_in_the_operators_tree_is_never_a_reap_root() {
@@ -621,6 +686,64 @@ test_a_temp_root_in_the_operators_tree_is_never_a_reap_root() {
   kill -KILL "$pid_in_projects" 2>/dev/null || true
   rm -f "$HOME_DIR/state/tmpguard.meta"
   pass "a per-task temp root pointing into the operator's own tree is refused, and nothing in it is ever signalled"
+}
+
+# --- 8b. the temp root has to be THIS task's own temp root -------------------
+#
+# fm-spawn creates exactly one temp root per task, at $FM_TASK_TMP_ROOT/fm-<id>.
+# A name test would accept any directory on the machine whose name happens to
+# end that way, so a stale or hand-edited `tasktmp=` could point a cleanup at a
+# tree this task never owned.
+
+test_a_temp_root_outside_the_recorded_path_is_refused() {
+  local own elsewhere rc out dir pid_elsewhere pid_in_copy
+
+  own="$FM_TASK_TMP_ROOT/fm-bindx"
+  mkdir -p "$own"
+  out=$(fm_wtproc_task_tmp bindx "$own" "$HOME_DIR" 2>&1) \
+    || fail "temp-root-binding: this task's own temp root was refused: $out"
+  [ "$out" = "$own" ] || fail "temp-root-binding: expected $own, got $out"
+
+  # Correctly named for the task, clear of the home and projects/ boundaries,
+  # and still not the root fm-spawn made: the only thing that differs is where
+  # it sits.
+  elsewhere="$TMP_ROOT/elsewhere/fm-bindx"
+  mkdir -p "$elsewhere"
+  rc=0
+  out=$(fm_wtproc_task_tmp bindx "$elsewhere" "$HOME_DIR" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "temp-root-binding: a correctly named temp root outside the recorded path was accepted"
+  case "$out" in
+    *"is not task bindx's own temp root"*) ;;
+    *) fail "temp-root-binding: the refusal did not name its cause: $out" ;;
+  esac
+
+  # End to end: a record naming that impostor reaches nothing in it, while the
+  # task's real copy is still cleaned.
+  dir="$TMP_ROOT/case-tmpbinding"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-bindx
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+  printf 'fakepane' > "$dir/panepid"
+  pid_elsewhere=$(witness "$elsewhere")
+  pid_in_copy=$(witness "$COPY")
+  write_task_meta bindx "$COPY" "fmses:fm-bindx" "$elsewhere"
+
+  out=$(run_orphan "$dir" scan --task bindx)
+  case "$out" in
+    *"$pid_elsewhere"*) fail "temp-root-binding: a process outside the task's own temp root was attributed to it: $out" ;;
+  esac
+  run_orphan "$dir" reap bindx >/dev/null
+  sleep 0.3
+  alive "$pid_elsewhere" \
+    || fail "temp-root-binding: a process outside the task's own temp root was stopped"
+  alive "$pid_in_copy" \
+    && fail "temp-root-binding: the task's real copy was not cleaned"
+
+  kill -KILL "$pid_elsewhere" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/bindx.meta"
+  pass "a temp root that is not the one recorded for this task is refused, and nothing in it is reached"
 }
 
 # --- 9. the reap's account of its own outcome --------------------------------
@@ -1015,11 +1138,13 @@ test_a_process_in_a_disposable_copy_is_found_and_stopped
 test_a_primary_checkout_is_never_a_target
 test_a_live_workers_processes_are_never_stopped
 test_a_disagreeing_current_state_vetoes_the_verdict
+test_an_undetermined_current_state_never_authorises_a_stop
 test_an_unreadable_working_directory_leaves_the_process_alone
 test_only_the_recorded_endpoint_shell_is_spared
 test_an_unnameable_endpoint_shell_holds_leaders_back_and_says_how_many
 test_a_copy_with_only_unclassifiable_leaders_is_never_reported_clean
 test_a_temp_root_in_the_operators_tree_is_never_a_reap_root
+test_a_temp_root_outside_the_recorded_path_is_refused
 test_the_reap_distinguishes_a_scan_that_broke_before_a_signal_from_one_after
 test_a_scan_that_breaks_between_selecting_and_signalling_names_the_root
 test_a_process_that_outlives_the_force_stop_is_never_reported_stopped

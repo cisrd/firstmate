@@ -845,7 +845,8 @@ done
 # closed - leaves whatever it started running in its local copy, with nothing
 # left to stop it. Surfaced from disk here because that is precisely the case no
 # live supervision cycle was watching. Read-only: bin/fm-orphan-reap.sh's header
-# owns why nothing is stopped automatically.
+# owns why nothing is stopped automatically, and why a copy whose owner could
+# not be established is reported under its own label rather than folded in.
 subsection "Processes left in a gone worker's local copy"
 # Bounded: this section reports, and a reader that cannot answer in time must
 # not hold up a session start. The per-task corroboration read is bounded well
