@@ -69,7 +69,11 @@ It is not deterministic across the verified adapters: codex, grok, and gemini re
    A ship or scout relaunch requires `--note`, because the replacement inherits the local copy but none of the conversation; the note is appended to the instructions it reads.
    A secondmate relaunch does not require one and never rewrites its standing charter.
 4. **Stop the old agent** through the `exit` verb, with its postcondition.
-5. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
+5. **Stop what the previous incarnation left running** in that same local copy, so the replacement never inherits a server, watcher, or queue worker it did not start.
+   Attribution is the process's real working directory and nothing else, never a command name; this task's own endpoint shell is spared because the relaunch reuses it; a `kind=secondmate` task is skipped because its recorded worktree is its firstmate home rather than a disposable copy.
+   A cleanup that cannot be completed warns, records what it did as the journal's `reap=` field, and lets the relaunch finish rather than stranding the task with no agent.
+   [`bin/fm-worktree-proc-lib.sh`](../bin/fm-worktree-proc-lib.sh)'s header owns which processes belong to a copy and the guards that keep every answer inside it.
+6. **Launch the replacement** through its single owner, `bin/fm-spawn.sh --relaunch`, which adopts the recorded endpoint and worktree instead of creating either, clears the previous harness's per-task wiring, and arms a fresh busy generation.
 
 Switching harness is therefore one ordinary relaunch rather than a separate mechanism.
 
@@ -119,5 +123,5 @@ The empirical basis for each adapter's value is the `harness-adapters` skill's v
 ## Verification
 
 - `tests/fm-control.test.sh` - the adapter contract for every verified harness, the backend capability matrix, exact-id scoping, the closed verb list, the busy, idle, dead, and idempotent lifecycle cases, and marker non-regression, all against a stubbed session provider.
-- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, and rollback after a failed launch.
+- `tests/fm-control-relaunch.test.sh` - the relaunch transaction: identity preservation, harness switching, the progress note, checkpoint refusals, the leftover-process cleanup and what it spares, and rollback after a failed launch.
 - `tests/fm-control-herdr-smoke.test.sh` - the second state-verified backend against the real herdr binary, on an isolated throwaway lab session.
