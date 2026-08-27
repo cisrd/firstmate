@@ -46,6 +46,10 @@
 # that convention rather than mirror the GitHub default.
 # Those same forge-decides tokens are refused up front on GitLab, where no glab
 # flag spells them.
+# Combining a forge-decides token with an explicit GitHub strategy (--squash,
+# --merge, --rebase, or --method other than queue) is refused before the forge
+# is called: dropping only the queue token would silently forward the strategy,
+# and a merge-queue branch would reject that merge.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -203,6 +207,50 @@ reject_forge_decides_method() {
   done
 }
 
+# GitHub-only: a forge-decides token plus an explicit strategy is two method
+# requests. Dropping only the queue token would forward the strategy and a
+# merge-queue branch would reject the merge, so name both and refuse before
+# anything is recorded.
+reject_conflicting_forge_decides_method() {
+  local arg prev='' forge_decides='' explicit=''
+  for arg in "$@"; do
+    if [ "$prev" = --method ]; then
+      if [ "$arg" = queue ]; then
+        forge_decides="${forge_decides:+$forge_decides }--method queue"
+      else
+        explicit="${explicit:+$explicit }--method $arg"
+      fi
+      prev=
+      continue
+    fi
+    case "$arg" in
+      --no-method)
+        forge_decides="${forge_decides:+$forge_decides }--no-method"
+        ;;
+      --method=queue)
+        forge_decides="${forge_decides:+$forge_decides }--method=queue"
+        ;;
+      --squash|--merge|--rebase)
+        explicit="${explicit:+$explicit }$arg"
+        ;;
+      --method=*)
+        explicit="${explicit:+$explicit }$arg"
+        ;;
+      --method)
+        prev=--method
+        ;;
+    esac
+  done
+  if [ "$prev" = --method ]; then
+    explicit="${explicit:+$explicit }--method"
+  fi
+  if [ -n "$forge_decides" ] && [ -n "$explicit" ]; then
+    printf 'error: extra merge arguments must not combine a forge-decides method (%s) with an explicit merge strategy (%s)\n' \
+      "$forge_decides" "$explicit" >&2
+    return 1
+  fi
+}
+
 reject_repo_overrides() {
   local arg
   for arg in "$@"; do
@@ -237,6 +285,7 @@ reject_head_overrides() {
 reject_repo_overrides "$@" || exit 1
 [ "$PROVIDER" != gitlab ] || reject_head_overrides "$@" || exit 1
 [ "$PROVIDER" != gitlab ] || reject_forge_decides_method "$@" || exit 1
+[ "$PROVIDER" != github ] || reject_conflicting_forge_decides_method "$@" || exit 1
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
