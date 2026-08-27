@@ -114,8 +114,22 @@ pass "empty input returns no reading"
 # shellcheck disable=SC2016  # the $ is a literal currency sign in displayed content
 CONTENT_ABOVE=$(printf 'we used ↓ 9.9k tokens last run and it cost $4.20\n%s\n' 'x')
 FILLER=$(for i in $(seq 1 20); do printf 'line %s\n' "$i"; done)
-[ "$(counters_of "$(printf '%s\n%s\n• Working (6s • esc to interrupt)\n' "$CONTENT_ABOVE" "$FILLER")")" = NONE ] \
+[ "$(counters_of "$(printf '%s\n%s\nWorking (6s - esc to interrupt)\n' "$CONTENT_ABOVE" "$FILLER")")" = NONE ] \
   || fail "token-shaped text scrolled above the footer was read as progress"
 pass "token-shaped text outside the footer region is not read as progress"
+
+# The footer window is deliberately narrow - six non-blank lines, the size this
+# repo already settled on so lookalike strings in displayed content cannot drive
+# a verdict. Seven lines up is transcript, not footer, and must stay invisible
+# even though it is much closer than the twenty-line case above.
+# shellcheck disable=SC2016  # the $ is a literal currency sign in displayed content
+SEVEN_UP=$(printf 'the run cost $4.20 and burned ↓ 9.9k tokens\nl1\nl2\nl3\nl4\nl5\nWorking (6s - esc to interrupt)\n')
+[ "$(counters_of "$SEVEN_UP")" = NONE ] \
+  || fail "counter-shaped text seven non-blank lines up was read as progress: $(counters_of "$SEVEN_UP")"
+# ... while a real meter on the status line itself, at the same depth, is read.
+SIX_DOWN=$(printf 'l1\nl2\nl3\nl4\nl5\nPollinating... (16s - ↓ 1.1k tokens)\n')
+has_counter "$SIX_DOWN" 'tok:down=1.1k' \
+  || fail "a real meter on the status line was missed inside the footer window: $(counters_of "$SIX_DOWN")"
+pass "the footer window is narrow enough to exclude nearby transcript and wide enough to keep the status line"
 
 echo "# fm-progress-lib.test.sh: all assertions passed"
