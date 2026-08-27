@@ -150,7 +150,7 @@ task_roots() {  # <task-id> <meta> <verbose>
   # actually decided.
   if ! wt_out=$(fm_wtproc_disposable_worktree "$wt" "$FM_HOME" 2>&1); then
     if [ "$verbose" = 1 ]; then
-      echo "task $id: recorded local copy '$wt' was refused, so it was NOT examined: ${wt_out:-no reason was given}" >&2
+      echo "task $id: recorded local copy '$wt' was refused, so it was NOT examined: ${wt_out:-the local-copy check refused it without stating a reason; inspect that path by hand}" >&2
     fi
     return 1
   fi
@@ -506,7 +506,7 @@ cmd_reap() {  # <task-id>
   case "$scan_rc" in
     0) ;;
     4)
-      die "task $id's local copy holds processes whose owner could not be established: ${SCAN_UNDETERMINED_WHY:-no reason was recorded}. An undetermined reading is not evidence its worker is gone - it is the same reading a stale record pointing at a copy since handed to a live task produces - so nothing was stopped. Inspect the copy and its processes by hand"
+      die "task $id's local copy holds processes whose owner could not be established: ${SCAN_UNDETERMINED_WHY:-the reason was not recorded; read the scan line for this task and inspect the copy by hand}. An undetermined reading is not evidence its worker is gone - it is the same reading a stale record pointing at a copy since handed to a live task produces - so nothing was stopped. Inspect the copy and its processes by hand"
       ;;
     5)
       die "task $id runs on a backend with no agent classifier, so whether its worker is still alive cannot be established at all; a stop needs positive evidence the worker is gone and none can be obtained here. Inspect the copy and its processes by hand"

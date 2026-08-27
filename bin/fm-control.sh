@@ -844,16 +844,36 @@ reap_previous_incarnation() {  # <exit-result>
   esac
   # `stopped` means this run delivered the exit command and watched the agent
   # go, which is proof enough on its own. `already-stopped` means the agent was
-  # only ever READ as gone, and a backend classifier has been observed calling a
-  # running worker dead, so that reading has to be corroborated by the
-  # independent current-state source before anything is signalled.
+  # only ever READ as gone, so the endpoint is asked again here and must still
+  # read gone before anything in the copy is signalled - a live agent's
+  # processes are never touched, on any path.
+  #
+  # The endpoint is the WHOLE test on this path, and deliberately so. This used
+  # to also require the current-state reader to say `done` or `failed`, and that
+  # requirement - correct on the detection path, where nobody is replacing
+  # anybody and the worker may well be alive - closed the cleanup in exactly the
+  # case it was written for. A worker killed mid-run by quota exhaustion leaves
+  # the endpoint reading `dead` while the current state still reads `working`,
+  # from a no-mistakes run that never got to finish or from the status log's
+  # last `working` verb. That is the shape of the incident on 2026-08-27, so the
+  # cleanup withheld precisely on the process that saturated the host.
+  #
+  # Here there is no living owner for that second source to protect. Firstmate
+  # is replacing this worker, deliberately, at this moment: the copy has a known
+  # owner and it is being retired by the caller. A stale `working` verb is not
+  # evidence of a worker to defend, and treating it as one costs the batch its
+  # own purpose. bin/fm-orphan-reap.sh's detection path keeps the two-source
+  # requirement unchanged, because there nobody is replacing anybody.
   if [ "$exit_result" != stopped ]; then
     agent_now=$(agent_state)
-    if ! fm_wtproc_worker_is_gone "$ID" "$agent_now"; then
-      echo "warning: task $ID's agent was already recorded as stopped, but its endpoint now reads '$agent_now' and its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; leaving every process in its local copy alone" >&2
-      REAP_RESULT="unconfirmed-stop"
-      return 0
-    fi
+    case "$agent_now" in
+      dead|missing) ;;
+      *)
+        echo "warning: task $ID's agent was already recorded as stopped, but its endpoint now reads '$agent_now' rather than gone; leaving every process in its local copy alone" >&2
+        REAP_RESULT="unconfirmed-stop"
+        return 0
+        ;;
+    esac
   fi
   if ! wt_real=$(fm_wtproc_disposable_worktree "$WT" "$FM_HOME"); then
     echo "warning: task $ID's local copy $WT could not be confirmed disposable; leaving every process in it alone" >&2

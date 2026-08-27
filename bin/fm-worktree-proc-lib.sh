@@ -31,6 +31,25 @@
 # NOT evidence of anything: such a process is skipped and left alone. Nothing
 # here ever signals a pid it could not positively place inside the copy.
 #
+# A pid that has GONE between the listing and the reading of it is dropped at
+# the same point, and that is not an optimisation. A scan is itself a process
+# tree: taking the machine listing needs command substitutions, whose subshells
+# inherit the caller's working directory and are in /proc when the listing's
+# glob expands. Run from inside the very copy being scanned - which is where an
+# operator naturally stands - the scanner therefore lists its OWN helpers as
+# occupants of the copy. They have exited by the time anything reads the
+# result, so re-checking the entry at the point of collection removes them and
+# nothing else: a scanner that reports its own helpers as leftovers discredits
+# every line it prints.
+#
+# Two things this deliberately is NOT. It is not exclusion by descent: a genuine
+# leftover is frequently a descendant of the shell a cleanup is run from, so
+# excluding descendants would hide exactly what this exists to find. And it is
+# not a `kill -0` probe, which answers "may I signal it" rather than "is it
+# there" - another user's process fails that probe while being very much alive,
+# and dropping it would let a teardown remove a copy with a live foreign
+# process still in it.
+#
 # Sparing the endpoint's shell is POSITIVE IDENTIFICATION, never an inference.
 # The paths that reuse a terminal endpoint must not close it, and the shell that
 # endpoint runs sits in the task copy like any leftover does. That shell is
@@ -310,8 +329,14 @@ _fm_wtproc_pids_under_proc() {  # <real-dir>
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     [ "$pid" = "$self" ] && continue
     [ "$pid" = "$$" ] && continue
+    # Still there? The entry is re-checked against /proc rather than probed with
+    # a signal. `kill -0` answers "may I signal it", which is a different
+    # question: another user's process fails that test while being very much
+    # alive, and dropping it would let a teardown remove a copy with a live
+    # foreign process still sitting in it. Directory existence is the exact
+    # question and is permission-independent.
     case "$link" in
-      "$dir"|"$dir"/*) printf '%s\n' "$pid" ;;
+      "$dir"|"$dir"/*) [ -e "$root/$pid" ] && printf '%s\n' "$pid" ;;
     esac
   done <<EOF
 $_FM_WTPROC_LISTING

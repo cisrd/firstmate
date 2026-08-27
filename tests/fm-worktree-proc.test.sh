@@ -1414,6 +1414,59 @@ test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable() {
   pass "a temp root that no longer exists is not reported as unexaminable, while a present-but-refused one still is"
 }
 
+# --- 12c. the scanner never reports its own helpers as leftovers -------------
+#
+# A scan is itself a process tree. Taking the machine listing needs command
+# substitutions, and those subshells inherit the caller's working directory, so
+# a scan run from INSIDE the copy being scanned - where an operator naturally
+# stands - finds its own helpers sitting in that copy and reports them as
+# leftovers. They have already exited by the time anything reads the result.
+# A scanner that reports its own helpers discredits every line it prints, which
+# is the same disease as the false alarms removed in the previous round.
+#
+# The fix must be a liveness test at collection, NOT a descendant walk: a
+# genuine leftover is frequently a descendant of the shell the cleanup is run
+# from, and excluding by descent would hide exactly what this exists to find.
+
+test_a_scan_from_inside_a_copy_never_reports_its_own_helpers() {
+  local dir copy out rc pid
+  dir="$TMP_ROOT/case-self-noise"
+  copy="$TMP_ROOT/copy-self-noise"
+  mkdir -p "$dir"
+  git -C "$PRIMARY" worktree add --quiet -b self-noise "$copy"
+  make_backend_stub "$dir" fm-selfnoise
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+  printf 'done' > "$dir/crew"
+  write_task_meta selfnoise "$copy" "fmses:fm-selfnoise"
+
+  # The copy is EMPTY: anything reported for it can only have come from the
+  # scanner's own process tree.
+  rc=0
+  out=$(cd "$copy" && run_orphan "$dir" scan --task selfnoise) || rc=$?
+  case "$out" in
+    *"LEFTOVER: selfnoise"*)
+      fail "self-noise: a scan run from inside an empty copy reported its own helpers as leftovers: $out" ;;
+  esac
+  case "$out" in
+    *selfnoise*)
+      fail "self-noise: an empty copy was reported at all when the scan ran from inside it: $out" ;;
+  esac
+
+  # The control: a REAL leftover in that copy is still found by the same
+  # inside-the-copy scan, so the fix cannot have been "report nothing".
+  pid=$(witness "$copy")
+  out=$(cd "$copy" && run_orphan "$dir" scan --task selfnoise)
+  case "$out" in
+    *"LEFTOVER: selfnoise"*"$pid"*) ;;
+    *) fail "self-noise: a real leftover stopped being found by a scan run from inside the copy: $out" ;;
+  esac
+
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/selfnoise.meta"
+  pass "a scan run from inside a copy reports no helpers of its own, and still finds a real leftover there"
+}
+
 # --- 13. the resolver self-test runs once per observation, not once per root --
 
 test_the_resolver_self_test_is_not_repeated_for_every_root() {
@@ -1571,5 +1624,6 @@ test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
 test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
 test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable
+test_a_scan_from_inside_a_copy_never_reports_its_own_helpers
 test_the_resolver_self_test_is_not_repeated_for_every_root
 test_a_cleanup_never_signals_the_shell_it_was_started_from

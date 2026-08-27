@@ -1687,48 +1687,60 @@ SH
   pass "fm-control relaunch: a cleanup that could not be verified still records the leaders it never classified"
 }
 
-test_an_already_stopped_agent_needs_a_second_source_before_any_cleanup() {
+# THE INCIDENT'S OWN SHAPE. On 2026-08-27 a worker was killed mid-run when its
+# engine hit its quota limit, and the server it had started outlived it by eight
+# and a half hours. That worker leaves the endpoint reading gone while the
+# current-state reader still reports `working` - from a no-mistakes run that
+# never got to finish, or from the status log's last `working` verb. Requiring
+# that second source to say `done` or `failed` before cleaning up therefore shut
+# the cleanup off in precisely the case it was written for.
+#
+# On this path there is no living owner for that second source to protect:
+# firstmate is replacing this worker, deliberately, at this moment. The endpoint
+# is the whole test here, and the control arm below keeps the guardrail that
+# matters - an endpoint that reads alive is never cleaned up after.
+#
+# bin/fm-orphan-reap.sh's detection path is unchanged and still requires both
+# sources, because there nobody is replacing anybody.
+test_a_quota_killed_worker_is_cleaned_up_despite_a_stale_working_verb() {
   local dir out rc leftover
-  dir=$(new_case leftover-unconfirmed rl92)
+  dir=$(new_case leftover-incident-shape rl92)
   add_ship_task "$dir" rl92 claude
   # The endpoint already reads agent-free, so the relaunch never delivers an
-  # exit and never watches the agent go - it only READS it as gone.
+  # exit and never watches the agent go - it only READS it as gone. This is what
+  # a worker whose engine stopped overnight leaves behind.
   printf 'zsh' > "$dir/fake/command"
+  # ... while the current state still reads `working`, the stale verb the dead
+  # worker never got to update.
   make_crew_state_stub "$dir" working
   leftover=$(witness "$dir/wt")
 
   out=$(FM_WTPROC_CREW_STATE_BIN="$dir/crew-state" FAKE_CREW_STATE_FILE="$dir/crew" \
-    run_control "$dir" rl92 relaunch --note "endpoint looked empty"); rc=$?
-  expect_code 0 "$rc" "the relaunch should still succeed"$'\n'"$out"
-  /bin/sleep 0.3
+    run_control "$dir" rl92 relaunch --note "engine stopped overnight"); rc=$?
+  expect_code 0 "$rc" "the relaunch should succeed"$'\n'"$out"
+  /bin/sleep 0.5
   witness_alive "$leftover" \
-    || fail "a process was stopped although the current state said the worker was still working"
-  assert_grep "reap=unconfirmed-stop" "$dir/home/state/rl92.control-relaunch" \
-    "the transaction record should say the cleanup was withheld"
+    && fail "incident-shape: the process the dead worker left running survived the relaunch that replaced it"
+  assert_grep "reap=stopped:$leftover" "$dir/home/state/rl92.control-relaunch" \
+    "the transaction record should name the process it stopped"
 
-  # An undetermined current state is the reader failing to answer, not a second
-  # source agreeing: it must not license the cleanup either.
-  printf 'unknown' > "$dir/crew"
-  printf 'zsh' > "$dir/fake/command"
-  out=$(FM_WTPROC_CREW_STATE_BIN="$dir/crew-state" FAKE_CREW_STATE_FILE="$dir/crew" \
-    run_control "$dir" rl92 relaunch --note "undetermined state"); rc=$?
-  expect_code 0 "$rc" "the relaunch should still succeed"$'\n'"$out"
-  /bin/sleep 0.3
-  witness_alive "$leftover" \
-    || fail "a process was stopped although the current state could not be determined"
-  assert_grep "reap=unconfirmed-stop" "$dir/home/state/rl92.control-relaunch" \
-    "the transaction record should say the cleanup was withheld"
-
-  # Only the second source changes.
-  printf 'done' > "$dir/crew"
-  printf 'zsh' > "$dir/fake/command"
-  out=$(FM_WTPROC_CREW_STATE_BIN="$dir/crew-state" FAKE_CREW_STATE_FILE="$dir/crew" \
-    run_control "$dir" rl92 relaunch --note "second pass"); rc=$?
-  expect_code 0 "$rc" "the second relaunch should succeed"$'\n'"$out"
-  /bin/sleep 0.3
-  witness_alive "$leftover" \
-    && fail "the leftover survived even once both sources agreed the worker was gone"
-  pass "fm-control relaunch: an agent only READ as stopped needs a second source before anything is signalled"
+  # No live-agent control arm belongs here, and it is worth saying why rather
+  # than shipping one that asserts the wrong thing. On this path do_exit has
+  # already settled the agent before the cleanup is reached: it returns
+  # `stopped` only after watching a live agent go, returns `already-stopped`
+  # only when it read the endpoint as dead, and dies on every other reading. A
+  # fixture with a live agent therefore exercises the commanded-stop path, where
+  # cleaning up is exactly right - it proves nothing about restraint. The
+  # remaining guard (the endpoint re-read below the exit) covers only the narrow
+  # race where the agent returns between the two reads, which cannot be driven
+  # through this CLI.
+  #
+  # The restraint that CAN be driven lives on the detection path, which this
+  # ruling deliberately left alone: tests/fm-worktree-proc.test.sh's
+  # test_a_disagreeing_current_state_vetoes_the_verdict pins that the same
+  # endpoint-dead-plus-state-working shape is still REFUSED there, where nobody
+  # is replacing anybody and the worker may well be alive.
+  pass "fm-control relaunch: a worker killed mid-run is cleaned up despite the stale working verb it left behind"
 }
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
@@ -1785,5 +1797,5 @@ test_relaunch_moves_a_drifted_item_back_in_flight
 test_relaunch_stops_what_the_previous_incarnation_left_running
 test_relaunch_spares_the_endpoint_shell_and_everything_outside_the_copy
 test_relaunch_holds_leaders_back_when_the_record_cannot_name_the_endpoint_shell
-test_an_already_stopped_agent_needs_a_second_source_before_any_cleanup
+test_a_quota_killed_worker_is_cleaned_up_despite_a_stale_working_verb
 test_a_failed_cleanup_still_records_the_leaders_it_never_classified
