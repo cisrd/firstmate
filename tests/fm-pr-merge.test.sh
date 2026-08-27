@@ -19,6 +19,8 @@
 #        so an enqueued still-open PR is named queued rather than merged
 #   (g4) those forge-decides tokens are refused on GitLab before any state is
 #        recorded, while a real GitLab merge method still forwards
+#   (g5) combining a forge-decides token with an explicit GitHub strategy is
+#        refused before the forge is called, naming both incompatible requests
 #   (h) repo override args fail fast because the repo comes from the URL,
 #       including a bundled short-option cluster that carries -R
 #   (i) a GitLab MR URL resolves and merges through glab instead of erroring
@@ -1512,6 +1514,50 @@ test_forge_decides_method_forwards_other_flags() {
   pass "fm-pr-merge still forwards non-strategy GitHub flags after a forge-decides method"
 }
 
+# Combining a forge-decides token with an explicit strategy must not drop only
+# the queue token and forward the strategy: that silently bypasses the queue
+# path. Refuse before the forge is called and name both requests.
+test_forge_decides_conflicting_strategy_refuses_before_forge() {
+  local case_dir rc name rest args forge explicit
+  for spec in \
+    'queue-squash|--method=queue --squash|--method=queue|--squash' \
+    'queue-merge|--method=queue --merge|--method=queue|--merge' \
+    'queue-rebase|--method=queue --rebase|--method=queue|--rebase' \
+    'no-method-squash|--no-method --squash|--no-method|--squash' \
+    'method-queue-merge|--method queue --merge|--method queue|--merge' \
+    'queue-method-squash|--method=queue --method=squash|--method=queue|--method=squash'
+  do
+    name=${spec%%|*}
+    rest=${spec#*|}
+    args=${rest%%|*}
+    rest=${rest#*|}
+    forge=${rest%%|*}
+    explicit=${rest#*|}
+    case_dir=$(make_case "forge-decides-conflict-$name")
+    mkdir -p "$case_dir/wt"
+    add_gh_mocks "$case_dir" 3333333333333333333333333333333333333333
+    : > "$case_dir/gh-axi.log"
+
+    set +e
+    # shellcheck disable=SC2086  # The spelling is one or two extra merge flags.
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/33 -- $args \
+      > "$case_dir/stdout" 2> "$case_dir/stderr"
+    rc=$?
+    set -e
+
+    expect_code 1 "$rc" "forge-decides-conflict-$name: fm-pr-merge should refuse the contradictory methods"
+    assert_grep "must not combine a forge-decides method ($forge) with an explicit merge strategy ($explicit)" \
+      "$case_dir/stderr" "forge-decides-conflict-$name: refusal did not name both incompatible requests"
+    [ ! -s "$case_dir/gh-axi.log" ] \
+      || fail "forge-decides-conflict-$name: gh-axi pr merge was invoked despite the contradictory methods"
+    assert_no_grep 'pr=https://github.com/example/repo/pull/33' "$case_dir/state/task-x1.meta" \
+      "forge-decides-conflict-$name: the URL was recorded before rejecting the contradictory methods"
+    assert_absent "$case_dir/state/task-x1.check.sh" \
+      "forge-decides-conflict-$name: the contradictory methods armed a merge poll"
+  done
+  pass "fm-pr-merge refuses a forge-decides method combined with an explicit GitHub strategy"
+}
+
 # On a merge-queue branch the merge call enqueues the pull request and leaves it
 # open, while the forge CLI still reports that as a merge. The same live outcome
 # read used for every GitHub merge must name which of the two actually happened,
@@ -2294,6 +2340,7 @@ test_explicit_merge_method_not_overridden
 test_method_equals_merge_method_not_overridden
 test_forge_decides_method_omits_strategy
 test_forge_decides_method_forwards_other_flags
+test_forge_decides_conflicting_strategy_refuses_before_forge
 test_forge_decides_reports_queued_and_merged_outcomes
 test_forge_decides_unreadable_state_reports_without_failing
 test_parses_pr_url_for_gh_axi
