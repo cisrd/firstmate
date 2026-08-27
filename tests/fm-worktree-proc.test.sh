@@ -720,6 +720,33 @@ test_the_reap_distinguishes_a_scan_that_broke_before_a_signal_from_one_after() {
   pass "a scan that breaks before a signal and one that breaks after it are two different answers"
 }
 
+test_a_scan_that_breaks_between_selecting_and_signalling_names_the_root() {
+  local dir pid err rc
+  dir="$TMP_ROOT/outcome-between"
+  mkdir -p "$dir/work"
+  pid=$(witness "$dir/work")
+  err="$dir/between.err"
+  # One good answer: enough to collect and select, so the recheck that guards
+  # the TERM is the pass that breaks. A cleanup abandoned there has to name the
+  # root that stopped answering, exactly as the earlier failure does.
+  make_cwd_source_stub "$dir" "$pid" "$dir/work" 1
+  rc=0
+  with_stubbed_cwd_source "$dir" fm_wtproc_reap "between" none "$dir/work" \
+    >/dev/null 2>"$err" || rc=$?
+  [ "$rc" = 1 ] || fail "reap-outcome: a scan that broke before the TERM returned $rc, not 1"
+  case "$(cat "$err")" in
+    *"nothing was signalled"*) ;;
+    *) fail "reap-outcome: the failure between selecting and signalling said nothing about what it did: $(cat "$err")" ;;
+  esac
+  case "$(cat "$err")" in
+    *"$dir/work"*) ;;
+    *) fail "reap-outcome: the abandoned cleanup did not name the root that stopped answering: $(cat "$err")" ;;
+  esac
+  alive "$pid" || fail "reap-outcome: a process was signalled after the scan stopped answering"
+  kill -KILL "$pid" 2>/dev/null || true
+  pass "a cleanup abandoned between selecting and signalling names the root it lost and says nothing was signalled"
+}
+
 test_a_process_that_outlives_the_force_stop_is_never_reported_stopped() {
   local dir pid err rc
   dir="$TMP_ROOT/outcome-survivor"
@@ -744,6 +771,145 @@ test_a_process_that_outlives_the_force_stop_is_never_reported_stopped() {
   pass "a process that outlives the force-stop is reported as surviving, never as stopped"
 }
 
+# --- 10. a copy the host could not look at is never reported clean -----------
+#
+# "I looked and found nothing" and "I could not look" are different facts, and
+# the session-start digest prints the first as "(none)". A scan that folded the
+# second into it would tell an operator a fleet is clean on the strength of
+# never having examined it.
+
+test_a_copy_this_host_cannot_list_is_never_reported_clean() {
+  local dir pid out rc
+  dir="$TMP_ROOT/case-unscannable"
+  mkdir -p "$dir/fakebin"
+  make_backend_stub "$dir" fm-unscan
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid=$(witness "$COPY")
+  write_task_meta unscan "$COPY" "fmses:fm-unscan"
+
+  # The same fixture on a host that CAN answer, so what follows is proven to
+  # hinge on the missing cwd source and nothing else.
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"LEFTOVER: unscan"*) ;;
+    *) fail "unscannable: the copy was not reported while the host could answer, so this case proves nothing: $out" ;;
+  esac
+
+  # Now no cwd source can answer at all: the proc root points at nothing and the
+  # only other source refuses.
+  cat > "$dir/fakebin/lsof" <<'SH'
+#!/usr/bin/env bash
+echo "lsof: synthetic failure" >&2
+exit 1
+SH
+  chmod +x "$dir/fakebin/lsof"
+  export FM_PROC_ROOT_OVERRIDE="$dir/no-proc"
+
+  rc=0
+  out=$(run_orphan "$dir" scan) || rc=$?
+  case "$out" in
+    *"UNSCANNABLE: unscan"*) ;;
+    *) fail "unscannable: a copy that could not be listed was not reported: $out" ;;
+  esac
+  case "$out" in
+    *"$COPY"*) ;;
+    *) fail "unscannable: the report did not name the root it could not read: $out" ;;
+  esac
+  case "$out" in
+    *"LEFTOVER: unscan"*) fail "unscannable: an unexamined copy was reported as leaking: $out" ;;
+  esac
+  [ "$rc" != 0 ] || fail "unscannable: a scan that could not look exited 0, so the digest would print (none)"
+
+  rc=0
+  out=$(run_orphan "$dir" reap unscan) || rc=$?
+  [ "$rc" != 0 ] || fail "unscannable: an explicit cleanup that could not look reported success"
+  case "$out" in
+    *"nothing to stop"*) fail "unscannable: a copy that could not be listed was reported as having nothing to stop: $out" ;;
+  esac
+  case "$out" in
+    *"could not be listed"*) ;;
+    *) fail "unscannable: the refusal did not say the copy could not be listed: $out" ;;
+  esac
+  unset FM_PROC_ROOT_OVERRIDE
+  rm -f "$dir/fakebin/lsof"
+
+  sleep 0.3
+  alive "$pid" || fail "unscannable: a process was stopped by a scan that could not resolve anything"
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/unscan.meta"
+  pass "a copy this host cannot list is reported as unexamined, and never as clean or as stopped"
+}
+
+# --- 11. a caller whose own working directory is gone can still look ---------
+
+test_a_removed_working_directory_does_not_make_the_host_unanswerable() {
+  local lib gone stub pid out rc baseline
+  lib="$ROOT/bin/fm-worktree-proc-lib.sh"
+  baseline=$(bash -c '. "$1"; fm_wtproc_resolver' _ "$lib" 2>/dev/null || true)
+  if [ "$baseline" != proc ]; then
+    pass "the caller's own working directory is not this host's cwd source; nothing to prove"
+    return 0
+  fi
+
+  stub="$TMP_ROOT/gone-cwd-bin"
+  mkdir -p "$stub"
+  # The only other source refuses, so the answer below can only have come from
+  # /proc.
+  cat > "$stub/lsof" <<'SH'
+#!/usr/bin/env bash
+echo "lsof: synthetic failure" >&2
+exit 1
+SH
+  chmod +x "$stub/lsof"
+
+  gone="$TMP_ROOT/gone-cwd"
+  mkdir -p "$gone"
+  pid=$(witness "$COPY")
+  rc=0
+  # A shell left sitting in a directory that is then removed under it - what a
+  # torn-down task copy leaves behind, and the reachable trigger for the whole
+  # fleet scan reporting nothing.
+  out=$(cd "$gone" && rm -rf "$gone" \
+    && PATH="$stub:$PATH" bash -c '. "$1"; fm_wtproc_pids_under "$2"' _ "$lib" "$COPY" 2>/dev/null) || rc=$?
+  [ "$rc" = 0 ] || fail "gone-cwd: a caller whose own working directory was removed could not answer at all"
+  contains_pid "$out" "$pid" \
+    || fail "gone-cwd: the process in the copy was not found from a caller with no working directory: '$out'"
+
+  kill -KILL "$pid" 2>/dev/null || true
+  pass "a caller whose own working directory was removed still resolves processes from /proc"
+}
+
+# --- 12. one listing per observation, and never one across two ---------------
+
+test_each_collect_looks_at_the_machine_again() {
+  local pid other tmp_root
+  tmp_root="$TMP_ROOT/collect-roots/fm-collect"
+  mkdir -p "$tmp_root"
+  pid=$(witness "$COPY")
+  other=$(witness "$tmp_root")
+
+  fm_wtproc_collect "$COPY" "$tmp_root" \
+    || fail "collect: a scan of two roots failed"
+  contains_pid "$FM_WTPROC_PIDS" "$pid" \
+    || fail "collect: the process in the first root was not attributed"
+  contains_pid "$FM_WTPROC_PIDS" "$other" \
+    || fail "collect: the process in the second root was not attributed, so the roots do not share one listing correctly"
+
+  kill -KILL "$other" 2>/dev/null || true
+  sleep 0.3
+  fm_wtproc_collect "$COPY" "$tmp_root" \
+    || fail "collect: the second scan of two roots failed"
+  contains_pid "$FM_WTPROC_PIDS" "$pid" \
+    || fail "collect: the surviving process was lost by the second scan"
+  contains_pid "$FM_WTPROC_PIDS" "$other" \
+    && fail "collect: a process that had already exited was still reported, so one observation answered another"
+
+  kill -KILL "$pid" 2>/dev/null || true
+  pass "every collect looks at the machine again; a process that has died since the last one is gone from the next"
+}
+
 test_only_a_linked_worktree_is_a_disposable_copy
 test_a_process_in_a_disposable_copy_is_found_and_stopped
 test_a_primary_checkout_is_never_a_target
@@ -755,4 +921,8 @@ test_an_unnameable_endpoint_shell_holds_leaders_back_and_says_how_many
 test_a_copy_with_only_unclassifiable_leaders_is_never_reported_clean
 test_a_temp_root_in_the_operators_tree_is_never_a_reap_root
 test_the_reap_distinguishes_a_scan_that_broke_before_a_signal_from_one_after
+test_a_scan_that_breaks_between_selecting_and_signalling_names_the_root
 test_a_process_that_outlives_the_force_stop_is_never_reported_stopped
+test_a_copy_this_host_cannot_list_is_never_reported_clean
+test_a_removed_working_directory_does_not_make_the_host_unanswerable
+test_each_collect_looks_at_the_machine_again

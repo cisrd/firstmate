@@ -64,6 +64,10 @@
 #     leader is left alone and the report SAYS how many, because a silently
 #     empty result would read as "this copy is clean".
 #   - An unreadable /proc/<pid>/cwd means the process is left alone.
+#   - A copy this host cannot list AT ALL is reported as UNSCANNABLE and makes
+#     the scan exit non-zero. "I could not look" is never reported as "I looked
+#     and found nothing", because the only reader of an empty result - the
+#     session-start digest - would print "(none)" for a fleet nobody examined.
 #   - Processes only. This script never removes a file, never touches git, and
 #     never tears a copy down.
 set -eu
@@ -166,8 +170,13 @@ listening_ports() {  # <pid>...
   '
 }
 
+# scan_task answers with three different facts, and they may never be folded
+# into one:
+#   0  something is reported on stdout (LEFTOVER, UNRESOLVED, UNSCANNABLE)
+#   1  this copy was looked at and has nothing to report
+#   3  this copy could NOT be looked at, so it is not known to be clean
 scan_task() {  # <task-id> <verbose>
-  local id=$1 verbose=$2 meta verdict pids ports line spare skipped note
+  local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
   local -a roots=()
   meta="$STATE/$id.meta"
   [ -f "$meta" ] || {
@@ -181,9 +190,23 @@ scan_task() {  # <task-id> <verbose>
   [ "${#roots[@]}" -gt 0 ] || return 1
   # Cheapest question first: an empty copy needs no backend call at all, so a
   # healthy fleet costs one /proc pass per copy and nothing else.
+  #
+  # A copy this host cannot list is REPORTED, never dropped. "I looked and found
+  # nothing" and "I could not look" are different facts about the machine, and
+  # an operator reading the session-start digest acts on them differently; a
+  # scan that quietly returned nothing here would print "(none)" for a fleet it
+  # never examined, which is the exact silent degradation this whole mechanism
+  # exists to remove.
   fm_wtproc_collect "${roots[@]}" || {
-    [ "$verbose" = 1 ] && echo "cannot determine the processes in task $id's local copy on this host" >&2
-    return 1
+    SCAN_UNSCANNABLE_ROOT=${FM_WTPROC_FAILED_ROOT:-${roots[0]}}
+    if [ "$(fm_wtproc_resolver)" = none ]; then
+      reason="this host can answer from neither /proc (${FM_PROC_ROOT_OVERRIDE:-/proc}) nor lsof"
+    else
+      reason="the working-directory scan of that root failed"
+    fi
+    printf 'UNSCANNABLE: %s copy=%s (%s, so this copy was NOT checked and cannot be called clean; inspect it by hand)\n' \
+      "$id" "$SCAN_UNSCANNABLE_ROOT" "$reason"
+    return 3
   }
   [ -n "$FM_WTPROC_PIDS" ] || return 1
   verdict=$(agent_verdict "$meta")
@@ -233,7 +256,7 @@ scan_task() {  # <task-id> <verbose>
 }
 
 cmd_scan() {
-  local want="" found=0 meta id
+  local want="" found=0 unscannable=0 meta id rc
   while [ $# -gt 0 ]; do
     case "$1" in
       --task) shift; want=${1:-}; [ -n "$want" ] || die "--task needs a task id" ;;
@@ -242,32 +265,65 @@ cmd_scan() {
     shift
   done
   if [ -n "$want" ]; then
-    scan_task "$want" 1 && found=1
+    rc=0
+    scan_task "$want" 1 || rc=$?
+    case "$rc" in
+      0) found=1 ;;
+      3) found=1; unscannable=1 ;;
+    esac
   else
+    # One listing of the machine for the whole sweep: this command signals
+    # nothing, so every copy in it may be answered from the same instant, and a
+    # fleet-wide report on a saturated host costs one walk rather than one per
+    # task. fm_wtproc_reap drops it, so nothing that stops a process ever reads
+    # from it.
+    fm_wtproc_snapshot_begin
     for meta in "$STATE"/*.meta; do
       [ -f "$meta" ] || continue
       id=$(basename "$meta" .meta)
-      scan_task "$id" 0 && found=1
+      rc=0
+      scan_task "$id" 0 || rc=$?
+      case "$rc" in
+        0) found=1 ;;
+        3) found=1; unscannable=1 ;;
+      esac
     done
+    fm_wtproc_snapshot_end
   fi
   [ "$found" = 1 ] || return 0
   echo "Each LEFTOVER line names a local copy whose worker is gone while processes it started are still running."
   echo "An UNRESOLVED line names one where the endpoint's own shell could not be identified from the record, so its session leaders were left unclassified rather than guessed at; inspect those by hand."
+  if [ "$unscannable" = 1 ]; then
+    echo "An UNSCANNABLE line names a copy this host could not list at all; it was not examined, so nothing about it - clean or leaking - was established."
+  fi
   echo "Stop one with: FM_HOME=$FM_HOME $SCRIPT_DIR/fm-orphan-reap.sh reap <task-id>"
+  # Non-zero so a caller that only reads the status - bin/fm-session-start.sh's
+  # digest does - can never present an unexamined fleet as a clean one.
+  [ "$unscannable" = 0 ] || return 3
 }
 
 cmd_reap() {  # <task-id>
-  local id=${1:-} rc=0
+  local id=${1:-} rc=0 scan_rc=0
   [ -n "$id" ] || { usage >&2; exit 2; }
   SCAN_ROOTS=()
   SCAN_PIDS=
   SCAN_VERDICT=
   SCAN_SPARE=unknown
   SCAN_SKIPPED_LEADERS=0
-  if ! scan_task "$id" 1 >/dev/null; then
-    echo "nothing to stop for $id"
-    return 0
-  fi
+  SCAN_UNSCANNABLE_ROOT=
+  scan_task "$id" 1 >/dev/null || scan_rc=$?
+  case "$scan_rc" in
+    0) ;;
+    3)
+      # "Nothing to stop" would be a claim about the copy; all that is known
+      # here is that the copy could not be read.
+      die "the processes in task $id's local copy could not be listed on this host (${SCAN_UNSCANNABLE_ROOT:-its recorded roots} could not be read); nothing was stopped and nothing is known about what is running there"
+      ;;
+    *)
+      echo "nothing to stop for $id"
+      return 0
+      ;;
+  esac
   if [ -z "$SCAN_PIDS" ]; then
     echo "nothing to stop for $id: $SCAN_SKIPPED_LEADERS session leader(s) in its local copy were left alone because its endpoint shell could not be identified from the record; inspect them by hand"
     return 0

@@ -65,6 +65,8 @@
 #   fm_wtproc_task_tmp <task-id> <dir>  -> echoes the resolved per-task tmp root
 #   fm_wtproc_worker_is_gone <task-id> <agent-state>
 #   fm_wtproc_collect <dir>...          -> FM_WTPROC_PIDS
+#   fm_wtproc_snapshot_begin / _end     -> hold one machine listing across a
+#                                          read-only sweep of several copies
 #   fm_wtproc_select <spare>            -> FM_WTPROC_SELECTED,
 #                                          FM_WTPROC_SPARED_LEADERS,
 #                                          FM_WTPROC_SPARED_ENDPOINT
@@ -107,17 +109,33 @@ _fm_wtproc_proc_root() {
 # caller reads that as "nothing is running there": a teardown would remove a
 # worktree with its processes still in it and a scan would report a leaking copy
 # as clean forever. That is the same silent degradation this library refuses to
-# accept from lsof, so the verdict is gated on the caller's own cwd link
-# resolving to the directory the caller is actually in.
+# accept from lsof, so the verdict is gated on a cwd link resolving to the
+# directory whose occupant it names.
+#
+# The caller's own working directory answers that question best, but it is not
+# allowed to be the only way of asking it. A process whose working directory has
+# been REMOVED under it - the state a torn-down task copy leaves the shell that
+# was sitting in it, and the reachable trigger for a fleet scan run from
+# bin/fm-session-start.sh - cannot resolve its own cwd at all, and that says
+# nothing whatsoever about whether this /proc exposes cwd links. Concluding
+# `none` from it would turn a perfectly answerable host into one that reports it
+# cannot look. So when the caller cannot be placed, the same question is put
+# again from a directory that is known to exist: the proc root itself, entered
+# by the probing subshell whose own self link then has to name it back.
 _fm_wtproc_proc_answers_cwd() {  # <root>
-  local root=$1 link target here
-  here=$(pwd -P 2>/dev/null) || return 1
-  for link in "$root/self/cwd" "$root/${BASHPID:-$$}/cwd" "$root/$$/cwd"; do
-    [ -L "$link" ] || continue
-    target=$(cd "$link" 2>/dev/null && pwd -P) || continue
-    [ "$target" = "$here" ] && return 0
-  done
-  return 1
+  local root=$1 link target here probe
+  here=$(pwd -P 2>/dev/null) || here=
+  if [ -n "$here" ]; then
+    for link in "$root/self/cwd" "$root/${BASHPID:-$$}/cwd" "$root/$$/cwd"; do
+      [ -L "$link" ] || continue
+      target=$(cd "$link" 2>/dev/null && pwd -P) || continue
+      [ "$target" = "$here" ] && return 0
+    done
+  fi
+  [ -L "$root/self/cwd" ] || return 1
+  probe=$(cd "$root" 2>/dev/null && pwd -P) || return 1
+  target=$(cd "$root" 2>/dev/null && cd "$root/self/cwd" 2>/dev/null && pwd -P) || return 1
+  [ "$target" = "$probe" ]
 }
 
 # fm_wtproc_resolver: which cwd source this host can answer with. Memoised per
@@ -141,6 +159,64 @@ fm_wtproc_resolver() {
   printf '%s' "$_FM_WTPROC_RESOLVER"
 }
 
+# The one whole-machine listing every root is matched against.
+#
+# The listing is the expensive part of a /proc scan and it is identical for
+# every root, so it is taken once and reused: a task has two roots (its copy and
+# its temp root), a reap re-collects up to five times, and a fleet scan runs
+# from the session-start digest on a host that was already saturated.
+#
+# The cache MUST NOT outlive one logical observation, and that is the whole of
+# its contract. A reap re-scans precisely to see which of the processes it
+# signalled have died since the last pass, and a listing carried across those
+# passes would report a survivor that is already gone - or miss one that is not.
+# So it is loaded and released inside a single fm_wtproc_collect, and the only
+# way to hold one across several is fm_wtproc_snapshot_begin, which
+# fm_wtproc_reap drops before it collects anything.
+#
+# It is loaded in the CALLER's own shell rather than inside the command
+# substitution that reads the pids, because an assignment made in a subshell
+# would be thrown away with it and every root would pay for its own walk again.
+_FM_WTPROC_LISTING=
+_FM_WTPROC_LISTING_ROOT=
+_FM_WTPROC_LISTING_HELD=0
+_FM_WTPROC_LISTING_PASS=0
+
+_fm_wtproc_listing_load() {  # <root>
+  local root=$1
+  [ -d "$root" ] || return 1
+  [ "$_FM_WTPROC_LISTING_ROOT" = "$root" ] && return 0
+  _FM_WTPROC_LISTING=$(ls -l "$root"/[0-9]*/cwd 2>/dev/null || true)
+  _FM_WTPROC_LISTING_ROOT=$root
+}
+
+# Drop the listing unless a collect pass or an explicit snapshot is holding it.
+# The default is to drop: a caller that asks the question on its own - the
+# multi-pass loop in bin/fm-teardown.sh does - gets a fresh look every time.
+_fm_wtproc_listing_release() {
+  { [ "$_FM_WTPROC_LISTING_HELD" = 1 ] || [ "$_FM_WTPROC_LISTING_PASS" = 1 ]; } && return 0
+  _FM_WTPROC_LISTING=
+  _FM_WTPROC_LISTING_ROOT=
+  return 0
+}
+
+# fm_wtproc_snapshot_begin / fm_wtproc_snapshot_end: hold ONE listing across a
+# read-only sweep of several copies, so a fleet-wide report costs one walk of
+# the machine rather than one per task. Only a caller that signals nothing may
+# open one, and it has to close it: everything inside it is answered from the
+# same instant.
+fm_wtproc_snapshot_begin() {
+  _FM_WTPROC_LISTING=
+  _FM_WTPROC_LISTING_ROOT=
+  _FM_WTPROC_LISTING_HELD=1
+}
+
+fm_wtproc_snapshot_end() {
+  _FM_WTPROC_LISTING_HELD=0
+  _FM_WTPROC_LISTING=
+  _FM_WTPROC_LISTING_ROOT=
+}
+
 # Every pid whose /proc cwd link resolves to <dir> or below it.
 #
 # One `ls -l` over the whole proc root rather than a readlink per pid: the scan
@@ -152,7 +228,7 @@ fm_wtproc_resolver() {
 _fm_wtproc_pids_under_proc() {  # <real-dir>
   local dir=$1 root line entry link pid self
   root=$(_fm_wtproc_proc_root)
-  [ -d "$root" ] || return 1
+  _fm_wtproc_listing_load "$root" || return 1
   self=${BASHPID:-$$}
   while IFS= read -r line; do
     case "$line" in *' -> '*) ;; *) continue ;; esac
@@ -171,7 +247,9 @@ _fm_wtproc_pids_under_proc() {  # <real-dir>
     case "$link" in
       "$dir"|"$dir"/*) printf '%s\n' "$pid" ;;
     esac
-  done < <(ls -l "$root"/[0-9]*/cwd 2>/dev/null || true)
+  done <<EOF
+$_FM_WTPROC_LISTING
+EOF
 }
 
 # The same question answered from one bounded system-wide `lsof -a -d cwd` scan
@@ -211,14 +289,16 @@ EOF
 # with status 0 means "nothing is running there"; a non-zero status means the
 # question could not be answered safely and the caller must not assume either.
 fm_wtproc_pids_under() {  # <dir>
-  local dir=$1 real
+  local dir=$1 real rc=0
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
   case "$(fm_wtproc_resolver)" in
-    proc) _fm_wtproc_pids_under_proc "$real" ;;
-    lsof) _fm_wtproc_pids_under_lsof "$real" ;;
-    *) return 1 ;;
+    proc) _fm_wtproc_pids_under_proc "$real" || rc=$? ;;
+    lsof) _fm_wtproc_pids_under_lsof "$real" || rc=$? ;;
+    *) rc=1 ;;
   esac
+  _fm_wtproc_listing_release
+  return "$rc"
 }
 
 # fm_wtproc_session_id: the process's session id, from /proc stat field 6 where
@@ -429,20 +509,32 @@ fm_wtproc_worker_is_gone() {  # <task-id> <agent-state>
 
 # Collect the pids under every root, deduplicated. Sets FM_WTPROC_PIDS and
 # FM_WTPROC_FAILED_ROOT; returns 1 when any root could not be scanned safely.
+#
+# All of a task's roots are matched against ONE listing of the machine, taken
+# here and released here: this call is the logical observation, and nothing that
+# follows it may be answered from what it saw.
 fm_wtproc_collect() {  # <dir>...
-  local dir out pids=""
+  local dir out pids="" rc=0
   FM_WTPROC_PIDS=
   FM_WTPROC_FAILED_ROOT=
+  _FM_WTPROC_LISTING_PASS=1
+  if [ "$(fm_wtproc_resolver)" = proc ]; then
+    _fm_wtproc_listing_load "$(_fm_wtproc_proc_root)" || true
+  fi
   for dir in "$@"; do
     [ -n "$dir" ] || continue
     if ! out=$(fm_wtproc_pids_under "$dir"); then
       FM_WTPROC_FAILED_ROOT=$dir
-      return 1
+      rc=1
+      break
     fi
     pids="$pids
 $out"
   done
-  FM_WTPROC_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  [ "$rc" = 0 ] && FM_WTPROC_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  _FM_WTPROC_LISTING_PASS=0
+  _fm_wtproc_listing_release
+  return "$rc"
 }
 
 _fm_wtproc_contains() {  # <pid-list> <pid>
@@ -526,6 +618,10 @@ fm_wtproc_reap() {  # <label> <spare> <dir>...
   shift 2
   FM_WTPROC_REAPED=
   FM_WTPROC_SURVIVORS=
+  # A reap observes the machine again between every pass, so it never reads a
+  # listing some outer report is holding: whatever a caller snapshotted, this
+  # drops it.
+  fm_wtproc_snapshot_end
   if ! fm_wtproc_collect "$@"; then
     echo "fm-worktree-proc: cannot determine the $label processes under ${FM_WTPROC_FAILED_ROOT:-<missing>} on this host (no readable /proc and no lsof); nothing was signalled" >&2
     return 1
@@ -547,7 +643,10 @@ $FM_WTPROC_SELECTED
 EOF
   [ "${#sel_pids[@]}" -gt 0 ] || return 0
   echo "fm-worktree-proc: stopping $label process(es) left in ${*}: ${sel_pids[*]}" >&2
-  fm_wtproc_collect "$@" || return 1
+  fm_wtproc_collect "$@" || {
+    echo "fm-worktree-proc: the $label processes under ${FM_WTPROC_FAILED_ROOT:-<missing>} stopped being listable between selecting them and signalling them; nothing was signalled" >&2
+    return 1
+  }
   for i in "${!sel_pids[@]}"; do
     pid=${sel_pids[$i]}
     if _fm_wtproc_contains "$FM_WTPROC_PIDS" "$pid" \
