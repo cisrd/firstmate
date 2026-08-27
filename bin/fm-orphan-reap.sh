@@ -54,7 +54,15 @@
 #     state must agree, from a second, independent source. A backend classifier
 #     was observed calling a running worker dead, so neither source decides
 #     alone.
-#   - The endpoint's own shell is spared, so a copy stays relaunchable.
+#   - The shell of the task's OWN recorded endpoint is spared, so a copy stays
+#     relaunchable - identified from that record (the backend's pane pid) and
+#     never inferred from a process's own shape. A session leader that is not
+#     that shell is an ordinary leftover: the process that saturated the host on
+#     2026-08-27 was reparented to init, and a rule that spared every session
+#     leader would have missed exactly it.
+#   - When the record cannot yield that pid, nothing is guessed: every session
+#     leader is left alone and the report SAYS how many, because a silently
+#     empty result would read as "this copy is clean".
 #   - An unreadable /proc/<pid>/cwd means the process is left alone.
 #   - Processes only. This script never removes a file, never touches git, and
 #     never tears a copy down.
@@ -107,9 +115,23 @@ task_roots() {  # <task-id> <meta> <verbose>
   fi
   printf '%s\n' "$wt_real"
   tmp=$(fm_meta_get "$meta" tasktmp)
-  if [ -n "$tmp" ] && tmp_real=$(fm_wtproc_task_tmp "$id" "$tmp" 2>/dev/null); then
+  if [ -n "$tmp" ] && tmp_real=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" 2>/dev/null); then
     printf '%s\n' "$tmp_real"
   fi
+}
+
+# The pid of the shell this task's OWN endpoint runs, read from the record, or
+# `unknown` when the backend cannot answer for it. `unknown` is not a failure to
+# report - it is the instruction to hold every session leader back and name how
+# many, rather than risk a working agent's shell on a guess.
+endpoint_shell_spare() {  # <meta>
+  local backend target window pid
+  window=$(fm_meta_get "$1" window)
+  backend=$(fm_backend_of_meta "$1")
+  target=$(fm_backend_target_of_meta "$1")
+  pid=$(fm_wtproc_endpoint_shell_pid "$backend" "${target:-$window}" 2>/dev/null) \
+    || { printf 'unknown'; return 0; }
+  printf '%s' "$pid"
 }
 
 # The agent's own verdict, from the backend's classifier. Only dead and missing
@@ -144,24 +166,8 @@ listening_ports() {  # <pid>...
   '
 }
 
-# Everything still running in one task's copy, with the endpoint's own shell
-# excluded so the report names only what has no owner at all.
-ownerless_pids() {  # <root>...
-  local pid out=""
-  fm_wtproc_collect "$@" || return 1
-  [ -n "$FM_WTPROC_PIDS" ] || return 0
-  while IFS= read -r pid; do
-    [ -n "$pid" ] || continue
-    fm_wtproc_is_session_leader "$pid" && continue
-    out="$out $pid"
-  done <<EOF
-$FM_WTPROC_PIDS
-EOF
-  printf '%s' "${out# }"
-}
-
 scan_task() {  # <task-id> <verbose>
-  local id=$1 verbose=$2 meta verdict pids ports line
+  local id=$1 verbose=$2 meta verdict pids ports line spare skipped note
   local -a roots=()
   meta="$STATE/$id.meta"
   [ -f "$meta" ] || {
@@ -175,11 +181,11 @@ scan_task() {  # <task-id> <verbose>
   [ "${#roots[@]}" -gt 0 ] || return 1
   # Cheapest question first: an empty copy needs no backend call at all, so a
   # healthy fleet costs one /proc pass per copy and nothing else.
-  pids=$(ownerless_pids "${roots[@]}") || {
+  fm_wtproc_collect "${roots[@]}" || {
     [ "$verbose" = 1 ] && echo "cannot determine the processes in task $id's local copy on this host" >&2
     return 1
   }
-  [ -n "$pids" ] || return 1
+  [ -n "$FM_WTPROC_PIDS" ] || return 1
   verdict=$(agent_verdict "$meta")
   case "$verdict" in
     dead|missing) ;;
@@ -195,14 +201,35 @@ scan_task() {  # <task-id> <verbose>
     [ "$verbose" = 1 ] && echo "task $id's endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; the two disagree, so nothing in its local copy is touched" >&2
     return 1
   fi
+  # Only now, for a copy that really has no living owner, is it worth asking the
+  # backend which shell belongs to the endpoint - and it is asked of the task's
+  # own record, so nothing else in the copy inherits that shell's protection.
+  spare=$(endpoint_shell_spare "$meta")
+  fm_wtproc_select "$spare"
+  skipped=$FM_WTPROC_SPARED_LEADERS
+  pids=$(printf '%s' "$FM_WTPROC_SELECTED" | tr '\n' ' ')
+  pids=${pids% }
   SCAN_ROOTS=("${roots[@]}")
   SCAN_PIDS=$pids
   SCAN_VERDICT=$verdict
+  SCAN_SPARE=$spare
+  SCAN_SKIPPED_LEADERS=$skipped
+  if [ -z "$pids" ]; then
+    # Never a silent "(none)": leaders held back because the endpoint's shell
+    # could not be named are the one case where an empty set is not evidence of
+    # a clean copy, and the report has to say so.
+    [ "$skipped" -gt 0 ] || return 1
+    printf 'UNRESOLVED: %s agent=%s copy=%s leaders_skipped=%s (the endpoint shell could not be identified from the record, so no session leader in this copy was classified; inspect them by hand)\n' \
+      "$id" "$verdict" "${roots[0]}" "$skipped"
+    return 0
+  fi
   # shellcheck disable=SC2086  # pids is a deliberate space-separated list
   ports=$(listening_ports $pids)
-  printf 'LEFTOVER: %s agent=%s copy=%s pids=%s%s\n' \
+  note=""
+  [ "$skipped" -gt 0 ] && note=" leaders_skipped=$skipped"
+  printf 'LEFTOVER: %s agent=%s copy=%s pids=%s%s%s\n' \
     "$id" "$verdict" "${roots[0]}" "$(printf '%s' "$pids" | tr ' ' ',')" \
-    "${ports:+ listening=$ports}"
+    "${ports:+ listening=$ports}" "$note"
 }
 
 cmd_scan() {
@@ -224,25 +251,39 @@ cmd_scan() {
     done
   fi
   [ "$found" = 1 ] || return 0
-  echo "Each line names a local copy whose worker is gone while processes it started are still running."
+  echo "Each LEFTOVER line names a local copy whose worker is gone while processes it started are still running."
+  echo "An UNRESOLVED line names one where the endpoint's own shell could not be identified from the record, so its session leaders were left unclassified rather than guessed at; inspect those by hand."
   echo "Stop one with: FM_HOME=$FM_HOME $SCRIPT_DIR/fm-orphan-reap.sh reap <task-id>"
 }
 
 cmd_reap() {  # <task-id>
-  local id=${1:-} reaped
+  local id=${1:-} rc=0
   [ -n "$id" ] || { usage >&2; exit 2; }
   SCAN_ROOTS=()
   SCAN_PIDS=
   SCAN_VERDICT=
+  SCAN_SPARE=unknown
+  SCAN_SKIPPED_LEADERS=0
   if ! scan_task "$id" 1 >/dev/null; then
     echo "nothing to stop for $id"
     return 0
   fi
+  if [ -z "$SCAN_PIDS" ]; then
+    echo "nothing to stop for $id: $SCAN_SKIPPED_LEADERS session leader(s) in its local copy were left alone because its endpoint shell could not be identified from the record; inspect them by hand"
+    return 0
+  fi
   echo "$id: agent reads '$SCAN_VERDICT'; stopping $(printf '%s' "$SCAN_PIDS" | wc -w) process(es) left in its local copy"
-  reaped=$(fm_wtproc_reap "$id ownerless" 1 "${SCAN_ROOTS[@]}") \
-    || die "the processes in task $id's local copy could not be accounted for; nothing was left in an unknown state, but inspect them before retrying"
-  if [ -n "$reaped" ]; then
-    echo "stopped $id pids=$(printf '%s' "$reaped" | tr ' ' ',')"
+  # Called in this shell rather than a command substitution so the reap's own
+  # account of what it signalled and what outlived it survives the call.
+  fm_wtproc_reap "$id ownerless" "$SCAN_SPARE" "${SCAN_ROOTS[@]}" >/dev/null || rc=$?
+  case "$rc" in
+    0) ;;
+    2) die "the processes in task $id's local copy were signalled but could not be re-checked afterwards; they are in an unknown state - inspect them before retrying" ;;
+    3) die "task $id's local copy still holds ${FM_WTPROC_SURVIVORS// /,} after a force-stop; they did not respond to it and are still running" ;;
+    *) die "the processes in task $id's local copy could not be accounted for; nothing was signalled, but inspect them before retrying" ;;
+  esac
+  if [ -n "$FM_WTPROC_REAPED" ]; then
+    echo "stopped $id pids=$(printf '%s' "$FM_WTPROC_REAPED" | tr ' ' ',')"
   else
     echo "nothing to stop for $id"
   fi

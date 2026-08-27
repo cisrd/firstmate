@@ -107,6 +107,7 @@ case "${1:-}" in
     for a in "$@"; do
       case "$a" in
         *cursor_y*) printf '1\n'; exit 0 ;;
+        *pane_pid*) cat "$D/panepid"; printf '\n'; exit 0 ;;
         *pane_current_command*) cat "$D/command"; printf '\n'; exit 0 ;;
         *pane_current_path*)
           if [ -n "${FM_FAKE_CWD_RACE_READY:-}" ]; then
@@ -139,6 +140,9 @@ new_case() {
   : > "$dir/fake/keys"
   printf 'claude' > "$dir/fake/command"
   printf 'claude' > "$dir/fake/becomes"
+  # What the backend would answer for `#{pane_pid}`: the shell this endpoint
+  # runs. Unset by default, which is the "the record cannot name it" case.
+  printf 'fakepane' > "$dir/fake/panepid"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   make_tmux_stub "$dir"
   printf '%s\n' "$dir"
@@ -1578,11 +1582,17 @@ test_relaunch_stops_what_the_previous_incarnation_left_running() {
 }
 
 test_relaunch_spares_the_endpoint_shell_and_everything_outside_the_copy() {
-  local dir out rc leader outside inside
+  local dir out rc endpoint daemon outside inside
   dir=$(new_case leftover-guards rl91)
   add_ship_task "$dir" rl91 claude
-  # The endpoint's own shell sits in the same copy and the relaunch reuses it.
-  leader=$(session_leader_witness "$dir/wt")
+  # The shell this endpoint runs sits in the same copy and the relaunch reuses
+  # it, so the record names it and it must survive.
+  endpoint=$(session_leader_witness "$dir/wt")
+  printf '%s' "$endpoint" > "$dir/fake/panepid"
+  # A daemon the previous incarnation left behind that made itself a session
+  # leader too - the shape of the process that saturated the host on 2026-08-27.
+  # It is not the recorded endpoint's shell, so it has no claim on being spared.
+  daemon=$(session_leader_witness "$dir/wt")
   # The primary checkout the copy was made from: never this task's to touch.
   outside=$(witness "$dir/proj")
   # A plain leftover, so a cleanup that stopped nothing at all would fail here
@@ -1593,11 +1603,35 @@ test_relaunch_spares_the_endpoint_shell_and_everything_outside_the_copy() {
   expect_code 0 "$rc" "a relaunch should succeed"$'\n'"$out"
   /bin/sleep 0.3
   witness_alive "$inside" && fail "the ordinary leftover was not stopped, so this case proves nothing"
-  witness_alive "$leader" \
-    || fail "the endpoint's own shell was stopped by a relaunch that reuses that endpoint"
+  witness_alive "$daemon" \
+    && fail "a session-leader daemon that is not the recorded endpoint's shell survived the relaunch"
+  witness_alive "$endpoint" \
+    || fail "the shell the record names as this endpoint's was stopped by a relaunch that reuses it"
   witness_alive "$outside" \
     || fail "a process in the primary checkout was stopped by a task's cleanup"
-  pass "fm-control relaunch: the endpoint's own shell and everything outside the copy are left alone"
+  pass "fm-control relaunch: only the recorded endpoint's own shell is spared, and nothing outside the copy is touched"
+}
+
+test_relaunch_holds_leaders_back_when_the_record_cannot_name_the_endpoint_shell() {
+  local dir out rc leader inside
+  dir=$(new_case leftover-unnameable rl93)
+  add_ship_task "$dir" rl93 claude
+  # The backend cannot say which pid its pane runs, so no session leader in the
+  # copy can be told apart from the endpoint's own shell.
+  printf 'fakepane' > "$dir/fake/panepid"
+  leader=$(session_leader_witness "$dir/wt")
+  inside=$(witness "$dir/wt")
+
+  out=$(run_control "$dir" rl93 relaunch --note "engine stopped overnight"); rc=$?
+  expect_code 0 "$rc" "a relaunch should still succeed"$'\n'"$out"
+  /bin/sleep 0.3
+  witness_alive "$inside" && fail "the ordinary leftover was not stopped, so this case proves nothing"
+  witness_alive "$leader" \
+    || fail "a session leader was stopped although the record could not name the endpoint's shell"
+  assert_grep "leaders-unclassified:1" "$dir/home/state/rl93.control-relaunch" \
+    "the transaction record should say a session leader was never classified"
+  kill -KILL "$leader" 2>/dev/null || true
+  pass "fm-control relaunch: a session leader is held back and recorded when the endpoint's shell cannot be named"
 }
 
 test_an_already_stopped_agent_needs_a_second_source_before_any_cleanup() {
@@ -1684,4 +1718,5 @@ test_relaunch_reverifies_an_already_in_flight_item_instead_of_rewriting_it
 test_relaunch_moves_a_drifted_item_back_in_flight
 test_relaunch_stops_what_the_previous_incarnation_left_running
 test_relaunch_spares_the_endpoint_shell_and_everything_outside_the_copy
+test_relaunch_holds_leaders_back_when_the_record_cannot_name_the_endpoint_shell
 test_an_already_stopped_agent_needs_a_second_source_before_any_cleanup

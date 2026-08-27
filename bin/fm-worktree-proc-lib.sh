@@ -31,6 +31,17 @@
 # NOT evidence of anything: such a process is skipped and left alone. Nothing
 # here ever signals a pid it could not positively place inside the copy.
 #
+# Sparing the endpoint's shell is POSITIVE IDENTIFICATION, never an inference.
+# The paths that reuse a terminal endpoint must not close it, and the shell that
+# endpoint runs sits in the task copy like any leftover does. That shell is
+# resolved from the task's OWN recorded endpoint (the backend's pane pid), so a
+# daemon that called setsid inside the copy - the shape that saturated the host
+# on 2026-08-27, an API reparented to init - is eligible again. When the record
+# cannot yield that pid, nothing is guessed: every session leader is left alone
+# AND the count of leaders left alone is reported, because a silently empty
+# result reads as "this copy is clean" and would hide exactly the process this
+# library exists to find.
+#
 # Ownership boundary. This library owns RESOLUTION (which pids, under which
 # roots, with which guards) for every caller. It also owns the report-and-
 # continue reap used by the paths that are not destroying anything.
@@ -44,17 +55,33 @@
 #   fm_wtproc_pids_under <dir>          -> pids, one per line (0 = safe result)
 #   fm_wtproc_session_id <pid>          -> session id
 #   fm_wtproc_is_session_leader <pid>   -> 0 when sid == pid
+#   fm_wtproc_endpoint_shell_pid <backend> <target>
+#                                       -> the pid of the shell that endpoint
+#                                          runs, or 1 when the record cannot
+#                                          yield one
 #   fm_wtproc_disposable_worktree <dir> -> echoes the resolved path, 0 when the
 #                                          path is provably a linked worktree
 #                                          and not a primary checkout
 #   fm_wtproc_task_tmp <task-id> <dir>  -> echoes the resolved per-task tmp root
 #   fm_wtproc_worker_is_gone <task-id> <agent-state>
-#   fm_wtproc_reap <label> <keep-endpoint-shell> <dir>...
+#   fm_wtproc_collect <dir>...          -> FM_WTPROC_PIDS
+#   fm_wtproc_select <spare>            -> FM_WTPROC_SELECTED,
+#                                          FM_WTPROC_SPARED_LEADERS,
+#                                          FM_WTPROC_SPARED_ENDPOINT
+#   fm_wtproc_reap <label> <spare> <dir>...
+#
+# <spare> is the one thing a caller may hold back, and it is the same argument
+# for the report and for the reap so the two can never disagree: a numeric pid
+# (the endpoint's shell, positively identified from the record), `unknown` (the
+# record could not yield one, so every session leader is held back and counted),
+# or `none` (hold nothing back).
 #
 # Environment knobs:
 #   FM_PROC_ROOT_OVERRIDE   proc root (default /proc); a path that is not a
-#                           directory selects the lsof fallback
+#                           directory, or one that does not answer the cwd
+#                           question, selects the lsof fallback
 #   FM_WTPROC_GRACE         seconds between TERM and KILL (default 3)
+#   FM_WTPROC_KILL_SETTLE   seconds to wait before confirming the KILL (default 1)
 #   FM_WTPROC_CREW_STATE_TIMEOUT  bound on the current-state read (default 20)
 #   FM_WTPROC_CREW_STATE_BIN      current-state reader (default bin/fm-crew-state.sh)
 
@@ -64,23 +91,54 @@ if ! declare -F fm_pid_identity >/dev/null 2>&1; then
 fi
 
 FM_WTPROC_GRACE=${FM_WTPROC_GRACE:-3}
+FM_WTPROC_KILL_SETTLE=${FM_WTPROC_KILL_SETTLE:-1}
 
 _fm_wtproc_proc_root() {
   printf '%s' "${FM_PROC_ROOT_OVERRIDE:-/proc}"
 }
 
-# fm_wtproc_resolver: which cwd source this host can answer with.
+# _fm_wtproc_proc_answers_cwd: does this proc root actually expose a working
+# directory, or does it merely exist?
+#
+# The existence of the directory proves nothing. A /proc that is not
+# Linux-shaped in this one respect - Cygwin/MSYS, a supported platform here
+# (bin/fm-wake-lib.sh), where a native Windows process's cwd link does not
+# resolve - would make every scan return an empty set with status 0, and every
+# caller reads that as "nothing is running there": a teardown would remove a
+# worktree with its processes still in it and a scan would report a leaking copy
+# as clean forever. That is the same silent degradation this library refuses to
+# accept from lsof, so the verdict is gated on the caller's own cwd link
+# resolving to the directory the caller is actually in.
+_fm_wtproc_proc_answers_cwd() {  # <root>
+  local root=$1 link target here
+  here=$(pwd -P 2>/dev/null) || return 1
+  for link in "$root/self/cwd" "$root/${BASHPID:-$$}/cwd" "$root/$$/cwd"; do
+    [ -L "$link" ] || continue
+    target=$(cd "$link" 2>/dev/null && pwd -P) || continue
+    [ "$target" = "$here" ] && return 0
+  done
+  return 1
+}
+
+# fm_wtproc_resolver: which cwd source this host can answer with. Memoised per
+# proc root: the self-test is cheap but the answer is asked once per scanned
+# root, and the root only changes under an explicit override.
+_FM_WTPROC_RESOLVER=
+_FM_WTPROC_RESOLVER_ROOT=
 fm_wtproc_resolver() {
-  if [ -d "$(_fm_wtproc_proc_root)" ]; then
-    printf 'proc'
-    return 0
+  local root
+  root=$(_fm_wtproc_proc_root)
+  if [ -z "$_FM_WTPROC_RESOLVER" ] || [ "$_FM_WTPROC_RESOLVER_ROOT" != "$root" ]; then
+    _FM_WTPROC_RESOLVER_ROOT=$root
+    if [ -d "$root" ] && _fm_wtproc_proc_answers_cwd "$root"; then
+      _FM_WTPROC_RESOLVER=proc
+    elif command -v lsof >/dev/null 2>&1; then
+      _FM_WTPROC_RESOLVER=lsof
+    else
+      _FM_WTPROC_RESOLVER=none
+    fi
   fi
-  if command -v lsof >/dev/null 2>&1; then
-    printf 'lsof'
-    return 0
-  fi
-  printf 'none'
-  return 0
+  printf '%s' "$_FM_WTPROC_RESOLVER"
 }
 
 # Every pid whose /proc cwd link resolves to <dir> or below it.
@@ -185,14 +243,40 @@ fm_wtproc_session_id() {  # <pid>
 
 # fm_wtproc_is_session_leader: a terminal endpoint's shell is the session leader
 # of the pty the backend opened for it, and its cwd is the task worktree - so it
-# is indistinguishable from a leaked server by cwd alone. Callers that must keep
-# the endpoint alive (a relaunch reuses it) protect every session leader. A
-# process that cannot be classified is treated as a leader, so an unreadable
-# state protects rather than kills.
+# is indistinguishable from a leaked server by cwd alone. This is the LAST
+# RESORT, used only when the record could not name the endpoint's shell: it is
+# not a way of identifying that shell, it is a way of not guessing, and it
+# withholds a daemon that called setsid inside the copy along with it. A process
+# that cannot be classified is treated as a leader, so an unreadable state
+# withholds rather than kills.
 fm_wtproc_is_session_leader() {  # <pid>
   local pid=$1 sess
   sess=$(fm_wtproc_session_id "$pid") || return 0
   [ "$sess" = "$pid" ]
+}
+
+# fm_wtproc_endpoint_shell_pid: the pid of the shell the task's OWN recorded
+# endpoint runs, asked of the backend that owns that endpoint.
+#
+# This is the whole of "which process must survive a cleanup that reuses the
+# endpoint". It is a fact read from the record, not a property inferred from the
+# process: a session leader that is not this pid has no claim on being spared,
+# and a backend that cannot answer the question gets no answer invented for it -
+# it fails, and the caller withholds and says so.
+fm_wtproc_endpoint_shell_pid() {  # <backend> <target>
+  local backend=$1 target=$2 pid
+  [ -n "$backend" ] && [ -n "$target" ] || return 1
+  case "$backend" in
+    tmux)
+      command -v tmux >/dev/null 2>&1 || return 1
+      pid=$(tmux display-message -p -t "$target" '#{pane_pid}' 2>/dev/null) || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  pid=$(printf '%s' "$pid" | tr -d '[:space:]')
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  fm_pid_alive "$pid" || return 1
+  printf '%s' "$pid"
 }
 
 # fm_wtproc_disposable_worktree: prove <dir> is a task's disposable local copy
@@ -205,18 +289,17 @@ fm_wtproc_is_session_leader() {  # <pid>
 # this home's projects/ clones alike - without depending on where they happen to
 # live. The remaining guards refuse the paths whose shape alone makes them
 # implausible as a task copy.
-fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
-  local dir=$1 home=${2:-${FM_HOME:-}} real top top_real git_dir common_dir home_real
-  [ -n "$dir" ] || { echo "fm-worktree-proc: no local copy recorded" >&2; return 1; }
-  [ -d "$dir" ] || { echo "fm-worktree-proc: '$dir' is not a directory" >&2; return 1; }
-  real=$(cd "$dir" 2>/dev/null && pwd -P) || {
-    echo "fm-worktree-proc: '$dir' cannot be resolved" >&2
-    return 1
-  }
+#
+# Every root a caller may signal into passes _fm_wtproc_refuse_sensitive_root
+# first, whatever kind of root it is: the shape refusals are what keep a record
+# that names the operator's own tree from turning into a kill root, and a second
+# root that skipped them would be a hole in the same wall.
+_fm_wtproc_refuse_sensitive_root() {  # <real-path> <fm-home> <what>
+  local real=$1 home=$2 what=$3 home_real
   case "$real" in
     /) echo "fm-worktree-proc: refusing the filesystem root" >&2; return 1 ;;
     /*/*) ;;
-    *) echo "fm-worktree-proc: '$real' is too shallow to be a task's local copy" >&2; return 1 ;;
+    *) echo "fm-worktree-proc: '$real' is too shallow to be $what" >&2; return 1 ;;
   esac
   if [ -n "${HOME:-}" ]; then
     home_real=$(cd "$HOME" 2>/dev/null && pwd -P) || home_real=$HOME
@@ -225,19 +308,29 @@ fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
       return 1
     fi
   fi
-  if [ -n "$home" ]; then
-    home_real=$(cd "$home" 2>/dev/null && pwd -P) || home_real=$home
-    if [ "$real" = "$home_real" ]; then
-      echo "fm-worktree-proc: '$real' is the firstmate home itself" >&2
-      return 1
-    fi
-    case "$real" in
-      "$home_real"/projects|"$home_real"/projects/*)
-        echo "fm-worktree-proc: '$real' is a primary clone, not a disposable copy" >&2
-        return 1
-        ;;
-    esac
+  [ -n "$home" ] || return 0
+  home_real=$(cd "$home" 2>/dev/null && pwd -P) || home_real=$home
+  if [ "$real" = "$home_real" ]; then
+    echo "fm-worktree-proc: '$real' is the firstmate home itself" >&2
+    return 1
   fi
+  case "$real" in
+    "$home_real"/projects|"$home_real"/projects/*)
+      echo "fm-worktree-proc: '$real' is a primary clone, not a disposable copy" >&2
+      return 1
+      ;;
+  esac
+}
+
+fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
+  local dir=$1 home=${2:-${FM_HOME:-}} real top top_real git_dir common_dir
+  [ -n "$dir" ] || { echo "fm-worktree-proc: no local copy recorded" >&2; return 1; }
+  [ -d "$dir" ] || { echo "fm-worktree-proc: '$dir' is not a directory" >&2; return 1; }
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || {
+    echo "fm-worktree-proc: '$dir' cannot be resolved" >&2
+    return 1
+  }
+  _fm_wtproc_refuse_sensitive_root "$real" "$home" "a task's local copy" || return 1
   top=$(git -C "$real" rev-parse --show-toplevel 2>/dev/null) || {
     echo "fm-worktree-proc: '$real' is not a git worktree" >&2
     return 1
@@ -261,9 +354,17 @@ fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
 }
 
 # fm_wtproc_task_tmp: the per-task temp root fm-spawn records, accepted only when
-# it still resolves to a directory named for this exact task.
-fm_wtproc_task_tmp() {  # <task-id> <dir>
-  local id=$1 dir=$2 real
+# it still resolves to a directory named for this exact task AND clears the same
+# shape refusals the worktree root does.
+#
+# This root cannot prove itself a linked git worktree - it is not a checkout at
+# all - so the name and the depth are all its structure gives. That is precisely
+# why the home and projects/ refusals have to apply here too: without them a
+# record reading `tasktmp=$HOME/projects/fm-x1` would turn every process under
+# the operator's own stack into a target, which is the one thing no root is ever
+# allowed to do.
+fm_wtproc_task_tmp() {  # <task-id> <dir> [fm-home]
+  local id=$1 dir=$2 home=${3:-${FM_HOME:-}} real
   [ -n "$id" ] && [ -n "$dir" ] || return 1
   [ -d "$dir" ] || return 1
   real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
@@ -271,10 +372,7 @@ fm_wtproc_task_tmp() {  # <task-id> <dir>
     */"fm-$id") ;;
     *) echo "fm-worktree-proc: temp root '$real' is not named for task $id" >&2; return 1 ;;
   esac
-  case "$real" in
-    /*/*) ;;
-    *) return 1 ;;
-  esac
+  _fm_wtproc_refuse_sensitive_root "$real" "$home" "a task's temp root" || return 1
   printf '%s' "$real"
 }
 
@@ -296,21 +394,33 @@ fm_wtproc_task_tmp() {  # <task-id> <dir>
 # veto the verdict, as does a read that times out or cannot be taken at all.
 # `done`, `failed`, and `unknown` - the last being what a torn-off worker with no
 # attributed run reads as - let it stand.
+#
+# FM_WTPROC_CREW_STATE is set on EVERY path, including the ones that never reach
+# the reader, so a caller quoting it can never name the wrong blocker: a live
+# endpoint reads `not-consulted`, a missing reader reads `no-reader`, and a read
+# that timed out or failed reads `unreadable`. Left carrying a previous call's
+# value it would tell an operator that a current-state read vetoed a cleanup the
+# endpoint verdict had already vetoed on its own.
 FM_WTPROC_CREW_STATE_TIMEOUT=${FM_WTPROC_CREW_STATE_TIMEOUT:-20}
 fm_wtproc_worker_is_gone() {  # <task-id> <agent-state>
   local id=$1 verdict=$2 bin out state
+  FM_WTPROC_CREW_STATE=not-consulted
+  export FM_WTPROC_CREW_STATE
   case "$verdict" in
     dead|missing) ;;
     *) return 1 ;;
   esac
   bin=${FM_WTPROC_CREW_STATE_BIN:-"$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-crew-state.sh"}
-  [ -x "$bin" ] || return 1
-  out=$(timeout "$FM_WTPROC_CREW_STATE_TIMEOUT" "$bin" "$id" 2>/dev/null) || return 1
+  [ -x "$bin" ] || { FM_WTPROC_CREW_STATE=no-reader; return 1; }
+  out=$(timeout "$FM_WTPROC_CREW_STATE_TIMEOUT" "$bin" "$id" 2>/dev/null) || {
+    FM_WTPROC_CREW_STATE=unreadable
+    return 1
+  }
   state=${out#state: }
   state=${state%% *}
+  [ -n "$state" ] || state=unreadable
   # Exposed so a caller can name the state that vetoed it.
   FM_WTPROC_CREW_STATE=$state
-  export FM_WTPROC_CREW_STATE
   case "$state" in
     done|failed|unknown) return 0 ;;
     *) return 1 ;;
@@ -339,40 +449,101 @@ _fm_wtproc_contains() {  # <pid-list> <pid>
   printf '%s\n' "$1" | grep -Fxq "$2"
 }
 
+# fm_wtproc_select: split the collected pids into the ones a caller may act on
+# and the ones it holds back, from FM_WTPROC_PIDS into FM_WTPROC_SELECTED.
+#
+# One implementation for the report and for the reap: `scan` naming a copy as
+# leaking and `reap` stopping what is in it have to be talking about the same
+# set of processes, and two filters written twice would eventually disagree
+# about which. Sets FM_WTPROC_SPARED_ENDPOINT to the endpoint shell it held back
+# and FM_WTPROC_SPARED_LEADERS to the number of session leaders it could not
+# rule out - a count callers are required to report rather than fold into an
+# empty result.
+FM_WTPROC_SELECTED=
+FM_WTPROC_SPARED_LEADERS=0
+FM_WTPROC_SPARED_ENDPOINT=
+fm_wtproc_select() {  # <spare>
+  local spare=$1 pid out=""
+  case "$spare" in
+    none|unknown) ;;
+    ''|*[!0-9]*) spare=unknown ;;
+  esac
+  FM_WTPROC_SELECTED=
+  FM_WTPROC_SPARED_LEADERS=0
+  FM_WTPROC_SPARED_ENDPOINT=
+  [ -n "$FM_WTPROC_PIDS" ] || return 0
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    case "$spare" in
+      none) ;;
+      unknown)
+        if fm_wtproc_is_session_leader "$pid"; then
+          FM_WTPROC_SPARED_LEADERS=$((FM_WTPROC_SPARED_LEADERS + 1))
+          continue
+        fi
+        ;;
+      *)
+        if [ "$pid" = "$spare" ]; then
+          # shellcheck disable=SC2034 # Consumed by sourcing callers.
+          FM_WTPROC_SPARED_ENDPOINT=$pid
+          continue
+        fi
+        ;;
+    esac
+    out="$out$pid
+"
+  done <<EOF
+$FM_WTPROC_PIDS
+EOF
+  FM_WTPROC_SELECTED=${out%$'\n'}
+}
+
 # fm_wtproc_reap: stop everything rooted (by cwd) under <dir>..., TERM first and
 # KILL after the grace period. Every signal is guarded twice: the pid must still
 # be under one of the roots at signal time, and its birth identity must still
 # match the one recorded when it was selected, so a pid recycled between the
 # scan and the signal is never touched.
 #
-# <keep-endpoint-shell> 1 protects session leaders (see
-# fm_wtproc_is_session_leader): the paths that reuse a terminal endpoint must not
-# close it. 0 reaps them too.
+# <spare> is passed straight to fm_wtproc_select: the endpoint shell's pid when
+# the caller reuses that endpoint and the record could name it, `unknown` when
+# it could not, `none` when nothing is held back.
 #
 # Prints one human-readable line per action on stderr and the reaped pids on
-# stdout. Returns 0 when nothing is left running, 1 when the scan could not be
-# answered or something survived - the caller decides what that means.
-fm_wtproc_reap() {  # <label> <keep-endpoint-shell> <dir>...
-  local label=$1 keep=$2 pid identity i reaped=""
-  local -a sel_pids sel_ids left_pids left_ids
+# stdout, and sets FM_WTPROC_REAPED and FM_WTPROC_SURVIVORS for callers that
+# need more than the exit status. The status distinguishes the four outcomes,
+# because "cannot be determined" said before any signal and said after one are
+# different facts about the machine and an operator acts on them differently:
+#
+#   0  nothing selected, or everything selected is gone
+#   1  the scan failed BEFORE anything was signalled - nothing was signalled
+#   2  signals were delivered and the outcome could not be established
+#   3  signals were delivered and something survived them (FM_WTPROC_SURVIVORS)
+FM_WTPROC_REAPED=
+FM_WTPROC_SURVIVORS=
+fm_wtproc_reap() {  # <label> <spare> <dir>...
+  local label=$1 spare=$2 pid identity i reaped=""
+  local -a sel_pids sel_ids left_pids left_ids survivors
   shift 2
+  FM_WTPROC_REAPED=
+  FM_WTPROC_SURVIVORS=
   if ! fm_wtproc_collect "$@"; then
     echo "fm-worktree-proc: cannot determine the $label processes under ${FM_WTPROC_FAILED_ROOT:-<missing>} on this host (no readable /proc and no lsof); nothing was signalled" >&2
     return 1
   fi
   [ -n "$FM_WTPROC_PIDS" ] || return 0
+  fm_wtproc_select "$spare"
+  if [ "$FM_WTPROC_SPARED_LEADERS" -gt 0 ]; then
+    echo "fm-worktree-proc: $FM_WTPROC_SPARED_LEADERS session leader(s) in ${*} were left alone because the endpoint's own shell could not be identified from the task record; inspect them by hand rather than assuming the copy is clean" >&2
+  fi
   sel_pids=()
   sel_ids=()
   while IFS= read -r pid; do
     [ -n "$pid" ] || continue
-    if [ "$keep" = 1 ] && fm_wtproc_is_session_leader "$pid"; then
-      continue
-    fi
     identity=$(fm_pid_identity "$pid") || continue
     sel_pids+=("$pid")
     sel_ids+=("$identity")
   done <<EOF
-$FM_WTPROC_PIDS
+$FM_WTPROC_SELECTED
 EOF
   [ "${#sel_pids[@]}" -gt 0 ] || return 0
   echo "fm-worktree-proc: stopping $label process(es) left in ${*}: ${sel_pids[*]}" >&2
@@ -385,8 +556,16 @@ EOF
       reaped="$reaped $pid"
     fi
   done
+  FM_WTPROC_REAPED=${reaped# }
+  # Past this point something HAS been signalled, so a scan that cannot answer
+  # any more leaves those processes in an unknown state rather than an untouched
+  # one; 2, never 1.
+  [ -n "$FM_WTPROC_REAPED" ] || return 0
   sleep "$FM_WTPROC_GRACE"
-  fm_wtproc_collect "$@" || return 1
+  fm_wtproc_collect "$@" || {
+    echo "fm-worktree-proc: the $label processes under ${FM_WTPROC_FAILED_ROOT:-<missing>} could not be re-checked after they were signalled; ${FM_WTPROC_REAPED} were sent TERM and their fate is unknown" >&2
+    return 2
+  }
   left_pids=()
   left_ids=()
   for i in "${!sel_pids[@]}"; do
@@ -397,17 +576,45 @@ EOF
       left_ids+=("${sel_ids[$i]}")
     fi
   done
-  if [ "${#left_pids[@]}" -gt 0 ]; then
-    echo "fm-worktree-proc: force-stopping $label process(es): ${left_pids[*]}" >&2
-    fm_wtproc_collect "$@" || return 1
-    for i in "${!left_pids[@]}"; do
-      pid=${left_pids[$i]}
-      if _fm_wtproc_contains "$FM_WTPROC_PIDS" "$pid" \
-         && [ "$(fm_pid_identity "$pid" 2>/dev/null || true)" = "${left_ids[$i]}" ]; then
-        kill -KILL "$pid" 2>/dev/null || true
-      fi
-    done
+  if [ "${#left_pids[@]}" -eq 0 ]; then
+    printf '%s\n' "$FM_WTPROC_REAPED"
+    return 0
   fi
-  printf '%s\n' "${reaped# }"
+  echo "fm-worktree-proc: force-stopping $label process(es): ${left_pids[*]}" >&2
+  fm_wtproc_collect "$@" || {
+    echo "fm-worktree-proc: the $label processes under ${FM_WTPROC_FAILED_ROOT:-<missing>} could not be re-checked before the force-stop; ${left_pids[*]} survived TERM and their fate is unknown" >&2
+    return 2
+  }
+  for i in "${!left_pids[@]}"; do
+    pid=${left_pids[$i]}
+    if _fm_wtproc_contains "$FM_WTPROC_PIDS" "$pid" \
+       && [ "$(fm_pid_identity "$pid" 2>/dev/null || true)" = "${left_ids[$i]}" ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+  # A KILL is not a receipt. A process wedged in an uninterruptible wait - the
+  # socket-heavy shape of the 2026-08-27 incident - stays on the process table
+  # after it, and reporting "stopped" for one of those tells an operator a leak
+  # is cleaned when it is still burning the host. Re-collect and say so.
+  sleep "$FM_WTPROC_KILL_SETTLE"
+  fm_wtproc_collect "$@" || {
+    echo "fm-worktree-proc: the $label processes under ${FM_WTPROC_FAILED_ROOT:-<missing>} could not be re-checked after the force-stop; ${left_pids[*]} were sent KILL and their fate is unknown" >&2
+    return 2
+  }
+  survivors=()
+  for i in "${!left_pids[@]}"; do
+    pid=${left_pids[$i]}
+    if _fm_wtproc_contains "$FM_WTPROC_PIDS" "$pid" \
+       && [ "$(fm_pid_identity "$pid" 2>/dev/null || true)" = "${left_ids[$i]}" ]; then
+      survivors+=("$pid")
+    fi
+  done
+  printf '%s\n' "$FM_WTPROC_REAPED"
+  [ "${#survivors[@]}" -eq 0 ] || {
+    # shellcheck disable=SC2034 # Consumed by sourcing callers (bin/fm-control.sh, bin/fm-orphan-reap.sh).
+    FM_WTPROC_SURVIVORS="${survivors[*]}"
+    echo "fm-worktree-proc: $label process(es) still running after being force-stopped: ${survivors[*]}" >&2
+    return 3
+  }
   return 0
 }
