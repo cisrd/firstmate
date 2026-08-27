@@ -2871,6 +2871,61 @@ test_leaked_tasktmp_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too"
 }
 
+# The teardown must never signal the shell it was started from. An operator who
+# does `cd <worktree> && fm-teardown.sh <id>` puts their own shell in the very
+# scan teardown is about to act on, and stopping it would close the session
+# running the teardown. This became reachable on hosts without lsof only when
+# the scan's gate moved to the shared resolver, so it is pinned here rather than
+# left to the two sibling paths that spare the chain inside fm_wtproc_select.
+test_teardown_never_signals_the_shell_it_was_started_from() {
+  local case_dir rc pid holder_pid
+  case_dir=$(make_case teardown-spares-its-invoker)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  # An ordinary leftover, so this case still proves the reap runs at all rather
+  # than passing because nothing was ever selected.
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "teardown-spares-its-invoker: setup sleeper did not start"
+
+  # A shell whose working directory is inside the worktree, which then runs the
+  # teardown as its child: exactly the operator's position. It records that it
+  # outlived the teardown; if teardown signals its own ancestor, the marker is
+  # never written.
+  cat > "$case_dir/holder.sh" <<EOF
+#!/usr/bin/env bash
+cd "$case_dir/wt" || exit 1
+FM_ROOT_OVERRIDE="$ROOT" \
+FM_STATE_OVERRIDE="$case_dir/state" \
+FM_CONFIG_OVERRIDE="$case_dir/config" \
+PATH="$case_dir/fakebin:\${FM_TEARDOWN_TEST_PATH:-\$PATH}" \
+  "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+printf '%s\\n' "\$?" > "$case_dir/holder.rc"
+: > "$case_dir/holder.survived"
+EOF
+  chmod +x "$case_dir/holder.sh"
+
+  "$case_dir/holder.sh" &
+  holder_pid=$!
+  wait "$holder_pid" 2>/dev/null || true
+
+  [ -f "$case_dir/holder.survived" ] \
+    || fail "teardown-spares-its-invoker: the shell that started the teardown did not outlive it"
+  rc=$(cat "$case_dir/holder.rc" 2>/dev/null || echo missing)
+  expect_code 0 "$rc" "teardown-spares-its-invoker: teardown should still succeed"
+
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "teardown-spares-its-invoker: sparing the invoker also spared an ordinary leftover"
+  fi
+  assert_grep "belong to this teardown itself" "$case_dir/stderr" \
+    "teardown-spares-its-invoker: teardown did not report the processes it left alone"
+  pass "teardown reaps a leftover but never signals the shell it was started from"
+}
+
 # The process-group fallback is for a host that can answer the cwd question
 # NEITHER from /proc NOR from lsof, so both sources are removed here: /proc is
 # pointed at a path that does not exist and lsof is taken off the search path.
@@ -3280,6 +3335,7 @@ test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
+test_teardown_never_signals_the_shell_it_was_started_from
 test_no_cwd_source_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed

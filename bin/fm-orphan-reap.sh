@@ -57,6 +57,12 @@
 #     second source declining to answer, and a stale record pointing at a copy
 #     since handed to a live task reads exactly that way. Such a copy is
 #     reported as UNDETERMINED and a reap of it is refused.
+#   - `alive` is the only reading that means a living owner, and the only one
+#     this command will describe that way. Every other non-gone reading -
+#     ambiguous, unreadable, an unverified backend, a failed classifier call -
+#     is the FIRST source declining to answer, so such a copy is reported as
+#     UNDETERMINED and refused too, rather than reported clean. A copy nobody
+#     could establish an owner for is not a copy known to have one.
 #   - The shell of the task's OWN recorded endpoint is spared, so a copy stays
 #     relaunchable - identified from that record (the backend's pane pid) and
 #     never inferred from a process's own shape. A session leader that is not
@@ -117,7 +123,7 @@ die() {  # <message>
 # in that subshell would never reach the caller. Absolute roots start with `/`,
 # so no real root can be mistaken for a marker.
 task_roots() {  # <task-id> <meta> <verbose>
-  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_real tmp_out
+  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_out tmp_out
   kind=$(fm_meta_get "$meta" kind)
   [ -n "$kind" ] || kind=ship
   case "$kind" in
@@ -128,13 +134,21 @@ task_roots() {  # <task-id> <meta> <verbose>
       ;;
   esac
   wt=$(fm_meta_get "$meta" worktree)
-  if ! wt_real=$(fm_wtproc_disposable_worktree "$wt" "$FM_HOME" 2>/dev/null); then
+  # One call, not two. On success this validator prints the resolved path and
+  # nothing else; on refusal it prints only its reason. So the single capture
+  # that would have carried the path carries the diagnostic instead - the same
+  # shape the temp root below already uses. Re-running it purely to reproduce
+  # that reason on stderr repeated the whole validation, several git
+  # invocations, for every refused copy in a fleet-wide sweep, and reported the
+  # reason from a SECOND reading that need not agree with the first that
+  # actually decided.
+  if ! wt_out=$(fm_wtproc_disposable_worktree "$wt" "$FM_HOME" 2>&1); then
     if [ "$verbose" = 1 ]; then
-      fm_wtproc_disposable_worktree "$wt" "$FM_HOME" >/dev/null || true
+      echo "task $id: recorded local copy '$wt' was refused, so it was NOT examined: ${wt_out:-no reason was given}" >&2
     fi
     return 1
   fi
-  printf '%s\n' "$wt_real"
+  printf '%s\n' "$wt_out"
   tmp=$(fm_meta_get "$meta" tasktmp)
   [ -n "$tmp" ] || return 0
   # On success fm_wtproc_task_tmp prints the resolved path and nothing else; on
@@ -211,9 +225,24 @@ listening_ports() {  # <pid>...
 # UNSCANNABLE line of its own and callers must not present it as fully examined.
 scan_task() {  # <task-id> <verbose>
   local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
-  local undetermined=0 label refused_path="" refused_reason=""
+  local undetermined=0 undetermined_why="" label refused_path="" refused_reason=""
   local -a roots=()
+  # EVERY global this function publishes is reset here, not just the two the
+  # early returns happened to reach. scan_task returns from a dozen places -
+  # no record, a copy that cannot qualify, an unlistable root, a living owner -
+  # and all but two of these were left holding the PREVIOUS task's values on
+  # each of them. In the fleet-wide sweep that means a copy that returned early
+  # was described by whatever the last examined copy had set: another task's
+  # pids, its verdict, its held-back shell. Nothing read them across tasks
+  # today, which is exactly why this had to be fixed before something did.
+  SCAN_ROOTS=()
+  SCAN_PIDS=
+  SCAN_VERDICT=
+  SCAN_SPARE=unknown
+  SCAN_SKIPPED_LEADERS=0
+  SCAN_UNSCANNABLE_ROOT=
   SCAN_REFUSED_ROOT=
+  SCAN_UNDETERMINED_WHY=
   SCAN_UNEXAMINED=0
   meta="$STATE/$id.meta"
   [ -f "$meta" ] || {
@@ -266,16 +295,37 @@ scan_task() {  # <task-id> <verbose>
   [ -n "$FM_WTPROC_PIDS" ] || return 1
   verdict=$(agent_verdict "$meta")
   case "$verdict" in
+    alive)
+      # The ONE positive reading of a living owner, and the only verdict that
+      # licenses saying so. These processes belong to a worker that is running.
+      [ "$verbose" = 1 ] && echo "task $id's agent reads 'alive'; its processes have a living owner and are left alone" >&2
+      return 1
+      ;;
     dead|missing) ;;
     *)
-      [ "$verbose" = 1 ] && echo "task $id's agent reads '$verdict'; its processes have a living owner and are left alone" >&2
-      return 1
+      # `ambiguous`, `unreadable`, `unverified`, and the local `unknown` this
+      # script substitutes when the classifier call itself fails. Every one is
+      # the classifier DECLINING to answer - never a reading that the worker is
+      # alive. Both halves of the old behaviour were wrong at once: the copy
+      # returned as clean, so a backend carrying no recovery classifier at all
+      # reported every leaking copy under it as empty; and the diagnostic
+      # asserted "its processes have a living owner", an owner the classifier
+      # had not given and could not give. A copy holding processes whose owner
+      # cannot be established is reported, under the same UNDETERMINED label an
+      # unreadable current state earns, and a reap of it is refused: an operator
+      # sees the leak, and only an operator judges it.
+      undetermined=1
+      undetermined_why="its agent state could not be determined (the classifier answered '$verdict')"
+      [ "$verbose" = 1 ] && echo "task $id: $undetermined_why; its processes are reported but never stopped" >&2
       ;;
   esac
   # Two sources have to agree before a copy is called ownerless; see
   # bin/fm-worktree-proc-lib.sh's fm_wtproc_worker_is_gone for the observed
   # misclassification that makes this gate load-bearing.
-  if ! fm_wtproc_worker_is_gone "$id" "$verdict"; then
+  # Asked only when the endpoint itself read gone. There is nothing for a second
+  # source to corroborate when the first declined to answer, and one source has
+  # never been enough to call a copy ownerless.
+  if [ "$undetermined" = 0 ] && ! fm_wtproc_worker_is_gone "$id" "$verdict"; then
     # `unknown` is the current-state reader saying it could not determine the
     # state. That is not a second source agreeing the worker is gone, so it
     # never licenses a stop - but it is not a positive reading of a live worker
@@ -284,6 +334,7 @@ scan_task() {  # <task-id> <verbose>
     # same answer: an operator sees the leak, and only an operator judges it.
     if [ "${FM_WTPROC_CREW_STATE:-}" = unknown ]; then
       undetermined=1
+      undetermined_why="its endpoint reads '$verdict' but its current state could not be read at all"
     else
       [ "$verbose" = 1 ] && echo "task $id's endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; the two disagree, so nothing in its local copy is touched" >&2
       return 1
@@ -302,6 +353,7 @@ scan_task() {  # <task-id> <verbose>
   SCAN_VERDICT=$verdict
   SCAN_SPARE=$spare
   SCAN_SKIPPED_LEADERS=$skipped
+  SCAN_UNDETERMINED_WHY=$undetermined_why
   # The label is settled BEFORE the empty-selection branch below. Whether this
   # copy's owner could be established is a fact about the copy, not about
   # whether anything was selected in it, so an undetermined owner has to survive
@@ -316,8 +368,8 @@ scan_task() {  # <task-id> <verbose>
     # a clean copy, and the report has to say so.
     [ "$skipped" -gt 0 ] || return 1
     if [ "$undetermined" = 1 ]; then
-      printf 'UNDETERMINED: %s agent=%s copy=%s leaders_skipped=%s (its current state could not be read at all AND the endpoint shell could not be identified from the record, so no session leader in this copy was classified; inspect them by hand)\n' \
-        "$id" "$verdict" "${roots[0]}" "$skipped"
+      printf 'UNDETERMINED: %s agent=%s copy=%s leaders_skipped=%s (%s, so this copy has no established owner; the endpoint shell could not be identified from the record either, so no session leader in it was classified - inspect them by hand)\n' \
+        "$id" "$verdict" "${roots[0]}" "$skipped" "$undetermined_why"
       return 4
     fi
     printf 'UNRESOLVED: %s agent=%s copy=%s leaders_skipped=%s (the endpoint shell could not be identified from the record, so no session leader in this copy was classified; inspect them by hand)\n' \
@@ -328,6 +380,11 @@ scan_task() {  # <task-id> <verbose>
   ports=$(listening_ports $pids)
   note=""
   [ "$skipped" -gt 0 ] && note=" leaders_skipped=$skipped"
+  # The reason travels on the line itself. An operator reading UNDETERMINED has
+  # to know WHICH source declined to answer before deciding what to do about
+  # the copy, and the label alone no longer says: it now covers an unreadable
+  # agent state as well as an unreadable current state.
+  [ "$undetermined" = 1 ] && note="$note ($undetermined_why, so nothing here is stopped for you)"
   printf '%s: %s agent=%s copy=%s pids=%s%s%s\n' \
     "$label" "$id" "$verdict" "${roots[0]}" "$(printf '%s' "$pids" | tr ' ' ',')" \
     "${ports:+ listening=$ports}" "$note"
@@ -377,7 +434,7 @@ cmd_scan() {
   echo "Each LEFTOVER line names a local copy whose worker is gone while processes it started are still running."
   echo "An UNRESOLVED line names one where the endpoint's own shell could not be identified from the record, so its session leaders were left unclassified rather than guessed at; inspect those by hand."
   if [ "$undetermined" = 1 ]; then
-    echo "An UNDETERMINED line names one whose endpoint is gone while its current state could not be read at all; its processes are reported but never stopped for you, because an undetermined state is not evidence the worker is gone."
+    echo "An UNDETERMINED line names a copy holding processes whose owner could not be established - its own agent state could not be read, or that state reads gone while its current state could not be read at all - and each line says which; its processes are reported but never stopped for you, because an undetermined reading is not evidence the worker is gone."
   fi
   if [ "$unscannable" = 1 ]; then
     echo "An UNSCANNABLE line names a recorded root that was not examined at all - this host could not list it, or the record naming it was refused - so nothing about it, clean or leaking, was established."
@@ -391,14 +448,9 @@ cmd_scan() {
 cmd_reap() {  # <task-id>
   local id=${1:-} rc=0 scan_rc=0
   [ -n "$id" ] || { usage >&2; exit 2; }
-  SCAN_ROOTS=()
-  SCAN_PIDS=
-  SCAN_VERDICT=
-  SCAN_SPARE=unknown
-  SCAN_SKIPPED_LEADERS=0
-  SCAN_UNSCANNABLE_ROOT=
-  SCAN_REFUSED_ROOT=
-  SCAN_UNEXAMINED=0
+  # scan_task resets every one of these itself, on entry, so the reap reads
+  # exactly what this call established and there is no second list here to fall
+  # out of step with that one.
   scan_task "$id" 1 >/dev/null || scan_rc=$?
   # Said before any outcome below, including the ones that stop the command: a
   # cleanup that covered fewer roots than the record names has to say so, or a
@@ -409,7 +461,7 @@ cmd_reap() {  # <task-id>
   case "$scan_rc" in
     0) ;;
     4)
-      die "task $id's endpoint is gone but its current state could not be determined; an undetermined state is not evidence its worker is gone - the same reading a stale record pointing at a reassigned copy produces - so nothing was stopped. Inspect the copy and its processes by hand"
+      die "task $id's local copy holds processes whose owner could not be established: ${SCAN_UNDETERMINED_WHY:-no reason was recorded}. An undetermined reading is not evidence its worker is gone - it is the same reading a stale record pointing at a copy since handed to a live task produces - so nothing was stopped. Inspect the copy and its processes by hand"
       ;;
     3)
       # "Nothing to stop" would be a claim about the copy; all that is known

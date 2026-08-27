@@ -797,6 +797,7 @@ FM_DATA_OVERRIDE=        # alternate data dir, mainly for tests
 FM_PROJECTS_OVERRIDE=    # alternate projects dir, mainly for tests
 FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for Linux process-identity and working-directory reads in fm-wake-lib.sh and fm-worktree-proc-lib.sh (and every caller of it, including fm-teardown.sh), mainly for tests
+FM_TASK_TMP_ROOT=/tmp    # parent of every task's per-task temp root, which fm-spawn.sh creates as $FM_TASK_TMP_ROOT/fm-<id>; fm-worktree-proc-lib.sh rebuilds the same path from the same value and refuses any recorded tasktmp= that does not resolve to it, so both sides must read the same setting or a task's temp root stops being cleanable
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)

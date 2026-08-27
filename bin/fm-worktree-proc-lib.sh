@@ -83,6 +83,11 @@
 #                           directory, one that does not answer the cwd
 #                           question, or one whose cwd listing cannot be
 #                           produced at all, selects the lsof fallback
+#   FM_TASK_TMP_ROOT        parent of each task's per-task temp root (default
+#                           /tmp). fm_wtproc_task_tmp rebuilds bin/fm-spawn.sh's
+#                           `$FM_TASK_TMP_ROOT/fm-<id>` from it and refuses a
+#                           recorded `tasktmp=` that resolves anywhere else, so
+#                           the two must be read with the same value set
 #   FM_WTPROC_GRACE         seconds between TERM and KILL (default 3)
 #   FM_WTPROC_KILL_SETTLE   seconds to wait before confirming the KILL (default 1)
 #   FM_WTPROC_CREW_STATE_TIMEOUT  bound on the current-state read (default 20)

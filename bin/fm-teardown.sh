@@ -1676,10 +1676,40 @@ task_pid_list_contains() {  # <pid-list> <pid>
   printf '%s\n' "$1" | grep -Fxq "$2"
 }
 
+# The invoker's own ancestor chain is never a leftover. A teardown typed from a
+# shell whose working directory is inside the worktree finds that shell in its
+# own scan, and signalling it would close the session running the teardown. The
+# two sibling paths on this branch spare it inside fm_wtproc_select; teardown
+# does its own signalling, so it has to spare it here. It matters on this host
+# in particular: the scan above used to be gated on lsof, which is absent, so
+# this reap only became live when that gate moved to the shared resolver.
+TASK_PIDS_SPARED_ANCESTORS=0
+
+# True when <pid> is part of THIS teardown's own process tree: either one of the
+# shells it was started from, or one of the short-lived helpers it spawns itself.
+# Both are in the scan whenever the teardown runs from inside the worktree, and
+# neither is a leftover of the gone worker - the helpers in particular are born
+# and die inside each reap pass, so treating them as leftovers makes the reap
+# refuse after its retries rather than finish. The descendant test walks up from
+# the candidate to THIS process only, never to the shells above it: a server the
+# operator's own shell started earlier is a genuine leftover and must stay in.
+task_pid_is_own_process_tree() {  # <pid> <ancestry>
+  local pid=$1 ancestry=$2 cur=$1 hops=0 self=$$
+  task_pid_list_contains "$ancestry" "$pid" && return 0
+  while [ "$hops" -lt 64 ]; do
+    cur=$(fm_wtproc_ppid "$cur") || return 1
+    case "$cur" in 0|1) return 1 ;; esac
+    [ "$cur" = "$self" ] && return 0
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 task_pids_under_roots() {  # <dir>...
   TASK_PIDS=
   TASK_PIDS_FAILED_DIR=
-  local dir dir_pids pids=""
+  TASK_PIDS_SPARED_ANCESTORS=0
+  local dir dir_pids pids="" ancestry pid kept=""
   for dir in "$@"; do
     [ -n "$dir" ] || continue
     if ! dir_pids=$(pids_with_cwd_under "$dir"); then
@@ -1689,7 +1719,22 @@ task_pids_under_roots() {  # <dir>...
     pids="$pids
 $dir_pids"
   done
-  TASK_PIDS=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  pids=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  [ -n "$pids" ] || { TASK_PIDS=; return 0; }
+  # Read once, outside the loop: the chain is the same for every candidate.
+  ancestry=$(fm_wtproc_ancestry)
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    if task_pid_is_own_process_tree "$pid" "$ancestry"; then
+      TASK_PIDS_SPARED_ANCESTORS=$((TASK_PIDS_SPARED_ANCESTORS + 1))
+      continue
+    fi
+    kept="$kept$pid
+"
+  done <<EOF
+$pids
+EOF
+  TASK_PIDS=${kept%$'\n'}
 }
 
 reap_task_backend_process_group() {  # <label>
@@ -1742,7 +1787,24 @@ reap_task_backend_process_group() {  # <label>
 # process that exits on its own between the two passes is simply absent from
 # the recheck. A host with no working-directory source at all uses the backend
 # process-group fallback; a scan error refuses before destructive teardown.
+# The reap runs from OUTSIDE the roots it is about to scan. Every helper it
+# spawns - the /proc walk, each identity read - inherits this shell's working
+# directory, so a teardown started from inside the worktree would list its own
+# short-lived helpers as leftovers, and a fresh set of them on each pass would
+# make the reap refuse instead of converging. Those are the scanner, not the
+# gone worker's work. The shell the operator actually typed in is a different
+# case and is spared by name in task_pids_under_roots. The previous directory is
+# restored, so nothing after this call sees a moved cwd.
 reap_task_worktree_processes() {  # <label> <dir>...
+  local prev rc=0
+  prev=$(pwd -P 2>/dev/null) || prev=/
+  CDPATH='' cd -- / 2>/dev/null || true
+  _reap_task_worktree_processes "$@" || rc=$?
+  CDPATH='' cd -- "$prev" 2>/dev/null || true
+  return "$rc"
+}
+
+_reap_task_worktree_processes() {  # <label> <dir>...
   local label=$1 pids pid identity current_pids i pass=1 max_passes=3
   local -a tracked_pids tracked_identities remaining_pids remaining_identities
   shift
@@ -1756,6 +1818,9 @@ reap_task_worktree_processes() {  # <label> <dir>...
       return 1
     fi
     pids=$TASK_PIDS
+    if [ "$pass" = 1 ] && [ "$TASK_PIDS_SPARED_ANCESTORS" -gt 0 ]; then
+      echo "warning: $TASK_PIDS_SPARED_ANCESTORS process(es) in task $ID's worktree/tasktmp belong to this teardown itself - the shell it was started from, inside the copy, and its own helpers - and were left alone" >&2
+    fi
     [ -n "$pids" ] || return 0
     tracked_pids=()
     tracked_identities=()
