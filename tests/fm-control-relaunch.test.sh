@@ -1797,6 +1797,38 @@ test_an_unstamped_copy_is_never_cleaned_up() {
   pass "fm-control relaunch: a copy carrying no allocation marker is never cleaned up"
 }
 
+# The other half of the same mechanism, at the writing end. A pool copy that is
+# REASSIGNED still holds the previous holder's marker, and overwriting it is the
+# only thing that retires it. So a marker this spawn could not write is not a
+# lesser marker than an absent one - it leaves the copy carrying somebody else's
+# identity while this task works in it, which is exactly the record that
+# validated a reassigned copy and stopped a live agent on 2026-08-27.
+test_an_unwritable_allocation_marker_refuses_the_spawn() {
+  local dir out rc tmproot
+  dir=$(new_case unstampable rl97)
+  add_ship_task "$dir" rl97 claude
+  printf 'zsh' > "$dir/fake/command"
+  # The temp root is stamped after the copy is, so this reaches the writer with
+  # everything else about the spawn already valid. It is pre-created complete,
+  # so the spawn's own mkdir -p succeeds and only the marker write is denied.
+  tmproot="$dir/tmproot"
+  mkdir -p "$tmproot/fm-rl97/gotmp"
+  chmod 555 "$tmproot/fm-rl97"
+
+  out=$(env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
+    FM_SPAWN_NO_GUARD=1 GROK_HOME="$dir/grokhome" FM_TASK_TMP_ROOT="$tmproot" \
+    "$SPAWN" rl97 --relaunch --harness claude 2>&1); rc=$?
+  chmod 755 "$tmproot/fm-rl97"
+
+  expect_code 1 "$rc" "a root that could not be stamped should refuse the spawn"$'\n'"$out"
+  assert_contains "$out" "could not be stamped with its allocation" \
+    "the refusal should name the marker it could not write"
+  assert_contains "$out" "previous task's identity" \
+    "the refusal should say why an unstamped reassigned copy is the dangerous case"
+
+  pass "fm-spawn: a local copy whose allocation marker cannot be written refuses to start"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1855,3 +1887,4 @@ test_a_stale_working_verb_withholds_the_relaunch_cleanup
 test_a_corroborated_stop_still_cleans_up_the_copy
 test_an_unstamped_copy_is_never_cleaned_up
 test_a_failed_cleanup_still_records_the_leaders_it_never_classified
+test_an_unwritable_allocation_marker_refuses_the_spawn

@@ -2648,31 +2648,48 @@ mkdir -p "$TASK_TMP/gotmp"
 # the second case fail, and it is re-minted on every relaunch so a previous
 # incarnation's record cannot authorise anything against the new one.
 #
-# bin/fm-worktree-proc-lib.sh refuses to signal into a root that cannot produce
-# a matching marker, so failing to write one here does not endanger anything -
-# it forfeits this task's automatic cleanup later. That is worth a warning and
-# not worth failing a spawn over.
+# EVERY failure here stops the spawn. It is tempting to warn and carry on, on
+# the reasoning that an unstamped root merely forfeits this task's own automatic
+# cleanup - the reader refuses what it cannot attribute, so nothing is signalled
+# in error. That reasoning holds for a root that has never been stamped. It does
+# not hold for the case this marker exists for.
+#
+# When a pool copy is REASSIGNED, the previous holder's marker is sitting in it,
+# and overwriting that marker is the only thing that retires it. A write that
+# fails leaves the old marker in place while this spawn proceeds, so the copy now
+# holds one task's work while carrying another's identity - and the departed
+# task's stale record validates against it exactly. That is the 2026-08-27
+# incident verbatim: a copy reassigned from a finished task to a live one, the
+# finished task's record accepted, and the live agent's processes stopped.
+#
+# So a marker that could not be written is not a lesser marker than an absent
+# one; it is the dangerous one. Refusing the spawn costs a task that has to be
+# started again. Continuing costs a live worker.
 if [ "$KIND" != secondmate ]; then
   OWNER_TOKEN=$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n') || OWNER_TOKEN=
-  if [ -z "$OWNER_TOKEN" ]; then
-    echo "warning: could not mint an allocation token for task $ID; its local copy will not be eligible for automatic process cleanup" >&2
-  else
-    # shellcheck source=bin/fm-worktree-proc-lib.sh
-    . "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
-    WT_REAL_FOR_OWNER=$(cd "$WT" 2>/dev/null && pwd -P) || WT_REAL_FOR_OWNER=
-    TASK_TMP_REAL_FOR_OWNER=$(cd "$TASK_TMP" 2>/dev/null && pwd -P) || TASK_TMP_REAL_FOR_OWNER=
-    for _owner_root in "worktree $WT_REAL_FOR_OWNER" "tmp $TASK_TMP_REAL_FOR_OWNER"; do
-      _owner_kind=${_owner_root%% *}
-      _owner_path=${_owner_root#* }
-      [ -n "$_owner_path" ] || continue
-      fm_wtproc_write_owner "$_owner_path" "$_owner_kind" "$ID" "$OWNER_TOKEN" || {
-        echo "warning: task $ID's $_owner_kind root was not stamped, so it will not be eligible for automatic process cleanup" >&2
-        OWNER_TOKEN=
-        break
-      }
-    done
-    unset _owner_root _owner_kind _owner_path
-  fi
+  [ -n "$OWNER_TOKEN" ] || {
+    echo "error: could not mint an allocation token for task $ID; refusing to start it in a local copy that would carry no proof of who owns it" >&2
+    exit 1
+  }
+  # shellcheck source=bin/fm-worktree-proc-lib.sh
+  . "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
+  WT_REAL_FOR_OWNER=$(cd "$WT" 2>/dev/null && pwd -P) || WT_REAL_FOR_OWNER=
+  TASK_TMP_REAL_FOR_OWNER=$(cd "$TASK_TMP" 2>/dev/null && pwd -P) || TASK_TMP_REAL_FOR_OWNER=
+  for _owner_root in "worktree $WT_REAL_FOR_OWNER" "tmp $TASK_TMP_REAL_FOR_OWNER"; do
+    _owner_kind=${_owner_root%% *}
+    _owner_path=${_owner_root#* }
+    # A root that cannot even be resolved is not a root that was skipped
+    # harmlessly: it is one this spawn is about to use and cannot stamp.
+    [ -n "$_owner_path" ] || {
+      echo "error: task $ID's $_owner_kind root could not be resolved, so its allocation could not be recorded in it; refusing to start" >&2
+      exit 1
+    }
+    fm_wtproc_write_owner "$_owner_path" "$_owner_kind" "$ID" "$OWNER_TOKEN" || {
+      echo "error: task $ID's $_owner_kind root '$_owner_path' could not be stamped with its allocation; if that copy was reassigned it still carries the previous task's identity, so refusing to start rather than leaving it attributable to someone else" >&2
+      exit 1
+    }
+  done
+  unset _owner_root _owner_kind _owner_path
 fi
 
 # Per-harness turn-end hook where enabled: a file that touches
