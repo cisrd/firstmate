@@ -639,6 +639,75 @@ test_an_undetermined_current_state_never_authorises_a_stop() {
   pass "an undetermined current state reports the leak but never authorises a stop, while a determined one does"
 }
 
+# --- 4d. an undetermined AGENT state is not a living owner -------------------
+#
+# The first source can decline to answer too, and `alive` is the only reading
+# that means a living owner. A backend carrying no recovery classifier answers
+# `unverified` for every task under it, and that used to return the copy as
+# clean while the report said outright that its processes had a living owner -
+# an owner the classifier had never given. The same shape reaches an ambiguous
+# or unreadable tmux endpoint. Such a copy is reported, under the UNDETERMINED
+# label, and a cleanup of it is refused: exactly the treatment an undetermined
+# CURRENT state gets one case above, for the same reason.
+
+test_an_undetermined_agent_state_is_never_reported_as_a_clean_copy() {
+  local dir pid out
+  dir="$TMP_ROOT/case-agent-undetermined"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-agentund
+  make_crew_state_stub "$dir"
+  # Both sources would otherwise agree the worker is gone, so nothing but the
+  # backend's inability to classify can account for the outcome below.
+  printf 'dead' > "$dir/agent"
+  printf 'done' > "$dir/crew"
+
+  pid=$(witness "$COPY")
+  write_task_meta agentund "$COPY" "fmses:fm-agentund"
+  # A backend with no recovery classifier: fm_backend_agent_state answers
+  # `unverified`, which is neither a gone verdict nor a reading of a live agent.
+  sed -i 's/^backend=tmux$/backend=zellij/' "$HOME_DIR/state/agentund.meta"
+
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"agentund"*) ;;
+    *) fail "agent-undetermined: a copy whose owner could not be established was reported as clean: $out" ;;
+  esac
+  case "$out" in
+    *"UNDETERMINED: agentund"*"$pid"*) ;;
+    *) fail "agent-undetermined: the copy's processes were not reported under the UNDETERMINED label: $out" ;;
+  esac
+  case "$out" in
+    *"LEFTOVER: agentund"*) fail "agent-undetermined: a copy was called ownerless on an unclassifiable agent state: $out" ;;
+  esac
+  # The diagnostic must not assert what the classifier never gave.
+  case "$out" in
+    *"living owner"*) fail "agent-undetermined: the report claimed a living owner the classifier never gave: $out" ;;
+  esac
+
+  out=$(run_orphan "$dir" reap agentund 2>&1) || true
+  case "$out" in
+    *"not evidence its worker is gone"*) ;;
+    *) fail "agent-undetermined: an explicit cleanup did not refuse the unclassifiable agent state: $out" ;;
+  esac
+  sleep 0.3
+  alive "$pid" || fail "agent-undetermined: a process was stopped although the agent state could not be determined"
+
+  # Only the backend changes: the same fixture, whose classifier can now answer,
+  # goes through - so this case hinges on the unclassifiable reading alone.
+  sed -i 's/^backend=zellij$/backend=tmux/' "$HOME_DIR/state/agentund.meta"
+  out=$(run_orphan "$dir" scan)
+  case "$out" in
+    *"LEFTOVER: agentund"*) ;;
+    *) fail "agent-undetermined: the same copy was not reported once its agent could be classified: $out" ;;
+  esac
+  run_orphan "$dir" reap agentund >/dev/null
+  sleep 0.3
+  alive "$pid" && fail "agent-undetermined: the copy's process survived a classifiable, agreeing verdict"
+
+  rm -f "$HOME_DIR/state/agentund.meta"
+  pass "an unclassifiable agent state reports the copy and refuses a stop, and never claims a living owner"
+}
+
 # --- 8. the per-task temp root is a reap root and gets the same refusals ------
 
 test_a_temp_root_in_the_operators_tree_is_never_a_reap_root() {
@@ -1310,6 +1379,7 @@ test_a_primary_checkout_is_never_a_target
 test_a_live_workers_processes_are_never_stopped
 test_a_disagreeing_current_state_vetoes_the_verdict
 test_an_undetermined_current_state_never_authorises_a_stop
+test_an_undetermined_agent_state_is_never_reported_as_a_clean_copy
 test_an_unreadable_working_directory_leaves_the_process_alone
 test_only_the_recorded_endpoint_shell_is_spared
 test_an_unnameable_endpoint_shell_holds_leaders_back_and_says_how_many
