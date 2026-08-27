@@ -66,6 +66,8 @@
 #                                          path is provably a linked worktree
 #                                          and not a primary checkout
 #   fm_wtproc_task_tmp <task-id> <dir>  -> echoes the resolved per-task tmp root
+#                                          (0 = accepted, 1 = refused with a
+#                                          reason, 2 = absent, nothing there)
 #   fm_wtproc_worker_is_gone <task-id> <agent-state>
 #   fm_wtproc_collect <dir>...          -> FM_WTPROC_PIDS
 #   fm_wtproc_snapshot_begin / _end     -> hold one machine listing across a
@@ -571,11 +573,34 @@ fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
 # The home and projects/ refusals still run first, so a record reading
 # `tasktmp=$HOME/projects/fm-x1` is turned away by the boundary that names the
 # operator's own stack, not merely by failing to be the recorded path.
+#
+# Three outcomes, not two:
+#   0  accepted; the resolved path is printed
+#   1  REFUSED; the reason is printed on stderr, and every refusing path here
+#      prints one - a refusal a caller can only report as "no reason was given"
+#      is an alarm with nothing in it
+#   2  ABSENT; nothing exists at that path, so there is nothing to examine and
+#      nothing to report
 fm_wtproc_task_tmp() {  # <task-id> <dir> [fm-home]
   local id=$1 dir=$2 home=${3:-${FM_HOME:-}} real expect expect_real
-  [ -n "$id" ] && [ -n "$dir" ] || return 1
-  [ -d "$dir" ] || return 1
-  real=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+  [ -n "$id" ] || { echo "fm-worktree-proc: no task id was given for a temp root" >&2; return 1; }
+  [ -n "$dir" ] || { echo "fm-worktree-proc: no temp root was recorded for task $id" >&2; return 1; }
+  # ABSENT is not UNEXAMINABLE, and the difference decides whether an operator
+  # is alarmed. A recorded root that no longer exists has nothing in it to
+  # examine - fm_wtproc_pids_under says so itself, treating a missing directory
+  # as "nothing is running there" with status 0 - so it is reported back with
+  # its own status 2 and the caller drops it silently. Refusing it as a root
+  # that "cannot be called clean" is an alarm with no content behind it, and a
+  # report that raises those is one people stop reading.
+  [ -e "$dir" ] || return 2
+  [ -d "$dir" ] || {
+    echo "fm-worktree-proc: task $id's recorded temp root '$dir' exists but is not a directory" >&2
+    return 1
+  }
+  real=$(cd "$dir" 2>/dev/null && pwd -P) || {
+    echo "fm-worktree-proc: task $id's recorded temp root '$dir' exists but could not be entered" >&2
+    return 1
+  }
   _fm_wtproc_refuse_sensitive_root "$real" "$home" "a task's temp root" || return 1
   expect="${FM_TASK_TMP_ROOT:-/tmp}/fm-$id"
   expect_real=$(cd "$expect" 2>/dev/null && pwd -P) || {

@@ -835,7 +835,7 @@ record_note() {
 # an operator to different places.
 REAP_RESULT=none
 reap_previous_incarnation() {  # <exit-result>
-  local exit_result=$1 wt_real tmp_real spare agent_now rc=0 tmp_refused=0
+  local exit_result=$1 wt_real tmp_real tmp_rc spare agent_now rc=0 tmp_refused=0
   local -a roots=()
   REAP_RESULT=none
   case "$KIND" in
@@ -868,12 +868,19 @@ reap_previous_incarnation() {  # <exit-result>
   # fm_wtproc_task_tmp prints the resolved path and nothing else; on refusal it
   # prints only its reason, so one capture carries both.
   if [ -n "$TASK_TMP" ]; then
-    if tmp_real=$(fm_wtproc_task_tmp "$ID" "$TASK_TMP" "$FM_HOME" 2>&1); then
-      roots+=("$tmp_real")
-    else
-      tmp_refused=1
-      echo "warning: task $ID's recorded temp root $TASK_TMP was refused, so nothing in it was examined or stopped: ${tmp_real:-no reason given}" >&2
-    fi
+    tmp_rc=0
+    tmp_real=$(fm_wtproc_task_tmp "$ID" "$TASK_TMP" "$FM_HOME" 2>&1) || tmp_rc=$?
+    case "$tmp_rc" in
+      0) roots+=("$tmp_real") ;;
+      # Absent: there is nothing at that path to examine or stop, so the
+      # cleanup below does not cover less than the record claims and there is
+      # nothing to warn about.
+      2) ;;
+      *)
+        tmp_refused=1
+        echo "warning: task $ID's recorded temp root $TASK_TMP was refused, so nothing in it was examined or stopped: ${tmp_real:-the temp-root check refused it without stating a reason; inspect that path by hand}" >&2
+        ;;
+    esac
   fi
   spare=$(fm_wtproc_endpoint_shell_pid "$BACKEND" "$T" 2>/dev/null) || spare=unknown
   fm_wtproc_reap "task $ID leftover" "$spare" "${roots[@]}" >/dev/null || rc=$?

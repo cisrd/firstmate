@@ -123,7 +123,7 @@ die() {  # <message>
 # in that subshell would never reach the caller. Absolute roots start with `/`,
 # so no real root can be mistaken for a marker.
 task_roots() {  # <task-id> <meta> <verbose>
-  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_out tmp_out
+  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_out tmp_out tmp_rc reason
   kind=$(fm_meta_get "$meta" kind)
   [ -n "$kind" ] || kind=ship
   case "$kind" in
@@ -151,16 +151,36 @@ task_roots() {  # <task-id> <meta> <verbose>
   printf '%s\n' "$wt_out"
   tmp=$(fm_meta_get "$meta" tasktmp)
   [ -n "$tmp" ] || return 0
-  # On success fm_wtproc_task_tmp prints the resolved path and nothing else; on
-  # refusal it prints only its reason, so one capture carries both.
-  if tmp_out=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" 2>&1); then
-    printf '%s\n' "$tmp_out"
-    return 0
-  fi
+  # Three outcomes, not two. On success fm_wtproc_task_tmp prints the resolved
+  # path and nothing else; on refusal it prints only its reason, so one capture
+  # carries both; and status 2 means the path simply is not there.
+  tmp_rc=0
+  tmp_out=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" 2>&1) || tmp_rc=$?
+  case "$tmp_rc" in
+    0)
+      printf '%s\n' "$tmp_out"
+      return 0
+      ;;
+    2)
+      # ABSENT, and that is not the same fact as UNEXAMINABLE. Nothing exists at
+      # that path, so there is nothing running in it and nothing an operator
+      # could inspect - the scan is not covering less than the record claims,
+      # it is covering everything the record actually points at. Reporting it
+      # as a root that cannot be called clean was an alarm with nothing behind
+      # it, and it fired on every scan for as long as the stale path stayed in
+      # the record.
+      [ "$verbose" = 1 ] && echo "task $id: recorded temp root '$tmp' does not exist, so there is nothing in it to examine" >&2
+      return 0
+      ;;
+  esac
+  # Every refusing path in the validator states a reason. The fallback below is
+  # a backstop for a future one that forgets to, and it still says something an
+  # operator can act on rather than filling the line with "no reason".
+  reason=${tmp_out:-the temp-root check refused it without stating a reason; inspect that path by hand}
   printf '!tmp-refused-path %s\n' "$tmp"
-  printf '!tmp-refused-reason %s\n' "${tmp_out:-no reason was given}"
+  printf '!tmp-refused-reason %s\n' "$reason"
   if [ "$verbose" = 1 ]; then
-    echo "task $id's recorded temp root '$tmp' was refused, so it was NOT examined: ${tmp_out:-no reason was given}" >&2
+    echo "task $id's recorded temp root '$tmp' was refused, so it was NOT examined: $reason" >&2
   fi
   return 0
 }
@@ -269,7 +289,7 @@ scan_task() {  # <task-id> <verbose>
     SCAN_REFUSED_ROOT=$refused_path
     SCAN_UNEXAMINED=1
     printf 'UNSCANNABLE: %s copy=%s (%s, so this recorded root was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
-      "$id" "$refused_path" "$refused_reason"
+      "$id" "$refused_path" "${refused_reason:-the temp-root check refused it without stating a reason}"
   fi
   [ "${#roots[@]}" -gt 0 ] || return 1
   # Cheapest question first: an empty copy needs no backend call at all, so a

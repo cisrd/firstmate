@@ -1278,6 +1278,68 @@ test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back() {
   pass "a copy whose owner could not be established says so even when every process in it was held back"
 }
 
+# --- 12b. a recorded root that is GONE is not a root that could not be read ---
+#
+# "I could not look" and "there is nothing there to look at" are different facts
+# and send an operator to different places. A recorded temp root that no longer
+# exists is the second: the scanner itself treats an absent directory as
+# "nothing is running there" and returns cleanly. Reporting it as a root that
+# cannot be called clean - and, worse, with an empty reason attached - fires on
+# every scan for as long as the stale path stays in the record, and a report
+# that raises contentless alarms is one people stop reading.
+
+test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable() {
+  local dir copy out rc pid_in_copy gone
+  dir="$TMP_ROOT/case-gone-tmp"
+  copy="$TMP_ROOT/copy-gone-tmp"
+  gone="$FM_TASK_TMP_ROOT/fm-gonetmp"
+  mkdir -p "$dir"
+  rm -rf "$gone"
+  git -C "$PRIMARY" worktree add --quiet -b gone-tmp "$copy"
+  make_backend_stub "$dir" fm-gonetmp
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid_in_copy=$(witness "$copy")
+  # The recorded temp root is the one fm-spawn WOULD have built for this task,
+  # so nothing but its absence can account for the outcome.
+  write_task_meta gonetmp "$copy" "fmses:fm-gonetmp" "$gone"
+
+  rc=0
+  out=$(run_orphan "$dir" scan) || rc=$?
+  case "$out" in
+    *UNSCANNABLE*) fail "gone-tmp: a temp root that simply does not exist was reported as unexaminable: $out" ;;
+  esac
+  case "$out" in
+    *"no reason was given"*) fail "gone-tmp: a report line was emitted with no reason behind it: $out" ;;
+  esac
+  [ "$rc" = 0 ] \
+    || fail "gone-tmp: an absent temp root made the scan exit $rc, as though the fleet had gone unexamined"
+  # The copy itself is still scanned and still reported, so this case cannot
+  # pass by the whole task being dropped.
+  case "$out" in
+    *"LEFTOVER: gonetmp"*"$pid_in_copy"*) ;;
+    *) fail "gone-tmp: the copy's own leftover stopped being reported: $out" ;;
+  esac
+
+  # The control: the SAME record, with that path present but not this task's
+  # own, is a genuine refusal and must still be reported.
+  mkdir -p "$TMP_ROOT/elsewhere-gone/fm-gonetmp"
+  write_task_meta gonetmp "$copy" "fmses:fm-gonetmp" "$TMP_ROOT/elsewhere-gone/fm-gonetmp"
+  rc=0
+  out=$(run_orphan "$dir" scan) || rc=$?
+  case "$out" in
+    *"UNSCANNABLE: gonetmp"*) ;;
+    *) fail "gone-tmp: a present-but-refused temp root stopped being reported: $out" ;;
+  esac
+  [ "$rc" = 3 ] \
+    || fail "gone-tmp: a genuinely unexamined root no longer makes the scan exit 3 (got $rc)"
+
+  kill -KILL "$pid_in_copy" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/gonetmp.meta"
+  pass "a temp root that no longer exists is not reported as unexaminable, while a present-but-refused one still is"
+}
+
 # --- 13. the resolver self-test runs once per observation, not once per root --
 
 test_the_resolver_self_test_is_not_repeated_for_every_root() {
@@ -1433,5 +1495,6 @@ test_a_listing_that_cannot_be_produced_is_never_an_empty_machine
 test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
 test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
+test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable
 test_the_resolver_self_test_is_not_repeated_for_every_root
 test_a_cleanup_never_signals_the_shell_it_was_started_from
