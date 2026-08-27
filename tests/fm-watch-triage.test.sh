@@ -2059,9 +2059,14 @@ test_busy_frozen_counters_are_reported() {
   # due: whatever fires below can only be the progress measure.
   touch "$state/busy-frozen.turn-ended"
   prime_turnend_seen "$state/busy-frozen.turn-ended"
+  # The worker was generating before it froze - the incident's actual sequence,
+  # and what proves this pane has a real meter rather than counter-shaped text.
+  # The previous poll read a lower count; this one reads 2481.
+  printf 'tok:n=2344 ' > "$state/.progress-counters-$key"
 
-  # Phase A: the first reading records the counters and starts the timer. A
-  # busy worker must never be reported on one sample.
+  # Phase A: the first reading watches the count advance (arming the measure),
+  # records it, and starts the timer. A busy worker must never be reported on
+  # one sample.
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
     FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 \
     FM_BUSY_NO_PROGRESS_SECS=999999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
@@ -2070,6 +2075,8 @@ test_busy_frozen_counters_are_reported() {
   if ! wait_poll_cycle "$state" "$pid"; then
     reap "$pid"; fail "a busy pane was reported on its very first progress reading: $(cat "$out")"
   fi
+  [ -e "$state/.progress-moved-$key" ] \
+    || fail "a count that advanced between two readings did not prove the pane has a real progress meter"
   [ -s "$state/.progress-fp-$key" ] || fail "the first poll of a busy pane recorded no progress reading"
   [ -s "$state/.progress-since-$key" ] || fail "the first poll of a busy pane started no progress timer"
   grep -F 'counters=1' "$state/.progress-fp-$key" >/dev/null \
@@ -2213,6 +2220,8 @@ test_idle_pane_keeps_the_unchanged_stale_path() {
     || fail "the progress measure recorded a reading for a pane that was not busy"
   [ ! -e "$state/.progress-since-$key" ] \
     || fail "the progress measure started a timer for a pane that was not busy"
+  [ ! -e "$state/.progress-moved-$key" ] \
+    || fail "the progress measure armed itself for a pane that was not busy"
   pass "a pane with no busy indicator keeps the unchanged ordinary stale path and never enters the progress measure"
 }
 
@@ -2235,6 +2244,8 @@ test_busy_declared_wait_is_exempt_from_the_progress_report() {
   # A frozen-counter window far past any threshold, exactly the state that would
   # report a worker that had NOT declared a wait.
   printf 'counters=1 act:turn=0 act:status=0 act:busy=0 tok:n=2481 ' > "$state/.progress-fp-$key"
+  printf 'tok:n=2481 ' > "$state/.progress-counters-$key"
+  : > "$state/.progress-moved-$key"
   echo $(( $(date +%s) - 100000 )) > "$state/.progress-since-$key"
 
   PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -2247,6 +2258,8 @@ test_busy_declared_wait_is_exempt_from_the_progress_report() {
   fi
   [ ! -e "$state/.progress-since-$key" ] \
     || fail "a declared wait kept a frozen-window timer running against it"
+  [ ! -e "$state/.progress-moved-$key" ] \
+    || fail "a declared wait kept its progress-measure bookkeeping"
   reap "$pid"
   pass "a worker that declared its own external wait is never reported through the progress measure"
 }
@@ -2309,6 +2322,9 @@ test_busy_no_progress_default_is_1500s() {
   printf 'counters=1 act:turn=%s act:status=%s act:busy=1 tok:n=2481 ' \
     "$(file_mtime "$state/busy-default-prog.turn-ended")" "$(seen_sig "$state/busy-default-prog.status")" \
     > "$state/.progress-fp-$key"
+  # This worker generated earlier, so its meter is already proven real.
+  printf 'tok:n=2481 ' > "$state/.progress-counters-$key"
+  : > "$state/.progress-moved-$key"
 
   # 22 minutes frozen: a long legitimate call, and the default must ride it out.
   echo $(( $(date +%s) - 1320 )) > "$state/.progress-since-$key"
@@ -2335,6 +2351,110 @@ test_busy_no_progress_default_is_1500s() {
   grep -F "busy but no progress" "$out" >/dev/null \
     || fail "the shipped-default report did not use the progress wording: $(cat "$out")"
   pass "the shipped no-progress fuse is 1500s (22 minutes stays quiet, 26 minutes reports)"
+}
+
+# Review finding, 2026-08-27: matching a counter SHAPE proves only that the text
+# looks like a meter. A counter-free harness whose transcript happens to show
+# "2481 tokens" or a quoted price inside the footer region matches exactly as a
+# real meter does - and being static forever is precisely what a frozen counter
+# looks like, so shape alone would report a perfectly healthy worker.
+# The pane's numbers must first be seen CHANGING, which static content can never
+# do. Until then it is treated exactly like a harness that renders no counters.
+test_static_counter_shaped_content_never_arms_the_measure() {
+  local dir state fakebin out capture_file window key sig pid
+  dir=$(make_case busy-static-content); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-transcript"
+  # A counter-free harness footer, with counter-shaped transcript text above it
+  # inside the same footer region. Only the clock moves, as it does for a
+  # perfectly healthy worker in one long call.
+  cat > "$capture_file" <<'PANE'
+> the last run burned 2481 tokens and cost $1.42
+I will keep that budget in mind.
+Working (6s - esc to interrupt)
+PANE
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-transcript.meta"
+  record_pi_busy "$state" busy-transcript
+  printf 'working: setup complete\n' > "$state/busy-transcript.status"
+  sig=$(seen_sig "$state/busy-transcript.status"); printf '%s' "$sig" > "$state/.seen-busy-transcript_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch "$state/busy-transcript.turn-ended"
+  prime_turnend_seen "$state/busy-transcript.turn-ended"
+  # A frozen window older than any threshold: if the shape alone armed the
+  # measure, this worker would be reported on the very next poll.
+  echo $(( $(date +%s) - 100000 )) > "$state/.progress-since-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 \
+    FM_BUSY_NO_PROGRESS_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  for _ in 1 2 3; do
+    if ! wait_poll_cycle "$state" "$pid"; then
+      reap "$pid"; fail "static counter-shaped transcript text was read as a real progress meter and reported a healthy worker: $(cat "$out")"
+    fi
+  done
+  [ ! -e "$state/.progress-moved-$key" ] \
+    || fail "text that never changed was accepted as proof of a real progress meter"
+  [ ! -e "$state/.progress-since-$key" ] \
+    || fail "an unproven pane kept a frozen-window timer running against it"
+  grep -F 'busy progress unmeasurable' "$state/.watch-triage.log" >/dev/null \
+    || fail "the unproven measure was not recorded anywhere: $(cat "$state/.watch-triage.log" 2>/dev/null)"
+  [ ! -s "$out" ] || fail "a healthy worker was reported off static transcript text: $(cat "$out")"
+  reap "$pid"
+  pass "counter-shaped text that never changes never arms the measure, so displayed content cannot report a healthy worker"
+}
+
+# An operator-supplied fuse that is zero, negative, or not a number must not
+# reach the comparison: zero would report an unchanged busy pane on every poll,
+# and a non-numeric value would make the test error out and disable the report
+# with nothing saying so. Both fall back to the shipped default.
+test_invalid_no_progress_fuse_falls_back_to_the_default() {
+  local dir state fakebin out capture_file window key sig pid bad
+  for bad in 0 -1 abc; do
+    dir=$(make_case "busy-bad-fuse-${bad#-}"); state="$dir/state"; fakebin="$dir/fakebin"
+    out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-badfuse"
+    busy_footer 61 2481 > "$capture_file"
+    printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-badfuse.meta"
+    record_pi_busy "$state" busy-badfuse
+    printf 'working: setup complete\n' > "$state/busy-badfuse.status"
+    sig=$(seen_sig "$state/busy-badfuse.status"); printf '%s' "$sig" > "$state/.seen-busy-badfuse_status"
+    key=$(printf '%s' "$window" | tr ':/.' '___')
+    touch "$state/busy-badfuse.turn-ended"
+    prime_turnend_seen "$state/busy-badfuse.turn-ended"
+    # An armed measure, frozen for 22 minutes: under the shipped 1500s default
+    # this stays quiet, under a zero or negative fuse it would report at once,
+    # and under a broken comparison nothing would ever report.
+    printf 'tok:n=2481 ' > "$state/.progress-counters-$key"
+    : > "$state/.progress-moved-$key"
+    echo $(( $(date +%s) - 1320 )) > "$state/.progress-since-$key"
+
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 \
+      FM_BUSY_NO_PROGRESS_SECS="$bad" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    if ! wait_poll_cycle "$state" "$pid"; then
+      reap "$pid"; fail "an invalid fuse value ($bad) reported a worker 22 minutes into a call: $(cat "$out")"
+    fi
+    [ ! -s "$out" ] || fail "an invalid fuse value ($bad) produced a wake: $(cat "$out")"
+    reap "$pid"
+
+    # Same worker past the shipped default: the fallback must still REPORT, or
+    # an invalid value would have disabled the measure instead of defaulting it.
+    echo $(( $(date +%s) - 1560 )) > "$state/.progress-since-$key"
+    : > "$out"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the intentional invalid-fuse stop ($bad)"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 \
+      FM_BUSY_NO_PROGRESS_SECS="$bad" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    wait_for_exit "$pid" 100 \
+      || { reap "$pid"; fail "an invalid fuse value ($bad) silently disabled the report instead of falling back to the default"; }
+    grep -F "busy but no progress" "$out" >/dev/null \
+      || fail "the invalid-fuse fallback did not report through the progress path ($bad): $(cat "$out")"
+  done
+  pass "a zero, negative, or non-numeric fuse falls back to the shipped default instead of reporting every poll or going silent"
 }
 
 test_nonterminal_stale_repairs_missing_or_corrupt_timer() {
@@ -3170,6 +3290,8 @@ test_idle_pane_keeps_the_unchanged_stale_path
 test_busy_declared_wait_is_exempt_from_the_progress_report
 test_counterless_harness_is_admitted_not_guessed
 test_busy_no_progress_default_is_1500s
+test_static_counter_shaped_content_never_arms_the_measure
+test_invalid_no_progress_fuse_falls_back_to_the_default
 test_busy_declared_pause_is_rechecked_not_wedge_escalated
 test_afk_busy_declared_pause_hands_off_plain_stale
 test_afk_busy_declared_pause_ticking_pane_hands_off_once
