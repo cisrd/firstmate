@@ -636,8 +636,121 @@ fm_wtproc_signalling_root() {  # <dir> <label> [fm-home]
   printf '%s' "$real"
 }
 
-fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
-  local dir=$1 home=${2:-${FM_HOME:-}} real top top_real git_dir common_dir
+# ---------------------------------------------------------------------------
+# Allocation ownership: proving a directory is THIS task's, not merely shaped
+# like one of its roots.
+#
+# Every guard above this point answers a question about a path's SHAPE - is it
+# a linked worktree, is it the deterministic temp path, is it clear of the home
+# and projects/. None of them answer the question that actually licenses a
+# signal: does this directory belong to the task whose record named it.
+#
+# Shape cannot answer it, because shape is reproducible. The task temp path is
+# built from the task id, so anything that recreates or reuses
+# `$FM_TASK_TMP_ROOT/fm-<id>` satisfies path equality exactly. A worktree is
+# allocated from a shared pool and handed back when a task ends, so the same
+# directory is a valid linked worktree for whichever task holds it NOW - the
+# structural checks pass identically for the task that left and the task that
+# arrived. In both cases a stale record still naming that path reaches a live
+# stranger's processes, and every check above says yes.
+#
+# Observed 2026-08-27 on the captain's host, from the other side: a stale task
+# record pointed at a copy that had since been reassigned to a running task,
+# and a forced cleanup on that record stopped the live agent. Path equality had
+# nothing to fail on - the path really was that shape - which is precisely why
+# it cannot stand in for ownership.
+#
+# The binding is a marker bin/fm-spawn.sh writes into each root when it
+# ALLOCATES it, carrying the task id and a token minted for that allocation and
+# recorded in state/<id>.meta. Reuse cannot forge it: a directory recreated for
+# other work carries no marker, and one reassigned to another task carries that
+# task's allocation instead, because its new owner's spawn overwrote it. The
+# token is what makes the second case fail - a task id alone would still match
+# after a pool worktree came back around to the same task.
+#
+# The worktree's marker lives in its per-worktree git directory rather than in
+# the working tree, so it never shows in `git status`, never blocks teardown's
+# dirty check, and never reaches a commit. The temp root has no such place, so
+# its marker is a dotfile at its top level.
+#
+# An UNMARKED root is refused, not accepted. It is what a copy allocated before
+# this binding existed looks like, and it is also what a reused path looks like;
+# nothing distinguishes them, so the safe reading is the one that stops. That
+# costs automatic cleanup on copies predating this change, which is a real loss
+# of coverage and is stated as such wherever the refusal surfaces.
+_FM_WTPROC_OWNER_FILE=fm-task-owner
+
+# _fm_wtproc_owner_marker_path: where a root's allocation marker lives.
+# Prints the path; fails only when a worktree's git directory cannot be read.
+_fm_wtproc_owner_marker_path() {  # <real-root> <kind:worktree|tmp>
+  local real=$1 kind=$2 git_dir
+  case "$kind" in
+    tmp) printf '%s/.%s' "$real" "$_FM_WTPROC_OWNER_FILE" ;;
+    worktree)
+      git_dir=$(git -C "$real" rev-parse --absolute-git-dir 2>/dev/null) || return 1
+      [ -n "$git_dir" ] || return 1
+      printf '%s/%s' "$git_dir" "$_FM_WTPROC_OWNER_FILE"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# fm_wtproc_write_owner: called by bin/fm-spawn.sh at allocation. Writing the
+# marker is what makes a later cleanup possible at all, so a failure to write
+# is reported rather than swallowed - a root whose marker never landed will be
+# refused later, and the operator should learn that here and not in six hours.
+fm_wtproc_write_owner() {  # <real-root> <kind> <task-id> <token>
+  local real=$1 kind=$2 id=$3 token=$4 marker
+  [ -n "$real" ] && [ -n "$id" ] && [ -n "$token" ] || {
+    echo "fm-worktree-proc: refusing to write an allocation marker without a root, task id and token" >&2
+    return 1
+  }
+  marker=$(_fm_wtproc_owner_marker_path "$real" "$kind") || {
+    echo "fm-worktree-proc: could not locate where $kind '$real' keeps its allocation marker" >&2
+    return 1
+  }
+  ( umask 077 && printf 'task=%s\ntoken=%s\n' "$id" "$token" > "$marker" ) || {
+    echo "fm-worktree-proc: could not write the allocation marker for $kind '$real'" >&2
+    return 1
+  }
+}
+
+# fm_wtproc_owns_root: 0 only when <real-root> carries an allocation marker
+# naming exactly this task AND this allocation token.
+#
+# Every refusal states which of the three it was - no marker, another task,
+# another allocation of this task - because they mean different things to the
+# operator reading the report: the first is a copy from before this binding or
+# a reused path, the second is a copy now held by someone else, and the third
+# is a stale record for a copy this task has since been given again.
+fm_wtproc_owns_root() {  # <real-root> <kind> <task-id> <expected-token>
+  local real=$1 kind=$2 id=$3 want=$4 marker have_task have_token
+  [ -n "$want" ] || {
+    echo "fm-worktree-proc: task $id has no recorded allocation token, so nothing can prove $kind '$real' is its own" >&2
+    return 1
+  }
+  marker=$(_fm_wtproc_owner_marker_path "$real" "$kind") || {
+    echo "fm-worktree-proc: could not locate where $kind '$real' keeps its allocation marker" >&2
+    return 1
+  }
+  [ -f "$marker" ] || {
+    echo "fm-worktree-proc: $kind '$real' carries no allocation marker, so it cannot be shown to belong to task $id; it predates this binding or the path has been reused" >&2
+    return 1
+  }
+  have_task=$(sed -n 's/^task=//p' "$marker" 2>/dev/null | head -n 1)
+  have_token=$(sed -n 's/^token=//p' "$marker" 2>/dev/null | head -n 1)
+  [ "$have_task" = "$id" ] || {
+    echo "fm-worktree-proc: $kind '$real' is allocated to task ${have_task:-an unnamed task}, not to task $id" >&2
+    return 1
+  }
+  [ "$have_token" = "$want" ] || {
+    echo "fm-worktree-proc: $kind '$real' carries a different allocation of task $id than the record names, so the record is stale" >&2
+    return 1
+  }
+}
+
+fm_wtproc_disposable_worktree() {  # <dir> [fm-home] <task-id> <allocation-token>
+  local dir=$1 home=${2:-${FM_HOME:-}} id=${3:-} token=${4:-} real top top_real git_dir common_dir
   [ -n "$dir" ] || { echo "fm-worktree-proc: no local copy recorded" >&2; return 1; }
   [ -d "$dir" ] || { echo "fm-worktree-proc: '$dir' is not a directory" >&2; return 1; }
   real=$(cd "$dir" 2>/dev/null && pwd -P) || {
@@ -664,21 +777,34 @@ fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
     echo "fm-worktree-proc: '$real' is a primary checkout, not a linked worktree" >&2
     return 1
   }
+  # Everything above is shape, and shape is reproducible: a pool worktree is a
+  # valid linked worktree for whichever task holds it now, so these checks pass
+  # identically for the task that left and the task that arrived. Ownership is
+  # the last word.
+  fm_wtproc_owns_root "$real" worktree "$id" "$token" || return 1
   printf '%s' "$real"
 }
 
 # fm_wtproc_task_tmp: the per-task temp root fm-spawn records, accepted only when
-# it clears the same shape refusals the worktree root does AND resolves to the
-# one path fm-spawn actually creates for this task.
+# it clears the same shape refusals the worktree root does, resolves to the one
+# path fm-spawn actually creates for this task, AND carries that spawn's own
+# allocation marker.
 #
 # This root cannot prove itself a linked git worktree - it is not a checkout at
 # all - so nothing in its own structure vouches for it. A name test cannot
 # stand in for that: matching any directory whose name ends in `fm-<id>` accepts
 # a correctly named root anywhere on the machine, so a stale or hand-edited
-# `tasktmp=` reaches processes that were never this task's. The binding is to
-# the exact path bin/fm-spawn.sh builds - `$FM_TASK_TMP_ROOT/fm-<id>`, with the
+# `tasktmp=` reaches processes that were never this task's. The path is bound to
+# the exact one bin/fm-spawn.sh builds - `$FM_TASK_TMP_ROOT/fm-<id>`, with the
 # same /tmp default both sides read - and a record naming anything else is
 # refused rather than reconciled.
+#
+# That equality is necessary and not sufficient, and the difference is the whole
+# point of the ownership check that follows it. The path is DERIVED from the
+# task id, so it is not evidence about the directory currently sitting there:
+# remove that directory and let unrelated work recreate the same path, and the
+# equality test passes on a root this task never owned. Only the allocation
+# marker separates the two.
 #
 # The home and projects/ refusals still run first, so a record reading
 # `tasktmp=$HOME/projects/fm-x1` is turned away by the boundary that names the
@@ -691,8 +817,8 @@ fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
 #      is an alarm with nothing in it
 #   2  ABSENT; nothing exists at that path, so there is nothing to examine and
 #      nothing to report
-fm_wtproc_task_tmp() {  # <task-id> <dir> [fm-home]
-  local id=$1 dir=$2 home=${3:-${FM_HOME:-}} real expect expect_real
+fm_wtproc_task_tmp() {  # <task-id> <dir> [fm-home] <allocation-token>
+  local id=$1 dir=$2 home=${3:-${FM_HOME:-}} token=${4:-} real expect expect_real
   [ -n "$id" ] || { echo "fm-worktree-proc: no task id was given for a temp root" >&2; return 1; }
   [ -n "$dir" ] || { echo "fm-worktree-proc: no temp root was recorded for task $id" >&2; return 1; }
   # ABSENT is not UNEXAMINABLE, and the difference decides whether an operator
@@ -721,6 +847,9 @@ fm_wtproc_task_tmp() {  # <task-id> <dir> [fm-home]
     echo "fm-worktree-proc: temp root '$real' is not task $id's own temp root $expect_real" >&2
     return 1
   }
+  # Path equality got us this far and can go no further: this path is BUILT from
+  # the task id, so anything that recreated or reused it matches exactly here.
+  fm_wtproc_owns_root "$real" tmp "$id" "$token" || return 1
   printf '%s' "$real"
 }
 

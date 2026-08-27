@@ -74,6 +74,14 @@ fm_git_worktree "$PRIMARY" "$COPY" task-branch
 # linked-worktree test.
 git -C "$PRIMARY" worktree add --quiet -b in-projects "$IN_PROJECTS"
 
+# Stamp a root with the allocation marker bin/fm-spawn.sh writes when it hands
+# that root to a task. Every fixture that expects a cleanup to be ALLOWED has to
+# carry one, because path shape alone no longer authorises anything.
+TEST_TOKEN=0123456789abcdef0123456789abcdef
+stamp_owner() {  # <root> <kind> <task-id> [token]
+  fm_wtproc_write_owner "$1" "$2" "$3" "${4:-$TEST_TOKEN}"
+}
+
 FM_HOME="$HOME_DIR"
 FM_STATE_OVERRIDE="$HOME_DIR/state"
 export FM_HOME FM_STATE_OVERRIDE
@@ -82,6 +90,12 @@ export FM_WTPROC_GRACE
 
 # shellcheck source=bin/fm-worktree-proc-lib.sh
 . "$ROOT/bin/fm-worktree-proc-lib.sh"
+
+# The suite-wide copy stands in for one this task was allocated, so it carries
+# the marker a real allocation would have left in it.
+stamp_owner "$COPY" worktree copyid
+stamp_owner "$IN_PROJECTS" worktree copyid
+
 
 # Witnesses are started inside command substitutions, so the parent shell never
 # sees an array append; the registry is a file for the same reason
@@ -146,8 +160,17 @@ write_task_meta() {  # <id> <worktree> <window> [tasktmp]
     echo "harness=claude"
     echo "kind=ship"
     echo "mode=no-mistakes"
+    echo "owner_token=$TEST_TOKEN"
     [ -n "${4:-}" ] && echo "tasktmp=$4"
   } > "$HOME_DIR/state/$1.meta"
+  # Stamp whatever the record points at, so a fixture describes a copy this task
+  # was actually given rather than one that merely has the right shape. Roots
+  # that a case means to have refused are stamped too: every refusal these tests
+  # assert is a SHAPE refusal, which fires before ownership is ever consulted, so
+  # stamping them keeps each case testing the guard it names.
+  [ -d "$2" ] && stamp_owner "$2" worktree "$1" 2>/dev/null
+  [ -n "${4:-}" ] && [ -d "$4" ] && stamp_owner "$4" tmp "$1" 2>/dev/null
+  return 0
 }
 
 # tmux/ps stubs modelling one endpoint whose agent state is whatever
@@ -240,12 +263,12 @@ run_orphan() {  # <case-dir> <args...>
 test_only_a_linked_worktree_is_a_disposable_copy() {
   local out rc
 
-  out=$(fm_wtproc_disposable_worktree "$COPY" "$HOME_DIR" 2>&1) \
+  out=$(fm_wtproc_disposable_worktree "$COPY" "$HOME_DIR" copyid "$TEST_TOKEN" 2>&1) \
     || fail "disposable-copy: the task's linked worktree was refused: $out"
   [ "$out" = "$COPY" ] || fail "disposable-copy: expected $COPY, got $out"
 
   rc=0
-  out=$(fm_wtproc_disposable_worktree "$PRIMARY" "$HOME_DIR" 2>&1) || rc=$?
+  out=$(fm_wtproc_disposable_worktree "$PRIMARY" "$HOME_DIR" copyid "$TEST_TOKEN" 2>&1) || rc=$?
   [ "$rc" != 0 ] || fail "disposable-copy: a primary checkout was accepted as a disposable copy"
   case "$out" in
     *"is a primary checkout"*) ;;
@@ -253,7 +276,7 @@ test_only_a_linked_worktree_is_a_disposable_copy() {
   esac
 
   rc=0
-  out=$(fm_wtproc_disposable_worktree "$IN_PROJECTS" "$HOME_DIR" 2>&1) || rc=$?
+  out=$(fm_wtproc_disposable_worktree "$IN_PROJECTS" "$HOME_DIR" copyid "$TEST_TOKEN" 2>&1) || rc=$?
   [ "$rc" != 0 ] || fail "disposable-copy: a clone under the home's projects/ was accepted"
   case "$out" in
     *"is a primary clone"*) ;;
@@ -261,11 +284,11 @@ test_only_a_linked_worktree_is_a_disposable_copy() {
   esac
 
   rc=0
-  out=$(fm_wtproc_disposable_worktree "$PLAIN" "$HOME_DIR" 2>&1) || rc=$?
+  out=$(fm_wtproc_disposable_worktree "$PLAIN" "$HOME_DIR" copyid "$TEST_TOKEN" 2>&1) || rc=$?
   [ "$rc" != 0 ] || fail "disposable-copy: a directory that is not a git worktree was accepted"
 
   rc=0
-  out=$(fm_wtproc_disposable_worktree "$HOME" "$HOME_DIR" 2>&1) || rc=$?
+  out=$(fm_wtproc_disposable_worktree "$HOME" "$HOME_DIR" copyid "$TEST_TOKEN" 2>&1) || rc=$?
   [ "$rc" != 0 ] || fail "disposable-copy: the home directory itself was accepted"
 
   pass "only a linked worktree outside the home's own clones is accepted as a disposable copy"
@@ -854,14 +877,15 @@ test_a_temp_root_in_the_operators_tree_is_never_a_reap_root() {
 
   good="$TMP_ROOT/fm-good"
   mkdir -p "$good"
-  out=$(fm_wtproc_task_tmp good "$good" "$HOME_DIR" 2>&1) \
+  stamp_owner "$good" tmp good
+  out=$(fm_wtproc_task_tmp good "$good" "$HOME_DIR" "$TEST_TOKEN" 2>&1) \
     || fail "temp-root: a legitimate per-task temp root was refused: $out"
   [ "$out" = "$good" ] || fail "temp-root: expected $good, got $out"
 
   projects_tmp="$HOME_DIR/projects/fm-tmpguard"
   mkdir -p "$projects_tmp"
   rc=0
-  out=$(fm_wtproc_task_tmp tmpguard "$projects_tmp" "$HOME_DIR" 2>&1) || rc=$?
+  out=$(fm_wtproc_task_tmp tmpguard "$projects_tmp" "$HOME_DIR" "$TEST_TOKEN" 2>&1) || rc=$?
   [ "$rc" != 0 ] || fail "temp-root: a temp root under the home's projects/ was accepted"
   case "$out" in
     *"is a primary clone"*) ;;
@@ -877,7 +901,7 @@ test_a_temp_root_in_the_operators_tree_is_never_a_reap_root() {
   mkdir -p "$home_tmp"
   rc=0
   out=$(HOME="$HOME_DIR" FM_TASK_TMP_ROOT="$HOME_DIR" \
-    fm_wtproc_task_tmp tmphome "$home_tmp" "$HOME_DIR" 2>&1) || rc=$?
+    fm_wtproc_task_tmp tmphome "$home_tmp" "$HOME_DIR" "$TEST_TOKEN" 2>&1) || rc=$?
   [ "$rc" != 0 ] || fail "temp-root: a temp root sitting directly in the home directory was accepted"
   case "$out" in
     *"sits directly in the home directory"*) ;;
@@ -924,7 +948,8 @@ test_a_temp_root_outside_the_recorded_path_is_refused() {
 
   own="$FM_TASK_TMP_ROOT/fm-bindx"
   mkdir -p "$own"
-  out=$(fm_wtproc_task_tmp bindx "$own" "$HOME_DIR" 2>&1) \
+  stamp_owner "$own" tmp bindx
+  out=$(fm_wtproc_task_tmp bindx "$own" "$HOME_DIR" "$TEST_TOKEN" 2>&1) \
     || fail "temp-root-binding: this task's own temp root was refused: $out"
   [ "$out" = "$own" ] || fail "temp-root-binding: expected $own, got $out"
 
@@ -934,7 +959,7 @@ test_a_temp_root_outside_the_recorded_path_is_refused() {
   elsewhere="$TMP_ROOT/elsewhere/fm-bindx"
   mkdir -p "$elsewhere"
   rc=0
-  out=$(fm_wtproc_task_tmp bindx "$elsewhere" "$HOME_DIR" 2>&1) || rc=$?
+  out=$(fm_wtproc_task_tmp bindx "$elsewhere" "$HOME_DIR" "$TEST_TOKEN" 2>&1) || rc=$?
   [ "$rc" != 0 ] \
     || fail "temp-root-binding: a correctly named temp root outside the recorded path was accepted"
   case "$out" in
@@ -1780,6 +1805,97 @@ test_an_unnameable_endpoint_shell_holds_leaders_back_and_says_how_many
 test_a_copy_with_only_unclassifiable_leaders_is_never_reported_clean
 test_a_temp_root_in_the_operators_tree_is_never_a_reap_root
 test_a_temp_root_outside_the_recorded_path_is_refused
+
+# --- 8c. matching the path is not owning the directory ----------------------
+#
+# The decisive case for the whole batch. Both roots are identified to a cleanup
+# by their path, and both paths are reproducible: the temp root's is BUILT from
+# the task id, and a pool worktree is a valid linked worktree for whichever task
+# holds it now. So a directory can satisfy every shape check and still belong to
+# somebody else. On 2026-08-27 that happened in the field - a stale record named
+# a copy since reassigned to a running task, and a forced cleanup stopped the
+# live agent.
+
+test_a_root_that_matches_the_path_but_not_the_allocation_is_refused() {
+  local own copy rc out pid_stranger
+
+  # The exact path fm-spawn would build for this task, recreated by unrelated
+  # work: right name, right place, no marker. Nothing about its shape differs
+  # from the real thing.
+  own="$FM_TASK_TMP_ROOT/fm-reused"
+  mkdir -p "$own"
+  rc=0
+  out=$(fm_wtproc_task_tmp reused "$own" "$HOME_DIR" "$TEST_TOKEN" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "ownership: a temp root at the exact recorded path was accepted with no allocation marker on it"
+  case "$out" in
+    *"carries no allocation marker"*) ;;
+    *) fail "ownership: the refusal did not name the missing marker: $out" ;;
+  esac
+
+  # Stamped, but for a DIFFERENT allocation - which is what a copy handed back
+  # to the pool and given out again looks like to a record that went stale.
+  stamp_owner "$own" tmp reused ffffffffffffffffffffffffffffffff \
+    || fail "ownership: could not stamp the fixture"
+  rc=0
+  out=$(fm_wtproc_task_tmp reused "$own" "$HOME_DIR" "$TEST_TOKEN" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "ownership: a temp root carrying another allocation of this task was accepted"
+  case "$out" in
+    *"different allocation"*) ;;
+    *) fail "ownership: the refusal did not name the stale record: $out" ;;
+  esac
+
+  # Stamped for another task entirely: the reassignment case, stated plainly.
+  stamp_owner "$own" tmp someone-else \
+    || fail "ownership: could not stamp the fixture"
+  rc=0
+  out=$(fm_wtproc_task_tmp reused "$own" "$HOME_DIR" "$TEST_TOKEN" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "ownership: a temp root allocated to another task was accepted"
+  case "$out" in
+    *"allocated to task someone-else"*) ;;
+    *) fail "ownership: the refusal did not name the other owner: $out" ;;
+  esac
+
+  # Control: stamped for this task and this allocation, it is accepted. Without
+  # this arm the three refusals above could be produced by a validator that
+  # simply refuses everything.
+  stamp_owner "$own" tmp reused \
+    || fail "ownership: could not stamp the fixture"
+  out=$(fm_wtproc_task_tmp reused "$own" "$HOME_DIR" "$TEST_TOKEN" 2>&1) \
+    || fail "ownership: this task's own stamped temp root was refused: $out"
+  [ "$out" = "$own" ] || fail "ownership: expected $own, got $out"
+
+  # The same for a linked worktree, which is the shape the field incident took.
+  copy="$TMP_ROOT/reassigned"
+  git -C "$PRIMARY" worktree add --quiet -b reassigned "$copy"
+  stamp_owner "$copy" worktree the-new-owner \
+    || fail "ownership: could not stamp the worktree fixture"
+  rc=0
+  out=$(fm_wtproc_disposable_worktree "$copy" "$HOME_DIR" old-record "$TEST_TOKEN" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "ownership: a linked worktree now allocated to another task was accepted for the stale record that still named it"
+  case "$out" in
+    *"allocated to task the-new-owner"*) ;;
+    *) fail "ownership: the worktree refusal did not name the other owner: $out" ;;
+  esac
+
+  # End to end: nothing in that reassigned copy is signalled.
+  ( cd "$copy" && sleep 60 ) >/dev/null 2>&1 &
+  pid_stranger=$!
+  sleep 1
+  fm_wtproc_reap "stale record" unknown \
+    "$(fm_wtproc_disposable_worktree "$copy" "$HOME_DIR" old-record "$TEST_TOKEN" 2>/dev/null || true)" \
+    >/dev/null 2>&1 || true
+  sleep 1
+  alive "$pid_stranger" \
+    || fail "ownership: a process in a copy reassigned to another task was stopped by a stale record's cleanup"
+  kill -KILL "$pid_stranger" 2>/dev/null || true
+
+  pass "a root is refused when it matches the recorded path but carries another allocation, another task, or no marker at all"
+}
+test_a_root_that_matches_the_path_but_not_the_allocation_is_refused
 test_the_reap_distinguishes_a_scan_that_broke_before_a_signal_from_one_after
 test_a_scan_that_breaks_between_selecting_and_signalling_names_the_root
 test_a_process_that_outlives_the_force_stop_is_never_reported_stopped

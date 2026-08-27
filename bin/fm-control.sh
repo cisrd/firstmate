@@ -322,6 +322,10 @@ RECORDED_HARNESS=$(fm_meta_get "$META" harness)
 KIND=$(fm_meta_get "$META" kind)
 WT=$(fm_meta_get "$META" worktree)
 TASK_TMP=$(fm_meta_get "$META" tasktmp)
+# The token this task's spawn stamped into both roots. Absent on a record made
+# before that binding existed, in which case neither root can be shown to be
+# this task's and the cleanup below refuses rather than guesses.
+OWNER_TOKEN=$(fm_meta_get "$META" owner_token)
 [ -n "$KIND" ] || KIND=ship
 
 HARNESS=$(fm_control_harness_family "$RECORDED_HARNESS") \
@@ -834,48 +838,59 @@ record_note() {
 # signalled" and "N processes were signalled and may or may not have died" send
 # an operator to different places.
 REAP_RESULT=none
-reap_previous_incarnation() {  # <exit-result>
-  local exit_result=$1 wt_real tmp_real tmp_rc spare agent_now rc=0 tmp_refused=0
+reap_previous_incarnation() {
+  local wt_real tmp_real tmp_rc spare agent_now rc=0 tmp_refused=0
   local -a roots=()
   REAP_RESULT=none
   case "$KIND" in
     ship|scout) ;;
     *) REAP_RESULT="skipped-kind"; return 0 ;;
   esac
-  # `stopped` means this run delivered the exit command and watched the agent
-  # go, which is proof enough on its own. `already-stopped` means the agent was
-  # only ever READ as gone, so the endpoint is asked again here and must still
-  # read gone before anything in the copy is signalled - a live agent's
-  # processes are never touched, on any path.
+  # TWO independent sources must agree the worker is gone before anything in its
+  # copy is signalled, on this path exactly as on the detection path.
   #
-  # The endpoint is the WHOLE test on this path, and deliberately so. This used
-  # to also require the current-state reader to say `done` or `failed`, and that
-  # requirement - correct on the detection path, where nobody is replacing
-  # anybody and the worker may well be alive - closed the cleanup in exactly the
-  # case it was written for. A worker killed mid-run by quota exhaustion leaves
-  # the endpoint reading `dead` while the current state still reads `working`,
-  # from a no-mistakes run that never got to finish or from the status log's
-  # last `working` verb. That is the shape of the incident on 2026-08-27, so the
-  # cleanup withheld precisely on the process that saturated the host.
+  # This gate was briefly narrowed to the endpoint alone, on the reasoning that
+  # relaunch is different in kind: firstmate is deliberately replacing this
+  # worker, so the copy has a known owner and that owner is being retired by the
+  # caller. The reasoning was that a stale `working` verb is not a worker to
+  # defend, and that requiring it closed the cleanup in precisely the case this
+  # batch was written for - a worker killed mid-run by quota exhaustion leaves
+  # the endpoint reading `dead` while the current state still reads `working`.
   #
-  # Here there is no living owner for that second source to protect. Firstmate
-  # is replacing this worker, deliberately, at this moment: the copy has a known
-  # owner and it is being retired by the caller. A stale `working` verb is not
-  # evidence of a worker to defend, and treating it as one costs the batch its
-  # own purpose. bin/fm-orphan-reap.sh's detection path keeps the two-source
-  # requirement unchanged, because there nobody is replacing anybody.
-  if [ "$exit_result" != stopped ]; then
-    agent_now=$(agent_state)
-    case "$agent_now" in
-      dead|missing) ;;
-      *)
-        echo "warning: task $ID's agent was already recorded as stopped, but its endpoint now reads '$agent_now' rather than gone; leaving every process in its local copy alone" >&2
-        REAP_RESULT="unconfirmed-stop"
-        return 0
-        ;;
-    esac
+  # It is restored because the premise does not survive the failure it has to
+  # withstand. "The worker is being replaced" is not an independent fact here;
+  # it is the SAME classifier reading, re-used as its own justification. When
+  # the backend misclassifies a live worker as dead, `do_exit` returns
+  # `already-stopped` without ever sending an exit command, and the recheck
+  # below asks that same classifier again and gets the same wrong answer. Two
+  # readings from one source are one reading. The endpoint alone therefore
+  # licensed stopping a live worker's processes, which is the one outcome worse
+  # than the leak this whole mechanism exists to stop - and on 2026-08-27 a live
+  # agent was in fact killed on a stale reading of exactly this shape.
+  #
+  # The cost is real and is not hidden: the quota-exhaustion case that motivated
+  # this batch is no longer cleaned up automatically on relaunch. It is
+  # REPORTED, and an operator decides. Saturation costs hours of nuisance;
+  # stopping a live worker costs work and trust. They do not weigh the same.
+  #
+  # `stopped` is not exempt. It means this run delivered the exit command and
+  # watched the agent go - but "watched it go" is that same classifier reporting
+  # a transition, so it is not a second source either.
+  agent_now=$(agent_state)
+  case "$agent_now" in
+    dead|missing) ;;
+    *)
+      echo "warning: task $ID's agent was recorded as stopped, but its endpoint now reads '$agent_now' rather than gone; leaving every process in its local copy alone" >&2
+      REAP_RESULT="unconfirmed-stop"
+      return 0
+      ;;
+  esac
+  if ! fm_wtproc_worker_is_gone "$ID" "$agent_now"; then
+    echo "warning: task $ID's endpoint reads '$agent_now', but its current state reads '${FM_WTPROC_CREW_STATE:-unread}', which does not confirm the worker has finished; leaving every process in its local copy alone for an operator to judge" >&2
+    REAP_RESULT="uncorroborated-stop"
+    return 0
   fi
-  if ! wt_real=$(fm_wtproc_disposable_worktree "$WT" "$FM_HOME"); then
+  if ! wt_real=$(fm_wtproc_disposable_worktree "$WT" "$FM_HOME" "$ID" "$OWNER_TOKEN"); then
     echo "warning: task $ID's local copy $WT could not be confirmed disposable; leaving every process in it alone" >&2
     REAP_RESULT="unconfirmed-copy"
     return 0
@@ -889,7 +904,7 @@ reap_previous_incarnation() {  # <exit-result>
   # prints only its reason, so one capture carries both.
   if [ -n "$TASK_TMP" ]; then
     tmp_rc=0
-    tmp_real=$(fm_wtproc_task_tmp "$ID" "$TASK_TMP" "$FM_HOME" 2>&1) || tmp_rc=$?
+    tmp_real=$(fm_wtproc_task_tmp "$ID" "$TASK_TMP" "$FM_HOME" "$OWNER_TOKEN" 2>&1) || tmp_rc=$?
     case "$tmp_rc" in
       0) roots+=("$tmp_real") ;;
       # Absent: there is nothing at that path to examine or stop, so the
@@ -980,7 +995,7 @@ do_relaunch() {
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)
-  reap_previous_incarnation "$exit_result"
+  reap_previous_incarnation
   journal_write exited "${CHECKPOINT_LINES[@]}" "$note_line" \
     "exit_result=$exit_result" "reap=$REAP_RESULT"
 

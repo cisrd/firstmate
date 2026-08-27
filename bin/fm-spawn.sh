@@ -2635,6 +2635,46 @@ fi
 TASK_TMP="${FM_TASK_TMP_ROOT:-/tmp}/fm-$ID"
 mkdir -p "$TASK_TMP/gotmp"
 
+# Allocation ownership marker. Both roots above are identified to every later
+# cleanup by their PATH, and neither path is evidence about the directory
+# currently sitting at it: the temp root's path is built from the task id, so
+# anything that recreates it matches, and the worktree comes from a shared pool
+# that hands the same directory to a different task once this one ends.
+#
+# So each root is stamped, here at allocation, with this task's id and a token
+# minted for THIS allocation and recorded alongside it in state/<id>.meta. A
+# reused path carries no marker, and a reassigned copy carries its new owner's,
+# because that owner's spawn overwrote it. The token, not the id, is what makes
+# the second case fail, and it is re-minted on every relaunch so a previous
+# incarnation's record cannot authorise anything against the new one.
+#
+# bin/fm-worktree-proc-lib.sh refuses to signal into a root that cannot produce
+# a matching marker, so failing to write one here does not endanger anything -
+# it forfeits this task's automatic cleanup later. That is worth a warning and
+# not worth failing a spawn over.
+if [ "$KIND" != secondmate ]; then
+  OWNER_TOKEN=$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \n') || OWNER_TOKEN=
+  if [ -z "$OWNER_TOKEN" ]; then
+    echo "warning: could not mint an allocation token for task $ID; its local copy will not be eligible for automatic process cleanup" >&2
+  else
+    # shellcheck source=bin/fm-worktree-proc-lib.sh
+    . "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
+    WT_REAL_FOR_OWNER=$(cd "$WT" 2>/dev/null && pwd -P) || WT_REAL_FOR_OWNER=
+    TASK_TMP_REAL_FOR_OWNER=$(cd "$TASK_TMP" 2>/dev/null && pwd -P) || TASK_TMP_REAL_FOR_OWNER=
+    for _owner_root in "worktree $WT_REAL_FOR_OWNER" "tmp $TASK_TMP_REAL_FOR_OWNER"; do
+      _owner_kind=${_owner_root%% *}
+      _owner_path=${_owner_root#* }
+      [ -n "$_owner_path" ] || continue
+      fm_wtproc_write_owner "$_owner_path" "$_owner_kind" "$ID" "$OWNER_TOKEN" || {
+        echo "warning: task $ID's $_owner_kind root was not stamped, so it will not be eligible for automatic process cleanup" >&2
+        OWNER_TOKEN=
+        break
+      }
+    done
+    unset _owner_root _owner_kind _owner_path
+  fi
+fi
+
 # Per-harness turn-end hook where enabled: a file that touches
 # state/<id>.turn-ended when the agent finishes a turn. Worktree-resident hooks
 # and token pointers stay out of git's view so they never block teardown's dirty
@@ -3044,7 +3084,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project harness kind mode yolo tasktmp owner_token model effort busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -3060,6 +3100,7 @@ preserve_relaunch_meta() {
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"
+  [ -z "${OWNER_TOKEN:-}" ] || echo "owner_token=$OWNER_TOKEN"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"

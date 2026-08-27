@@ -134,7 +134,7 @@ die() {  # <message>
 # in that subshell would never reach the caller. Absolute roots start with `/`,
 # so no real root can be mistaken for a marker.
 task_roots() {  # <task-id> <meta> <verbose>
-  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_out tmp_out tmp_rc reason
+  local id=$1 meta=$2 verbose=$3 kind wt tmp wt_out tmp_out tmp_rc reason owner_token
   kind=$(fm_meta_get "$meta" kind)
   [ -n "$kind" ] || kind=ship
   case "$kind" in
@@ -145,6 +145,10 @@ task_roots() {  # <task-id> <meta> <verbose>
       ;;
   esac
   wt=$(fm_meta_get "$meta" worktree)
+  # The allocation token this task's spawn minted and stamped into both roots.
+  # A record without one names roots that predate this binding, and nothing in
+  # them can be shown to be this task's, so the validators below refuse them.
+  owner_token=$(fm_meta_get "$meta" owner_token)
   # One call, not two. On success this validator prints the resolved path and
   # nothing else; on refusal it prints only its reason. So the single capture
   # that would have carried the path carries the diagnostic instead - the same
@@ -153,7 +157,7 @@ task_roots() {  # <task-id> <meta> <verbose>
   # invocations, for every refused copy in a fleet-wide sweep, and reported the
   # reason from a SECOND reading that need not agree with the first that
   # actually decided.
-  if ! wt_out=$(fm_wtproc_disposable_worktree "$wt" "$FM_HOME" 2>&1); then
+  if ! wt_out=$(fm_wtproc_disposable_worktree "$wt" "$FM_HOME" "$id" "$owner_token" 2>&1); then
     if [ "$verbose" = 1 ]; then
       echo "task $id: recorded local copy '$wt' was refused, so it was NOT examined: ${wt_out:-the local-copy check refused it without stating a reason; inspect that path by hand}" >&2
     fi
@@ -166,7 +170,7 @@ task_roots() {  # <task-id> <meta> <verbose>
   # path and nothing else; on refusal it prints only its reason, so one capture
   # carries both; and status 2 means the path simply is not there.
   tmp_rc=0
-  tmp_out=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" 2>&1) || tmp_rc=$?
+  tmp_out=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" "$owner_token" 2>&1) || tmp_rc=$?
   case "$tmp_rc" in
     0)
       printf '%s\n' "$tmp_out"

@@ -2640,13 +2640,22 @@ test_the_digest_names_a_copy_a_gone_worker_left_processes_in() {
     "the leftover scan did not complete on an empty fleet"
 
   wt="$TMP_ROOT/orphan-leftovers/wt"
+  LEFTOVER_TOKEN=fedcba9876543210fedcba9876543210
   git -C "$root" worktree add --quiet -b task-lo1 "$wt"
   {
     printf 'window=fmses:fm-lo1\n'
     printf 'endpoint_task_id=lo1\n'
     printf 'worktree=%s\n' "$wt"
     printf 'backend=tmux\nharness=claude\nkind=ship\nmode=no-mistakes\n'
+    printf 'owner_token=%s\n' "$LEFTOVER_TOKEN"
   } > "$home/state/lo1.meta"
+  # The copy carries the marker its spawn would have stamped into it. Without
+  # one nothing can show it is this task's, and the scan refuses it rather than
+  # reporting on it - so an unstamped fixture would prove nothing about
+  # attribution.
+  ( . "$ROOT/bin/fm-worktree-proc-lib.sh"
+    fm_wtproc_write_owner "$wt" worktree lo1 "$LEFTOVER_TOKEN" ) \
+    || fail "fixture: could not stamp lo1's copy"
   # A `sleep` is witness enough; the incident this section exists for came out
   # of a saturated host and nothing here needs a server to prove attribution.
   ( cd "$wt" && exec /bin/sleep 600 ) </dev/null >/dev/null 2>&1 &
