@@ -253,6 +253,14 @@ BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # because this signal must not compete with ordinary staleness or fire on real
 # work; it is a long-fuse report, not a wedge verdict.
 BUSY_NO_PROGRESS_SECS=${FM_BUSY_NO_PROGRESS_SECS:-1500}
+# A zero, negative, or non-numeric value must not reach the comparison below:
+# zero would report an unchanged busy pane on every poll, and a non-numeric one
+# would make the test error out and disable the report silently, which is the
+# worse of the two because nothing would say so. Fall back to the default and
+# keep going, exactly as the worktree-write probe does with its own bound.
+case "$BUSY_NO_PROGRESS_SECS" in
+  ''|*[!0-9]*|0) BUSY_NO_PROGRESS_SECS=1500 ;;
+esac
 # A local secondmate's foreign queue is checked on every poll, but only after this
 # bounded age can it produce a parent notification.
 SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-60}
@@ -943,7 +951,8 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 
 clear_progress_tracking() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.progress-fp-$key" "$STATE/.progress-since-$key"
+  rm -f "$STATE/.progress-fp-$key" "$STATE/.progress-since-$key" \
+    "$STATE/.progress-counters-$key" "$STATE/.progress-moved-$key"
 }
 
 # Everything this task can currently show as PROGRESS, on one line, cheap enough
@@ -968,6 +977,15 @@ busy_progress_fingerprint() {  # <task> <tail40>
     "$(printf '%s' "$counters" | tr '\n' ' ')"
 }
 
+# The counters-only half of the reading, kept separately because the question
+# "has this worker advanced" and the question "is this number a counter at all"
+# need different evidence. Empty when the tail renders none.
+busy_progress_counters_only() {  # <tail40>
+  local counters
+  counters=$(fm_progress_counters "$1") || return 0
+  printf '%s' "$counters" | tr '\n' ' '
+}
+
 # The busy-pane progress report: the one path that can see a worker frozen
 # INSIDE a turn. Runs on every poll of a busy pane, next to - never instead of -
 # busy_turn_bound_check, whose completed-turn bound stays exactly as it was.
@@ -982,15 +1000,31 @@ busy_progress_fingerprint() {  # <task> <tail40>
 #     climb its escalation ladder for the whole quiet stretch;
 #   - a declared external wait or verified captain-held transfer, an already
 #     explained standstill that handle_paused_stale's long cadence owns;
-#   - a harness that renders no counters, which is recorded in the triage log
-#     as an admitted blind spot and left to BUSY_TURN_MAX_SECS;
+#   - a pane whose numbers have never been SEEN to move, which includes every
+#     harness that renders no counters and every pane whose only counter-shaped
+#     text is static transcript content; both are recorded in the triage log as
+#     an admitted blind spot and left to BUSY_TURN_MAX_SECS;
 #   - a task whose own worktree was written during the frozen window, the same
 #     harder-to-fake liveness wedge_defer_writing already trusts over the pane.
+#
+# That third exemption is what keeps displayed CONTENT from being read as a
+# meter. Matching a counter shape proves only that the text looks like one: a
+# transcript line reading "2481 tokens" or a quoted "$1.42" sitting in the
+# footer region of a counter-free harness matches exactly as a real meter does,
+# and being static forever is precisely what a frozen counter looks like. So a
+# shape alone never arms the short fuse. This window's numbers must first be
+# observed CHANGING at least once - behaving like a meter, not merely looking
+# like one - which static content can never do and a real meter does within the
+# first seconds of generation. Until then the pane is treated exactly like a
+# counter-free harness. The evidence is per window and kept for the task's life,
+# so a worker that froze after its first tokens is still covered.
 busy_progress_check() {  # <window> <task> <tail40> <window-key>
-  local win=$1 task=$2 tail40=$3 key=$4 fpf sincef fp prev since age reason
+  local win=$1 task=$2 tail40=$3 key=$4 fpf sincef cfpf movedf fp prev cfp prevc since age reason
   [ -n "$task" ] || return 0
   fpf="$STATE/.progress-fp-$key"
   sincef="$STATE/.progress-since-$key"
+  cfpf="$STATE/.progress-counters-$key"
+  movedf="$STATE/.progress-moved-$key"
   if afk_present; then
     clear_progress_tracking "$key"
     return 0
@@ -1001,17 +1035,29 @@ busy_progress_check() {  # <window> <task> <tail40> <window-key>
   fi
   fp=$(busy_progress_fingerprint "$task" "$tail40")
   prev=$(cat "$fpf" 2>/dev/null || true)
-  case "$fp" in
-    counters=0*)
-      case "$prev" in
-        counters=0*) ;;
-        *) triage_log "busy progress unmeasurable (this worker tool renders no progress counters; the completed-turn bound remains its only backstop): $win" ;;
-      esac
-      printf '%s' "$fp" > "$fpf"
-      rm -f "$sincef"
-      return 0
-      ;;
-  esac
+  cfp=$(busy_progress_counters_only "$tail40")
+  prevc=$(cat "$cfpf" 2>/dev/null || true)
+  # Promote this window to measurable the first time its counter-shaped text is
+  # seen to change. Recorded before the gate below, so the very poll that proves
+  # the numbers move is also the one that arms the measure.
+  if [ -n "$cfp" ] && [ -n "$prevc" ] && [ "$cfp" != "$prevc" ] && [ ! -e "$movedf" ]; then
+    : > "$movedf"
+    triage_log "busy progress now measurable (this worker's rendered counters were observed changing): $win"
+  fi
+  if [ -n "$cfp" ]; then
+    printf '%s' "$cfp" > "$cfpf"
+  else
+    rm -f "$cfpf"
+  fi
+  if [ ! -e "$movedf" ]; then
+    case "$prev" in
+      unproven*) ;;
+      *) triage_log "busy progress unmeasurable (no rendered number here has been seen to move, so nothing proves this pane has a real progress meter; the completed-turn bound remains its only backstop): $win" ;;
+    esac
+    printf 'unproven %s' "$fp" > "$fpf"
+    rm -f "$sincef"
+    return 0
+  fi
   if [ "$fp" != "$prev" ]; then
     printf '%s' "$fp" > "$fpf"
     date +%s > "$sincef"
