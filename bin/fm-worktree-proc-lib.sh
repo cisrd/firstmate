@@ -718,33 +718,40 @@ fm_wtproc_write_owner() {  # <real-root> <kind> <task-id> <token>
 # fm_wtproc_owns_root: 0 only when <real-root> carries an allocation marker
 # naming exactly this task AND this allocation token.
 #
-# Every refusal states which of the three it was - no marker, another task,
-# another allocation of this task - because they mean different things to the
-# operator reading the report: the first is a copy from before this binding or
-# a reused path, the second is a copy now held by someone else, and the third
-# is a stale record for a copy this task has since been given again.
+# Every refusal states which of the four it was - no recorded token, no marker,
+# another task, another allocation of this task - because they mean different
+# things to the operator reading it, and it names the marker file it looked for
+# and what to do about it.
+#
+# That is not message polish. This refusal is what a copy allocated before the
+# binding existed will hit, so it is the one an operator meets while trying to
+# clean up work that predates the change, and it stops a command they expected
+# to run. A refusal that explains costs a minute; a bare one costs an
+# investigation. The remedy is deliberately the two lines of the marker itself
+# rather than a flag: adopting a copy has to be a thing someone did on purpose,
+# after looking at what is running in it.
 fm_wtproc_owns_root() {  # <real-root> <kind> <task-id> <expected-token>
   local real=$1 kind=$2 id=$3 want=$4 marker have_task have_token
-  [ -n "$want" ] || {
-    echo "fm-worktree-proc: task $id has no recorded allocation token, so nothing can prove $kind '$real' is its own" >&2
-    return 1
-  }
   marker=$(_fm_wtproc_owner_marker_path "$real" "$kind") || {
     echo "fm-worktree-proc: could not locate where $kind '$real' keeps its allocation marker" >&2
     return 1
   }
+  [ -n "$want" ] || {
+    echo "fm-worktree-proc: task $id's record carries no allocation token, so nothing can prove $kind '$real' is its own. Its record predates this binding. Check what is running in that copy and that it really is task $id's, then add an 'owner_token=<token>' line to its record and write the same token into $marker as 'task=$id' and 'token=<token>'." >&2
+    return 1
+  }
   [ -f "$marker" ] || {
-    echo "fm-worktree-proc: $kind '$real' carries no allocation marker, so it cannot be shown to belong to task $id; it predates this binding or the path has been reused" >&2
+    echo "fm-worktree-proc: $kind '$real' carries no allocation marker at $marker, so it cannot be shown to belong to task $id: either it was allocated before this binding existed, or the path has since been reused by something else. Check what is running in it, and if it really is task $id's copy write 'task=$id' and 'token=$want' into $marker; if it is not, correct the record that names it." >&2
     return 1
   }
   have_task=$(sed -n 's/^task=//p' "$marker" 2>/dev/null | head -n 1)
   have_token=$(sed -n 's/^token=//p' "$marker" 2>/dev/null | head -n 1)
   [ "$have_task" = "$id" ] || {
-    echo "fm-worktree-proc: $kind '$real' is allocated to task ${have_task:-an unnamed task}, not to task $id" >&2
+    echo "fm-worktree-proc: $kind '$real' is allocated to task ${have_task:-an unnamed task}, not to task $id, so task $id's record is stale and that copy belongs to somebody who may still be working in it. Do not force past this. Correct task $id's record; the copy is ${have_task:-that task}'s to clean up." >&2
     return 1
   }
   [ "$have_token" = "$want" ] || {
-    echo "fm-worktree-proc: $kind '$real' carries a different allocation of task $id than the record names, so the record is stale" >&2
+    echo "fm-worktree-proc: $kind '$real' carries a different allocation of task $id than the record names, so the record is stale - the copy was handed back and given out again since it was written. Re-read the current record for task $id rather than acting on this one." >&2
     return 1
   }
 }

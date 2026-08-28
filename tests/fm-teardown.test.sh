@@ -53,6 +53,12 @@ set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# The fixtures stamp each task copy with the allocation marker its spawn would
+# have written, so they model an ordinary allocation rather than a record
+# teardown is required to refuse.
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-worktree-proc-lib.sh"
+TEARDOWN_FIXTURE_TOKEN=00112233445566778899aabbccddeeff
 fm_git_identity fmtest fmtest@example.invalid
 
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
@@ -175,6 +181,12 @@ SH
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
   # Add a worktree on a fresh task branch; that branch is where the crewmate commits.
   git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+  # The copy carries the allocation marker its spawn would have written. Teardown
+  # will not signal into a copy it cannot show is this task's, so an unstamped
+  # fixture would model a record teardown is required to refuse, not the ordinary
+  # case every ALLOW here is about.
+  fm_wtproc_write_owner "$case_dir/wt" worktree task-x1 "$TEARDOWN_FIXTURE_TOKEN" \
+    || { echo "fixture: could not stamp the task copy" >&2; return 1; }
 
   # Fresh watcher beacon so fm-guard stays quiet.
   touch "$case_dir/state/.last-watcher-beat"
@@ -193,6 +205,7 @@ write_meta() {
     "kind=$kind" \
     "mode=$mode" \
     "spawn_gen=teardown-test-task-x1"
+    "owner_token=$TEARDOWN_FIXTURE_TOKEN"
 }
 
 # Commit something on the worktree's task branch. Args: case_dir [message]
@@ -1128,6 +1141,12 @@ test_non_linked_index_lock_path_is_checked_from_worktree() {
   git -C "$case_dir/project" worktree remove --force "$case_dir/wt"
   git clone -q "$case_dir/origin.git" "$case_dir/wt"
   git -C "$case_dir/wt" checkout -q -b fm/task-x1
+  # The clone shape is stamped rather than exempted: a spawn marks every copy it
+  # allocates whatever its shape, and a clone keeps its marker in its own .git
+  # directory, so this supported shape carries the same proof of ownership as a
+  # linked worktree does.
+  fm_wtproc_write_owner "$case_dir/wt" worktree task-x1 "$TEARDOWN_FIXTURE_TOKEN" \
+    || fail "fixture: could not stamp the clone-shaped copy"
   write_meta "$case_dir" no-mistakes ship
   wt_commit "$case_dir" "shippable normal clone work"
   git -C "$case_dir/wt" push -q origin fm/task-x1
@@ -2901,12 +2920,114 @@ test_a_recorded_root_under_projects_refuses_instead_of_signalling() {
   pass "a recorded root pointing into the operator's own projects tree refuses teardown instead of signalling into it"
 }
 
+# The other half of the same guardrail, and the one the field incident actually
+# took. Shape says a path COULD be a task's copy; it cannot say WHOSE. A pool
+# copy handed back and given out again passes every shape refusal identically
+# for the task that left and the task that arrived - so a stale record naming a
+# reassigned copy reached the signalling loop with nothing to stop it, and on
+# 2026-08-27 a forced teardown on such a record stopped a live agent.
+#
+# Both arms run against a copy that is otherwise perfectly ordinary, so the
+# teardown genuinely REACHES the signalling loop and the refusal is the
+# ownership check rather than something upstream of it. Both must refuse rather
+# than narrow: signalling nothing and then running the destructive half against
+# a record the safe half rejected is the worse outcome.
+test_a_copy_that_cannot_be_shown_to_be_this_tasks_refuses_teardown() {
+  local case_dir rc pid marker
+
+  # Arm 1: no marker at all - a copy allocated before this binding existed, and
+  # equally what a reused path looks like. Nothing distinguishes them.
+  case_dir=$(make_case unowned-copy-no-marker)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  marker="$(git -C "$case_dir/wt" rev-parse --absolute-git-dir)/fm-task-owner"
+  rm -f "$marker"
+
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "unowned-copy: the stand-in process did not start"
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+  PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
+    "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  kill -0 "$pid" 2>/dev/null \
+    || fail "unowned-copy: a process in a copy that could not be shown to be this task's was signalled by teardown"
+  kill -KILL "$pid" 2>/dev/null || true
+
+  expect_code 1 "$rc" "unowned-copy: teardown should refuse a copy carrying no allocation marker"
+  assert_grep "REFUSED" "$case_dir/stderr" "unowned-copy: teardown did not report refusing"
+  assert_grep "carries no allocation marker" "$case_dir/stderr" \
+    "unowned-copy: the refusal did not name the missing marker as the cause"
+  # A refusal that explains costs a minute; a bare one costs an investigation.
+  assert_grep "$marker" "$case_dir/stderr" \
+    "unowned-copy: the refusal did not name the marker file to look at"
+  assert_present "$case_dir/wt" "unowned-copy: teardown removed the copy after refusing"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "unowned-copy: teardown removed the task record after refusing"
+
+  # --force does not reach past this. Forcing past an ownership refusal is
+  # precisely the action that stopped a live agent, so it is the one thing an
+  # operator must not be able to insist on here.
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+  PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
+    "$TEARDOWN" task-x1 --force > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  expect_code 1 "$rc" "unowned-copy: --force must not reach past an ownership refusal"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "unowned-copy: --force did not report the same refusal"
+
+  # Arm 2: stamped, but for ANOTHER task - the reassignment case itself. The
+  # copy now belongs to somebody who may still be working in it.
+  case_dir=$(make_case unowned-copy-other-task)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  marker="$(git -C "$case_dir/wt" rev-parse --absolute-git-dir)/fm-task-owner"
+  printf 'task=%s\ntoken=%s\n' the-new-owner ffffffffffffffffffffffffffffffff > "$marker"
+
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "reassigned-copy: the stand-in process did not start"
+
+  set +e
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+  PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
+    "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  kill -0 "$pid" 2>/dev/null \
+    || fail "reassigned-copy: a process in a copy now allocated to another task was signalled by teardown"
+  kill -KILL "$pid" 2>/dev/null || true
+
+  expect_code 1 "$rc" "reassigned-copy: teardown should refuse a copy allocated to another task"
+  assert_grep "allocated to task the-new-owner" "$case_dir/stderr" \
+    "reassigned-copy: the refusal did not name the task that now holds the copy"
+  assert_present "$case_dir/wt" "reassigned-copy: teardown removed the copy after refusing"
+
+  pass "a copy carrying no allocation marker, or another task's, refuses teardown instead of signalling into it"
+}
+
 test_leaked_tasktmp_process_is_reaped() {
   local case_dir rc pid
   case_dir=$(make_case leaked-tasktmp-reap)
   write_meta "$case_dir" no-mistakes ship
   printf '%s\n' "tasktmp=$case_dir/tasktmp" >> "$case_dir/state/task-x1.meta"
   mkdir -p "$case_dir/tasktmp"
+  fm_wtproc_write_owner "$case_dir/tasktmp" tmp task-x1 "$TEARDOWN_FIXTURE_TOKEN" \
+    || fail "fixture: could not stamp the temp root"
   land_shippable_commit "$case_dir"
 
   ( cd "$case_dir/tasktmp" && exec sleep 300 ) &
@@ -3468,6 +3589,7 @@ test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_a_recorded_root_under_projects_refuses_instead_of_signalling
+test_a_copy_that_cannot_be_shown_to_be_this_tasks_refuses_teardown
 test_teardown_never_signals_the_shell_it_was_started_from
 test_no_cwd_source_reaps_tmux_process_group
 test_no_cwd_source_still_reaps_the_group_when_both_roots_are_absent

@@ -777,6 +777,10 @@ PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
 TASK_TMP=$(grep '^tasktmp=' "$META" | cut -d= -f2- || true)
+# The allocation token this task's spawn minted and stamped into both recorded
+# roots. Absent on a record written before that binding existed, in which case
+# nothing can prove either root is this task's and the reap validation refuses.
+OWNER_TOKEN=$(fm_meta_get "$META" owner_token)
 BUSY_GEN=$(fm_meta_get "$META" busy_gen)
 if [ -z "$BUSY_GEN" ]; then
   BUSY_GEN=$(cat "$STATE/$ID.busy-gen" 2>/dev/null || true)
@@ -1811,22 +1815,60 @@ reap_task_backend_process_group() {  # <label>
 # half just rejected. A root that is merely ABSENT is not a refusal - nothing is
 # there to examine - and it is dropped, exactly as the report path drops it.
 #
-# Deliberately the shape refusals ALONE, not fm_wtproc_disposable_worktree's
-# linked-worktree proof: this command supports a task copy that is an ordinary
-# clone, which its own suite pins, so that proof would refuse a shape teardown
-# is required to handle. The half kept is the half that names the harm.
+# The shape refusals are still not fm_wtproc_disposable_worktree's linked-worktree
+# proof, and for the original reason: this command supports a task copy that is an
+# ordinary clone, which its own suite pins, so that proof would refuse a shape
+# teardown is required to handle.
+#
+# Ownership is a different question from shape, and this path is now held to it
+# like the other two. Shape says a path COULD be a task's copy; it cannot say
+# WHOSE. A pool copy handed back and given out again is a valid copy for whoever
+# holds it now, and every shape refusal passes on it identically - so a stale
+# record naming a reassigned copy reached this loop with nothing left to stop it.
+# That is not a hypothetical: on 2026-08-27 a forced teardown on exactly such a
+# record stopped a live agent and reset its work.
+#
+# The guarantee has to be uniform, because this is the path where the damage
+# happens. Requiring the marker at allocation and at the two reporting paths,
+# while the destructive path alone accepts shape, would leave the mechanism
+# exactly as strong as its weakest link and that link is the one that kills.
+#
+# The clone shape is included rather than exempted: bin/fm-spawn.sh stamps every
+# copy it allocates whatever its shape, and a clone keeps its marker in its own
+# .git directory just as a linked worktree keeps it in its per-worktree git
+# directory. So the supported shape stays supported and gains the same proof.
+#
+# An unowned root refuses the teardown, for the same reason a misshapen one does:
+# signalling nothing and then running the destructive half against a record the
+# safe half just rejected is the worse outcome. --force does NOT reach past this.
+# Forcing past an ownership refusal is precisely the action that stopped the live
+# agent, so the one thing an operator must not be able to do here is insist.
 REAP_ROOTS=()
 validate_recorded_reap_roots() {
-  local real rc pair label dir
+  local real rc pair label dir marker_kind own own_rc
   REAP_ROOTS=()
   for pair in "worktree:$WT" "tasktmp:$TASK_TMP"; do
     label=${pair%%:*}
     dir=${pair#*:}
     [ -n "$dir" ] || continue
+    # The two roots keep their markers in different places, so the ownership
+    # check has to be told which kind of root it is looking at.
+    case "$label" in
+      worktree) marker_kind=worktree ;;
+      *) marker_kind=tmp ;;
+    esac
     rc=0
     real=$(fm_wtproc_signalling_root "$dir" "task $ID's recorded $label" "$FM_HOME" 2>&1) || rc=$?
     case "$rc" in
-      0) REAP_ROOTS+=("$real") ;;
+      0)
+        own_rc=0
+        own=$(fm_wtproc_owns_root "$real" "$marker_kind" "$ID" "$OWNER_TOKEN" 2>&1) || own_rc=$?
+        if [ "$own_rc" != 0 ]; then
+          echo "REFUSED: task $ID's recorded $label '$real' could not be shown to be this task's own copy, so nothing was signalled and nothing was removed. ${own:-The ownership check refused it without stating a reason; inspect that path by hand.}" >&2
+          exit 1
+        fi
+        REAP_ROOTS+=("$real")
+        ;;
       # Absent: nothing is there to signal into, and teardown's own handling
       # below already covers a copy that is gone. Not a refusal, and not an
       # alarm.
