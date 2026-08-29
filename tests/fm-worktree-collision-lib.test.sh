@@ -43,8 +43,12 @@
 #     resolved itself, so the vanished record is dropped rather than named.
 #   - Grouping is by the physically resolved path, so two spellings of one
 #     pooled copy still collide, and the transport survives any character a
-#     recorded path can hold - a backslash never empties the claimant list, a
-#     tab never drops the line.
+#     recorded path or a resolved key can hold - a backslash never empties the
+#     claimant list, a tab never drops the line, a newline never truncates one.
+#   - The line separates what grouping proved from what each record says: the
+#     path after the kind is the resolved copy the claimants share, and every
+#     claimant names the worktree= its own record actually contains, so no one
+#     spelling is ever printed as though every claimant recorded it.
 #   - `unlanded` means the task's OWN work: firstmate's spawn-written
 #     scaffolding is filtered exactly as bin/fm-teardown.sh filters it before
 #     deciding whether a copy is safe to discard.
@@ -107,6 +111,13 @@ SH
   printf '%s\n' "$fakebin"
 }
 
+# The path a collision line prints for a recorded path: the physically resolved
+# copy fm_worktree_collision_group_key keys the group on, which is not the
+# recorded string wherever a test root sits under a symlink (macOS /tmp).
+shown_path() {  # <recorded-path>
+  ( cd "$1" 2>/dev/null && pwd -P ) || printf '%s\n' "$1"
+}
+
 # A clean repo on `main` with one commit, ready to be a task's worktree.
 make_worktree() {  # <dir>
   local dir=$1
@@ -121,6 +132,16 @@ test_path_state_classification() {
 
   got=$(fm_worktree_collision_path_state "$TMP_ROOT/never-existed")
   [ "$got" = missing ] || fail "a worktree path with nothing at it should classify as missing, got '$got'"
+
+  # No path at all is a non-answer, not an observed absence: nothing was
+  # examined, so it may not reach the one verdict that drops the warning.
+  got=$(fm_worktree_collision_path_state "")
+  [ "$got" != missing ] \
+    || fail "an empty path argument examined nothing and must never read as an observed absence, got '$got'"
+  [ "$got" = unverifiable:no-path ] \
+    || fail "an empty path argument should name that cause, got '$got'"
+  assert_contains "$(fm_worktree_collision_path_caveat "$got")" "do not discard" \
+    "an empty path argument must still carry the do-not-discard warning"
 
   # Present on disk but not a readable git worktree - a returned-but-not-deleted
   # pool copy, or a dangling .git pointer. The probe proves only that it could
@@ -364,12 +385,12 @@ test_collision_lines_grouping() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt_live claimed by fm-live-a (process alive), fm-live-b (process state unknown (backend=tmux reported ambiguous)) - shared path still has unlanded work, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $(shown_path "$wt_live") claimed by fm-live-a (process alive, recorded $wt_live), fm-live-b (process state unknown (backend=tmux reported ambiguous), recorded $wt_live) - shared path still has unlanded work, do not discard" \
     "two hazardous processes on one worktree should be reported as a live collision naming both verdicts, and a dirty shared path still states its own risk"
   assert_not_contains "$out" "not verifiable" \
     "a backend that answered every query must never be described as unverifiable"
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt_stale claimed by fm-new-active (process alive), fm-old-finished (process gone)" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt_stale") claimed by fm-new-active (process alive, recorded $wt_stale), fm-old-finished (process gone, recorded $wt_stale)" \
     "a finished task's leftover record alongside one live task should read stale and name each process verdict"
 
   assert_not_contains "$out" "$wt_solo" \
@@ -404,18 +425,18 @@ test_collision_lines_live_claimants_wip_stays_path_level() {
   echo wip > "$wt/live-task-wip.txt"
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-new-active (process alive), fm-old-finished (process gone) - shared path still has unlanded work, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-new-active (process alive, recorded $wt), fm-old-finished (process gone, recorded $wt) - shared path still has unlanded work, do not discard" \
     "one live claimant working in the shared worktree is still a stale collision, with the unlanded work stated once for the path"
   assert_not_contains "$out" "work not landed" \
     "the live claimant's work in progress must never be described as a claimant's own unlanded work"
-  assert_not_contains "$out" "fm-old-finished (process gone," \
-    "the finished record's own detail must say nothing beyond its process state"
+  assert_not_contains "$out" "fm-old-finished (process gone, recorded $wt, " \
+    "the finished record's own detail must say nothing beyond its process state and its own recorded path"
 
   # Case B: the same fixture with that work removed - clean and merged.
   rm -f "$wt/live-task-wip.txt"
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-new-active (process alive), fm-old-finished (process gone)" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-new-active (process alive, recorded $wt), fm-old-finished (process gone, recorded $wt)" \
     "a clean, landed shared worktree with one live claimant is still a stale collision"
   assert_not_contains "$out" "unlanded" \
     "a landed shared path must carry no unlanded-work caveat"
@@ -441,7 +462,7 @@ test_collision_lines_all_dead_unlanded_keeps_caveat() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-dead-a (process gone), fm-dead-b (process gone) - shared path still has unlanded work, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-dead-a (process gone, recorded $wt), fm-dead-b (process gone, recorded $wt) - shared path still has unlanded work, do not discard" \
     "two finished records over dirty shared work should read stale and still carry the unlanded caveat"
 
   pass "fm_worktree_collision_lines: unlanded work is never silent even when no process is a hazard"
@@ -463,21 +484,21 @@ test_collision_lines_gone_path_is_always_reported() {
   fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:ambig" "worktree=$gone_path" "harness=codex" "kind=ship"
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux reported ambiguous)), fm-ambig-b (process state unknown (backend=tmux reported ambiguous)) - shared worktree no longer exists at that path" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux reported ambiguous), recorded $gone_path), fm-ambig-b (process state unknown (backend=tmux reported ambiguous), recorded $gone_path) - shared worktree no longer exists at that path" \
     "two unverifiable claimants of a torn-down worktree must still be reported, naming the backend that could not answer and the vanished path"
 
   # A confirmed-alive claimant over the same vanished path: still reported, and
   # the alive claimant is named as the hazard it is.
   fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:alive" "worktree=$gone_path" "harness=codex" "kind=ship"
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux reported ambiguous)), fm-ambig-b (process alive) - shared worktree no longer exists at that path" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux reported ambiguous), recorded $gone_path), fm-ambig-b (process alive, recorded $gone_path) - shared worktree no longer exists at that path" \
     "a confirmed-alive claimant of a worktree that no longer exists must still be reported"
 
   # One hazard only (alive plus a finished record) reads stale, and the gone
   # caveat is a path fact, so it rides that kind too.
   fm_write_meta "$state/fm-ambig-a.meta" "window=deadsess:win" "worktree=$gone_path" "harness=claude" "kind=ship"
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: stale $gone_path claimed by fm-ambig-a (process gone), fm-ambig-b (process alive) - shared worktree no longer exists at that path" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $gone_path claimed by fm-ambig-a (process gone, recorded $gone_path), fm-ambig-b (process alive, recorded $gone_path) - shared worktree no longer exists at that path" \
     "a live claimant beside a finished record over a vanished path reads stale and still carries the gone caveat"
 
   pass "fm_worktree_collision_lines: a vanished path is reported with its own caveat, never silenced"
@@ -501,7 +522,7 @@ test_collision_lines_uninspectable_path_keeps_do_not_discard() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-u-a (process gone), fm-u-b (process gone) - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-u-a (process gone, recorded $wt), fm-u-b (process gone, recorded $wt) - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard" \
     "a shared path that exists but cannot be inspected must keep the do-not-discard warning"
   assert_not_contains "$out" "no longer exists" \
     "a path that is still on disk must never be reported as gone"
@@ -515,7 +536,7 @@ test_collision_lines_uninspectable_path_keeps_do_not_discard() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-u-a (process gone), fm-u-b (process gone) - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-u-a (process gone, recorded $wt), fm-u-b (process gone, recorded $wt) - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard" \
     "a shared path with no inspectable work tree must keep the do-not-discard warning"
   assert_not_contains "$out" "no longer exists" \
     "a path git could not inspect must never be reported as gone"
@@ -543,7 +564,7 @@ test_collision_lines_unreadable_worktree_state_keeps_do_not_discard() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-v-a (process gone), fm-v-b (process alive) - shared path is a git worktree whose working-tree state could not be read, so whether work would be lost cannot be verified, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-v-a (process gone, recorded $wt), fm-v-b (process alive, recorded $wt) - shared path is a git worktree whose working-tree state could not be read, so whether work would be lost cannot be verified, do not discard" \
     "a shared worktree whose working-tree state could not be read must name that cause and keep the do-not-discard warning"
   assert_not_contains "$out" "no longer exists" \
     "a path that is still on disk must never be reported as gone"
@@ -572,7 +593,7 @@ test_collision_lines_unresolvable_default_branch_names_the_missing_check() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-d-a (process gone), fm-d-b (process alive) - shared path is a git worktree whose HEAD could not be checked against the project's default branch, so whether work would be lost cannot be verified, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-d-a (process gone, recorded $wt), fm-d-b (process alive, recorded $wt) - shared path is a git worktree whose HEAD could not be checked against the project's default branch, so whether work would be lost cannot be verified, do not discard" \
     "a shared path whose default branch could not be resolved must name that check and keep the do-not-discard warning"
   assert_not_contains "$out" "still has unlanded work" \
     "a check that never ran must never be printed as work seen at the shared path"
@@ -602,22 +623,22 @@ test_collision_lines_groups_symlinked_spellings_of_one_copy() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live " \
-    "two spellings of one physical worktree must still be reported as one collision"
-  assert_contains "$out" "fm-phys (process alive)" \
-    "the collision line must name the record that spelled the path physically"
-  assert_contains "$out" "fm-sym (process state unknown (backend=tmux reported ambiguous))" \
-    "the collision line must name the record that spelled the path through the symlink"
+  assert_contains "$out" "WORKTREE_COLLISION: live $(shown_path "$phys/wt-3") claimed by " \
+    "the path after the kind must be the physically resolved copy the claimants share"
   [ "$(printf '%s\n' "$out" | grep -c '^WORKTREE_COLLISION:')" = 1 ] \
     || fail "one physical worktree must produce exactly one collision line, got:"$'\n'"$out"
 
-  # The printed path is a spelling a reader will actually find in a meta.
-  case "$out" in
-    *"$phys/wt-3"*|*"$link/wt-3"*) : ;;
-    *) fail "the collision line must print a recorded spelling of the shared path, got:"$'\n'"$out" ;;
-  esac
+  # Grouping proves the two records point at one copy, not that either record
+  # contains the printed string. An agent sent to inspect fm-sym opens its meta
+  # and finds the symlinked spelling; if the line never said so, the natural
+  # reading is that fm-sym is not a claimant and the line is a false positive -
+  # the exact conclusion this check exists to prevent.
+  assert_contains "$out" "fm-phys (process alive, recorded $phys/wt-3)" \
+    "the record that spelled the path physically must be named with its own recorded spelling"
+  assert_contains "$out" "fm-sym (process state unknown (backend=tmux reported ambiguous), recorded $link/wt-3)" \
+    "the record that spelled the path through the symlink must be named with its own recorded spelling"
 
-  pass "fm_worktree_collision_lines: one physical copy spelled two ways is one collision"
+  pass "fm_worktree_collision_lines: one physical copy spelled two ways is one collision naming both spellings"
 }
 
 # A recorded worktree path may contain any character a directory name can hold.
@@ -640,7 +661,7 @@ test_collision_lines_path_with_backslash_names_every_claimant() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-bs-a (process alive), fm-bs-b (process state unknown (backend=tmux reported ambiguous)) - shared path still has unlanded work, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $(shown_path "$wt") claimed by fm-bs-a (process alive, recorded $wt), fm-bs-b (process state unknown (backend=tmux reported ambiguous), recorded $wt) - shared path still has unlanded work, do not discard" \
     "a worktree path containing a backslash must still group its records and name every claimant"
   assert_not_contains "$out" "claimed by -" \
     "a collision line must never print with no claimant at all"
@@ -648,6 +669,38 @@ test_collision_lines_path_with_backslash_names_every_claimant() {
     "a collision line must never print with no claimant at all"
 
   pass "fm_worktree_collision_lines: a path with a backslash still names every claimant"
+}
+
+# The grouping key is machine-generated (`pwd -P`), so nothing fm_meta_get
+# bounds constrains it: a symlinked pool prefix whose real target name holds a
+# newline used to split the line-based transport, and the collision printed
+# against a truncated path with no error either way.
+test_collision_lines_newline_in_resolved_path_is_still_reported() {
+  local state fakebin phys link out
+
+  state="$TMP_ROOT/newline-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/newline-tmux")
+
+  phys="$TMP_ROOT/pool"$'\n'"real"
+  mkdir -p "$phys"
+  make_worktree "$phys/wt"
+  link="$TMP_ROOT/pool-plain"
+  ln -s "$phys" "$link"
+
+  fm_write_meta "$state/fm-n-a.meta" "window=livesess:alive" "worktree=$link/wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-n-b.meta" "window=livesess:alive" "worktree=$link/wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: live $link/wt claimed by fm-n-a (process alive, recorded $link/wt), fm-n-b (process alive, recorded $link/wt)" \
+    "a resolved path holding a newline must fall back to the recorded spelling rather than split the group"
+  [ "$(printf '%s\n' "$out" | grep -c '^WORKTREE_COLLISION:')" = 1 ] \
+    || fail "the collision must print exactly once, against a whole path, got:"$'\n'"$out"
+  assert_not_contains "$out" "WORKTREE_COLLISION: live $TMP_ROOT/pool claimed" \
+    "a collision must never be printed against a path truncated at a newline"
+
+  pass "fm_worktree_collision_lines: a newline in the resolved path never splits or truncates a group"
 }
 
 # The internal id-to-path transport is tab-delimited, so a tab inside a
@@ -673,7 +726,7 @@ test_collision_lines_path_with_tab_is_still_reported() {
 
   [ -n "$out" ] \
     || fail "a genuine collision on a path containing a tab must never vanish silently"
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-tab-a (process alive), fm-tab-b (process state unknown (backend=tmux reported ambiguous)) - shared path still has unlanded work, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $(shown_path "$wt") claimed by fm-tab-a (process alive, recorded $wt), fm-tab-b (process state unknown (backend=tmux reported ambiguous), recorded $wt) - shared path still has unlanded work, do not discard" \
     "a worktree path containing a tab must still group its records and name every claimant"
 
   pass "fm_worktree_collision_lines: a path with a tab is reported, never silently dropped"
@@ -714,7 +767,7 @@ test_collision_lines_record_removed_mid_scan_is_dropped() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-live-a (process alive), fm-live-b (process alive) - shared path still has unlanded work, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $(shown_path "$wt") claimed by fm-live-a (process alive, recorded $wt), fm-live-b (process alive, recorded $wt) - shared path still has unlanded work, do not discard" \
     "the surviving claimants of a still-real collision must still be reported"
   assert_not_contains "$out" "fm-torn-down" \
     "a record removed during the scan must never be named as a claimant"
@@ -757,7 +810,7 @@ test_collision_lines_scaffolding_only_path_is_not_called_unlanded() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-s-a (process gone), fm-s-b (process alive)" \
+  assert_contains "$out" "WORKTREE_COLLISION: stale $(shown_path "$wt") claimed by fm-s-a (process gone, recorded $wt), fm-s-b (process alive, recorded $wt)" \
     "the collision itself must still be reported"
   assert_not_contains "$out" "still has unlanded work" \
     "a copy holding only firstmate's own scaffolding must not be reported as holding the task's work"
@@ -787,7 +840,7 @@ test_collision_lines_skips_remote_records() {
   fm_write_meta "$state/fm-local-y.meta" "window=livesess:ambig" "worktree=$wt" "harness=codex" "kind=ship"
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-local-x (process alive), fm-local-y (process state unknown (backend=tmux reported ambiguous))" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $(shown_path "$wt") claimed by fm-local-x (process alive, recorded $wt), fm-local-y (process state unknown (backend=tmux reported ambiguous), recorded $wt)" \
     "the local pair sharing that same path must still be reported"
   assert_not_contains "$out" "fm-remote-a" \
     "a remote record must never be named as a claimant of a local worktree"
@@ -843,7 +896,7 @@ test_bootstrap_surfaces_collision_line() {
   fm_write_meta "$home/state/fm-two.meta" "window=livesess:ambig" "worktree=$wt" "harness=codex" "kind=ship"
 
   out=$(run_bootstrap "$home" "$fakebin" | grep '^WORKTREE_COLLISION:' || true)
-  assert_contains "$out" "live $wt claimed by" "bootstrap did not report the double-registered worktree"
+  assert_contains "$out" "live $(shown_path "$wt") claimed by" "bootstrap did not report the double-registered worktree"
   assert_contains "$out" "fm-one" "bootstrap's collision line did not name the first claimant"
   assert_contains "$out" "fm-two" "bootstrap's collision line did not name the second claimant"
 
@@ -862,6 +915,7 @@ test_collision_lines_unreadable_worktree_state_keeps_do_not_discard
 test_collision_lines_unresolvable_default_branch_names_the_missing_check
 test_collision_lines_path_with_backslash_names_every_claimant
 test_collision_lines_path_with_tab_is_still_reported
+test_collision_lines_newline_in_resolved_path_is_still_reported
 test_collision_lines_groups_symlinked_spellings_of_one_copy
 test_collision_lines_scaffolding_only_path_is_not_called_unlanded
 test_collision_lines_record_removed_mid_scan_is_dropped

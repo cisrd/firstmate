@@ -21,7 +21,8 @@
 #                 "SECONDMATE_LIVENESS: secondmate <id>: skipped: <reason>|respawn failed after <cause>: <reason>",
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...",
-#                 "WORKTREE_COLLISION: live|stale <path> claimed by <id> (<detail>), ...[ - <path caveat>]".
+#                 "WORKTREE_COLLISION: live|stale <resolved shared path> claimed by
+#                 <id> (<detail>, recorded <that record's own worktree=>), ...[ - <path caveat>]".
 #          bin/fm-worktree-collision-lib.sh's header owns that line's
 #          semantics: which kinds exist, what each claimant detail and path
 #          caveat asserts, and why the check only ever detects.

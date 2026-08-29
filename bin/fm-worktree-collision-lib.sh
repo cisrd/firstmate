@@ -76,6 +76,9 @@
 #                            path-unreadable - the path could not be stat'ed
 #                              because an ancestor directory is not searchable,
 #                              so its absence was refused rather than observed.
+#                            no-path         - no path was given at all. An
+#                              argument this classifier cannot recognise is a
+#                              non-answer, never an observed absence.
 # The rule those verdicts encode, in both directions: a probe that could not
 # run proves nothing, so it may never reach `landed` or `missing` (a falsely
 # reassuring claim) and may never claim `unlanded` work it did not see (a
@@ -83,8 +86,12 @@
 # except `missing` carries the same do-not-discard clause.
 fm_worktree_collision_path_state() {  # <worktree-path>
   local path=$1 default top status_out ref rc answered=0
-  if [ -z "$path" ] || { [ ! -e "$path" ] && [ ! -L "$path" ]; }; then
-    if [ -n "$path" ] && ! fm_worktree_collision_absence_observed "$path"; then
+  if [ -z "$path" ]; then
+    printf 'unverifiable:no-path'
+    return 0
+  fi
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    if ! fm_worktree_collision_absence_observed "$path"; then
       printf 'unverifiable:path-unreadable'
       return 0
     fi
@@ -133,10 +140,15 @@ fm_worktree_collision_path_state() {  # <worktree-path>
 # resolved cwd beside ones that report the shell's logical, symlink-preserving
 # path - and grouping on the raw strings would never see those as one path.
 # This applies the same cd-and-pwd-P-with-fallback rule bin/fm-spawn.sh's
-# real_path_or_raw uses for exactly that question.
+# real_path_or_raw uses for exactly that question, with one added condition:
+# the resolved form is machine-generated and nothing bounds what `pwd -P` can
+# contain, so a resolved path holding a newline falls back to the recorded
+# string too. That keeps every key newline-free, which is what the line-based
+# transport in fm_worktree_collision_lines actually depends on.
 fm_worktree_collision_group_key() {  # <recorded-path>
   local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P); then
+  if real=$(cd "$path" 2>/dev/null && pwd -P) && [ -n "$real" ] \
+    && [ "${real%%$'\n'*}" = "$real" ]; then
     printf '%s' "$real"
   else
     printf '%s' "$path"
@@ -191,6 +203,7 @@ fm_worktree_collision_path_caveat() {  # <path-state>
         unverifiable:worktree-state) cause='is a git worktree whose working-tree state could not be read' ;;
         unverifiable:default-branch) cause="is a git worktree whose HEAD could not be checked against the project's default branch" ;;
         unverifiable:path-unreadable) cause='could not be examined because an ancestor directory is not searchable' ;;
+        unverifiable:no-path) cause='was not provided, so no probe could look at anything' ;;
         *) cause='could not be examined' ;;
       esac
       printf ' - shared path %s, so whether work would be lost cannot be verified, do not discard' "$cause"
@@ -263,15 +276,23 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state> [backend]
 # hazard: a path left with fewer than two surviving records is no longer a
 # collision and prints nothing.
 # Records are grouped by fm_worktree_collision_group_key, not by the recorded
-# string, so two spellings of one pooled copy still collide; the line prints
-# the recorded worktree= of the first surviving claimant, which is the spelling
-# a reader will find in a meta. The internal id-to-key transport puts the id
-# first and treats everything past the first tab as the key, so a tab anywhere
-# in a recorded path cannot silently split a group (a newline cannot occur:
-# fm_meta_get reads one line).
+# string, so two spellings of one pooled copy still collide. Because grouping
+# proves only that the records point at one physical copy - not that they spell
+# it alike - the line states both facts separately: the path after the kind is
+# the GROUP KEY, the physically resolved copy the claimants share, and every
+# claimant's own segment names the worktree= that record actually contains. No
+# single spelling is ever printed as though every claimant recorded it. A
+# claimant whose record no longer keys to this group when it is read is dropped
+# for the same reason a vanished record is: the line only ever names records
+# that still claim the copy it describes.
+# The internal id-to-key transport puts the id first and treats everything past
+# the first tab as the key, so a tab anywhere cannot split a group. It is
+# line-based, which holds because an id is a filename basename (no tab, no
+# newline) and because fm_worktree_collision_group_key never returns a key
+# containing a newline.
 # Portable: no associative arrays, so this runs on bash 3.2 (macOS) too.
 fm_worktree_collision_lines() {  # <state-dir>
-  local state=$1 meta id path pairs dup_keys key ids_for_key shown_path
+  local state=$1 meta id path pairs dup_keys key ids_for_key recorded
   local proc_state desc claimant_line claimant_count live_count kind path_state caveat
   [ -d "$state" ] || return 0
   pairs=$(
@@ -295,32 +316,32 @@ fm_worktree_collision_lines() {  # <state-dir>
     live_count=0
     claimant_count=0
     claimant_line=
-    shown_path=
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       [ -f "$state/$id.meta" ] || continue
+      recorded=$(fm_meta_get "$state/$id.meta" worktree)
+      [ -n "$recorded" ] || continue
+      [ "$(fm_worktree_collision_group_key "$recorded")" = "$key" ] || continue
       claimant_count=$((claimant_count + 1))
-      [ -n "$shown_path" ] || shown_path=$(fm_meta_get "$state/$id.meta" worktree)
       proc_state=$(fm_worktree_collision_claimant_process "$state/$id.meta")
       case "$proc_state" in
         dead|missing) ;;
         *) live_count=$((live_count + 1)) ;;
       esac
       desc=$(fm_worktree_collision_claimant_desc "$proc_state" "$(fm_backend_of_meta "$state/$id.meta")")
-      claimant_line="${claimant_line:+$claimant_line, }$id ($desc)"
+      claimant_line="${claimant_line:+$claimant_line, }$id ($desc, recorded $recorded)"
     done <<EOM
 $ids_for_key
 EOM
     [ "$claimant_count" -ge 2 ] || continue
-    [ -n "$shown_path" ] || shown_path=$key
-    path_state=$(fm_worktree_collision_path_state "$shown_path")
+    path_state=$(fm_worktree_collision_path_state "$key")
     caveat=$(fm_worktree_collision_path_caveat "$path_state")
     if [ "$live_count" -ge 2 ]; then
       kind=live
     else
       kind=stale
     fi
-    printf 'WORKTREE_COLLISION: %s %s claimed by %s%s\n' "$kind" "$shown_path" "$claimant_line" "$caveat"
+    printf 'WORKTREE_COLLISION: %s %s claimed by %s%s\n' "$kind" "$key" "$claimant_line" "$caveat"
   done <<EOM
 $dup_keys
 EOM
