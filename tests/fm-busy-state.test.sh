@@ -17,6 +17,14 @@ set -u
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
 
+# The canonical owner of the Grok busy-footer signature
+# (FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT), sourced here because production
+# callers (bin/fm-supervise-daemon.sh, bin/fm-tmux-lib.sh) source it too;
+# without it the Grok arm would silently exercise fm-busy-lib.sh's defensive
+# literal fallback instead of the value that actually classifies.
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-composer-lib.sh"
+
 TMP_ROOT=$(fm_test_tmproot fm-busy-state)
 EV="$ROOT/bin/fm-busy-event.sh"
 

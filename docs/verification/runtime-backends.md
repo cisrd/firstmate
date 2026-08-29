@@ -292,6 +292,24 @@ Pinned by `tests/fm-busy-state.test.sh`'s `test_grok_regex_active_turn_busy`, wh
 This capture is scoped to the busy/idle worker-state signature only.
 It does not refresh the separate, already-known staleness of grok 1.0.5's `empty`-composer shape classification noted above (`fm_composer_classify_screen`, used for away-mode injection and spawn readiness, not for busy-state supervision) - that remains owed and out of scope for this task.
 
+### Ctrl+C interrupt, re-verified on grok 1.0.5
+
+The Interrupt fact for grok (`.agents/skills/harness-adapters/SKILL.md`, `bin/fm-control-lib.sh:109-110`) was verified on grok 0.2.73 and had not been re-verified since.
+The busy-footer capture above raised a live doubt: the approval dialog's footer advertises `Ctrl+c:cancel`, and a footer string is advertising, not proof of a key's actual behavior - the exact trap the busy-footer fix itself was written to avoid for `Esc:cancel`.
+So the same session re-verified Ctrl+C directly rather than carry that same kind of unproven claim forward.
+
+Verified live on `grok 1.0.5 (5115b46bc909)` [stable] (app banner `Grok Build 1.0.13`), tmux 3.6a, Linux x86_64, on a private tmux session, 2026-08-29.
+A prompt was submitted that ran an approved real shell command (`sleep 25 && echo ...`) through Grok's own tool, confirmed as a genuine local OS child process by `pstree -p <grok-pid>` (`grok-+-bash---sleep`, not a remote or simulated execution), then `Ctrl+C` (`tmux send-keys C-c`) was sent while that child process was live.
+
+Observed, checked directly against OS process state rather than trusting Grok's own self-reported tool-duration text (which did not track real wall-clock time in this environment):
+
+- The turn's own transcript reported `Turn cancelled by user`.
+- The `sleep` child process's PID was polled with `kill -0` once a second for 15 seconds after `Ctrl+C`: it was already gone by the first 1-second check and never reappeared - the real underlying command was killed, not merely detached or left running in the background.
+- The composer footer returned to the genuinely idle shape (`Shift+Tab:mode | Ctrl+x:shortcuts`) within 1 second and accepted new input immediately.
+
+Conclusion: `Ctrl+C` cancels the turn AND kills the underlying command on grok 1.0.5, matching the 0.2.73 behavior this fact was originally verified against.
+The `Interrupt` row and the `bin/fm-control-lib.sh:109-110` comment are updated to cite this record instead of carrying forward an unverified claim.
+
 ## Steering-inbox doorbell
 
 The steering channel's one behavioral assumption - a real worker agent follows the constant self-describing doorbell line (list the inbox, read and act on its records in numeric order, then `mv` each into `handled/`) - was verified on 2026-08-23 against every installed verified harness, on tmux 3.6a, macOS arm64, on an isolated private socket, driving the REAL `bin/fm-send.sh` end to end (durable record plus doorbell, with one mid-wait re-ring playing the watcher's role).
