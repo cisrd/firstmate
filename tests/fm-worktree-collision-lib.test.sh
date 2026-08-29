@@ -10,11 +10,15 @@
 #
 # The guarantees under test:
 #   - fm_worktree_collision_path_state judges the SHARED PATH once from git
-#     alone: gone/landed leave nothing at risk, unlanded does.
+#     alone, and separates the two things one failed probe used to conflate:
+#     `missing` proves nothing is there, `uninspectable` proves only that the
+#     path could not be read, so it keeps the do-not-discard force.
 #   - fm_worktree_collision_claimant_process judges ONE claimant from its own
-#     recorded backend endpoint alone: alive/unknown are hazards, dead is not.
-#     The path's content never makes a dead record look hazardous, and a dead
-#     record's own detail never claims work that belongs to a live sibling.
+#     recorded backend endpoint alone and passes the backend's own verdict
+#     through, so the printed detail never blames a backend that answered.
+#     Only dead/missing are non-hazards. The path's content never makes a dead
+#     record look hazardous, and a dead record's own detail never claims work
+#     that belongs to a live sibling.
 #   - fm_worktree_collision_lines groups state/*.meta by worktree=, reports
 #     only paths claimed by 2+ records, names every claimant, and marks the
 #     collision `live` only when 2+ claimants' processes are still hazardous -
@@ -26,8 +30,9 @@
 #     keeping the hazard from going silent.
 #   - Path state never decides the kind and never withholds a line: every
 #     colliding path prints exactly one line, an unverifiable process stays a
-#     hazard even over a path that no longer exists, and that vanished path is
-#     stated as its own caveat instead of being passed over in silence.
+#     hazard even over a path that no longer exists, and every path that is not
+#     proven landed states its own risk as a caveat on either kind instead of
+#     being passed over in silence.
 #   - Only LOCAL records are grouped: a record carrying remote_host= names a
 #     path on another machine, so it can never collide with a local worktree.
 #   - A path claimed by exactly one record never produces a line.
@@ -103,7 +108,17 @@ test_path_state_classification() {
   local wt got
 
   got=$(fm_worktree_collision_path_state "$TMP_ROOT/never-existed")
-  [ "$got" = gone ] || fail "a worktree path that no longer exists should classify as gone, got '$got'"
+  [ "$got" = missing ] || fail "a worktree path with nothing at it should classify as missing, got '$got'"
+
+  # Present on disk but not a readable git worktree - a returned-but-not-deleted
+  # pool copy, or a dangling .git pointer. The probe proves only that it could
+  # not be read, never that it is empty.
+  wt="$TMP_ROOT/uninspectable-wt"
+  mkdir -p "$wt"
+  echo "work nobody can account for" > "$wt/scratch.txt"
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" = uninspectable ] \
+    || fail "a path that exists but is not a readable git worktree should classify as uninspectable, got '$got'"
 
   wt="$TMP_ROOT/landed-wt"
   make_worktree "$wt"
@@ -124,7 +139,7 @@ test_path_state_classification() {
   [ "$got" = unlanded ] \
     || fail "a clean worktree whose HEAD is not reachable from the default branch should classify as unlanded, got '$got'"
 
-  pass "fm_worktree_collision_path_state: gone, landed, and unlanded verdicts from the path alone"
+  pass "fm_worktree_collision_path_state: missing, uninspectable, landed, and unlanded verdicts from the path alone"
 }
 
 test_claimant_process_classification() {
@@ -148,13 +163,19 @@ test_claimant_process_classification() {
   meta="$TMP_ROOT/ambig.meta"
   fm_write_meta "$meta" "window=livesess:ambig" "worktree=$wt" "harness=claude" "kind=ship"
   got=$(PATH="$fakebin:$PATH" fm_worktree_collision_claimant_process "$meta")
-  [ "$got" = unknown ] || fail "an ambiguous process state should classify as unknown (cannot be proven finished), got '$got'"
+  [ "$got" = ambiguous ] \
+    || fail "a backend that answered but could not attribute the process should report ambiguous, not a flat unverifiable verdict, got '$got'"
 
   meta="$TMP_ROOT/dead.meta"
   fm_write_meta "$meta" "window=deadsess:win" "worktree=$wt" "harness=claude" "kind=ship"
   got=$(PATH="$fakebin:$PATH" fm_worktree_collision_claimant_process "$meta")
-  [ "$got" = dead ] \
-    || fail "a missing agent process should classify as dead even when the shared worktree is dirty, got '$got'"
+  [ "$got" = missing ] \
+    || fail "an authoritatively absent endpoint should report missing even when the shared worktree is dirty, got '$got'"
+
+  meta="$TMP_ROOT/no-endpoint.meta"
+  fm_write_meta "$meta" "worktree=$wt" "harness=claude" "kind=ship"
+  got=$(PATH="$fakebin:$PATH" fm_worktree_collision_claimant_process "$meta")
+  [ "$got" = no-endpoint ] || fail "a record with no recorded target should report no-endpoint, got '$got'"
 
   # A corrupt record naming a backend firstmate does not know is unreadable,
   # not finished - and bootstrap's own output is captured with stderr merged
@@ -163,11 +184,11 @@ test_claimant_process_classification() {
   meta="$TMP_ROOT/bogus-backend.meta"
   fm_write_meta "$meta" "window=livesess:alive" "backend=bogus" "worktree=$wt" "harness=claude" "kind=ship"
   got=$(PATH="$fakebin:$PATH" fm_worktree_collision_claimant_process "$meta" 2>"$TMP_ROOT/bogus-backend.err")
-  [ "$got" = unknown ] || fail "an unknown backend should classify as unknown, got '$got'"
+  [ "$got" = unverified ] || fail "an unknown backend has no recovery classifier, so it should report unverified, got '$got'"
   [ ! -s "$TMP_ROOT/bogus-backend.err" ] \
     || fail "an unknown backend must not leak diagnostics onto stderr, got:"$'\n'"$(cat "$TMP_ROOT/bogus-backend.err")"
 
-  pass "fm_worktree_collision_claimant_process: alive, unknown, and dead verdicts from the process alone, quietly"
+  pass "fm_worktree_collision_claimant_process: the backend's own verdict, from the process alone, quietly"
 }
 
 # --- fm_worktree_collision_lines: grouping and live/stale classification ----
@@ -204,10 +225,10 @@ test_collision_lines_grouping() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt_live claimed by fm-live-a (process alive), fm-live-b (process state unknown (backend=tmux not verifiable))" \
-    "two hazardous processes on one worktree should be reported as a live collision naming both verdicts and the unverifiable backend"
-  assert_not_contains "$out" "not verifiable)) -" \
-    "a live collision over a path that still exists needs no path-level caveat"
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt_live claimed by fm-live-a (process alive), fm-live-b (process state unknown (backend=tmux reported ambiguous)) - shared path still has unlanded work, do not discard" \
+    "two hazardous processes on one worktree should be reported as a live collision naming both verdicts, and a dirty shared path still states its own risk"
+  assert_not_contains "$out" "not verifiable" \
+    "a backend that answered every query must never be described as unverifiable"
 
   assert_contains "$out" "WORKTREE_COLLISION: stale $wt_stale claimed by fm-new-active (process alive), fm-old-finished (process gone)" \
     "a finished task's leftover record alongside one live task should read stale and name each process verdict"
@@ -303,14 +324,14 @@ test_collision_lines_gone_path_is_always_reported() {
   fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:ambig" "worktree=$gone_path" "harness=codex" "kind=ship"
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux not verifiable)), fm-ambig-b (process state unknown (backend=tmux not verifiable)) - shared worktree no longer exists at that path" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux reported ambiguous)), fm-ambig-b (process state unknown (backend=tmux reported ambiguous)) - shared worktree no longer exists at that path" \
     "two unverifiable claimants of a torn-down worktree must still be reported, naming the backend that could not answer and the vanished path"
 
   # A confirmed-alive claimant over the same vanished path: still reported, and
   # the alive claimant is named as the hazard it is.
   fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:alive" "worktree=$gone_path" "harness=codex" "kind=ship"
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux not verifiable)), fm-ambig-b (process alive) - shared worktree no longer exists at that path" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux reported ambiguous)), fm-ambig-b (process alive) - shared worktree no longer exists at that path" \
     "a confirmed-alive claimant of a worktree that no longer exists must still be reported"
 
   # One hazard only (alive plus a finished record) reads stale, and the gone
@@ -321,6 +342,32 @@ test_collision_lines_gone_path_is_always_reported() {
     "a live claimant beside a finished record over a vanished path reads stale and still carries the gone caveat"
 
   pass "fm_worktree_collision_lines: a vanished path is reported with its own caveat, never silenced"
+}
+
+# A path that is present but unreadable is the case bin/fm-teardown.sh refuses
+# on: the probe proves only that git could not inspect it, so the line must not
+# imply the path is empty, and the do-not-discard warning must survive.
+test_collision_lines_uninspectable_path_keeps_do_not_discard() {
+  local state fakebin wt out
+
+  state="$TMP_ROOT/uninspectable-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/uninspectable-tmux")
+
+  wt="$TMP_ROOT/wt-uninspectable"
+  mkdir -p "$wt"
+  echo "uncommitted work nobody can account for" > "$wt/scratch.txt"
+  fm_write_meta "$state/fm-u-a.meta" "window=deadsess:win" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-u-b.meta" "window=deadsess:win" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-u-a (process gone), fm-u-b (process gone) - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard" \
+    "a shared path that exists but cannot be inspected must keep the do-not-discard warning"
+  assert_not_contains "$out" "no longer exists" \
+    "a path that is still on disk must never be reported as gone"
+
+  pass "fm_worktree_collision_lines: an uninspectable shared path is never reported as empty"
 }
 
 # Remote secondmate records name a home on another machine: that path is unique
@@ -348,7 +395,7 @@ test_collision_lines_skips_remote_records() {
   fm_write_meta "$state/fm-local-y.meta" "window=livesess:ambig" "worktree=$wt" "harness=codex" "kind=ship"
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-local-x (process alive), fm-local-y (process state unknown (backend=tmux not verifiable))" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-local-x (process alive), fm-local-y (process state unknown (backend=tmux reported ambiguous))" \
     "the local pair sharing that same path must still be reported"
   assert_not_contains "$out" "fm-remote-a" \
     "a remote record must never be named as a claimant of a local worktree"
@@ -417,6 +464,7 @@ test_collision_lines_grouping
 test_collision_lines_live_claimants_wip_stays_path_level
 test_collision_lines_all_dead_unlanded_keeps_caveat
 test_collision_lines_gone_path_is_always_reported
+test_collision_lines_uninspectable_path_keeps_do_not_discard
 test_collision_lines_skips_remote_records
 test_collision_lines_silent_on_clean_home
 test_bootstrap_surfaces_collision_line
