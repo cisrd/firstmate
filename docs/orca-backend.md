@@ -43,6 +43,10 @@ worktree=<absolute Orca worktree path>
 `window=` remains the caller-facing Firstmate alias.
 `terminal=` and `orca_worktree_id=` are the backend authority used by operation and cleanup paths.
 
+Orca exposes no process-identity or native agent-registration signal, so `bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the terminal's own shell prompt before the harness launches, the same as on zellij and cmux.
+`bin/fm-busy-lib.sh`'s `fm_busy_classify` reads it back through `terminal read` to report `dead endpoint-shell` for a terminal that has reverted to that marked shell, rather than the generic `unknown` a bare prompt reported before.
+This is a busy-state read only: it does not change `fm_control_backend_state_verified`'s tmux/herdr-only recovery-grade gate, so `exit` and `relaunch` still refuse on Orca.
+
 ## Current lifecycle and safety
 
 Spawn registers the repository, creates an independent worktree, reuses only the verified `result.terminal.handle` returned by Orca or creates a terminal explicitly, installs harness hooks, records metadata, and launches the selected harness.

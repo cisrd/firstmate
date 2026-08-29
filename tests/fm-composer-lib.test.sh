@@ -664,3 +664,40 @@ test_queued_enter_verdict_does_not_convert_other_states() {
 test_queued_enter_verdict_busy_pending_is_empty
 test_queued_enter_verdict_idle_pending_stays_pending
 test_queued_enter_verdict_does_not_convert_other_states
+
+# --- Endpoint-shell marker (task fm-endpoint-shell-backends) ----------------
+#
+# fm-spawn.sh writes FM_COMPOSER_ENDPOINT_SHELL_MARKER into a task pane's own
+# shell prompt on herdr, zellij, orca, and cmux before the harness ever
+# launches, so a bare pane that later shows it is provably firstmate's own
+# agent-free endpoint shell rather than an unrelated shell. See
+# fm_composer_endpoint_shell_present's own comment in bin/fm-composer-lib.sh.
+
+test_endpoint_shell_marker_detected_alone() {
+  fm_composer_endpoint_shell_present "$FM_COMPOSER_ENDPOINT_SHELL_MARKER " \
+    || fail "the bare marker line must be detected"
+  pass "fm_composer_endpoint_shell_present: detects the marker on its own"
+}
+
+test_endpoint_shell_marker_detected_inside_captured_screen() {
+  local screen
+  screen=$(printf 'some earlier scrollback\nmore output\n%s \n' "$FM_COMPOSER_ENDPOINT_SHELL_MARKER")
+  fm_composer_endpoint_shell_present "$screen" \
+    || fail "the marker must be detected anywhere inside a multi-line capture"
+  pass "fm_composer_endpoint_shell_present: detects the marker inside a larger capture"
+}
+
+test_endpoint_shell_marker_absent_on_ordinary_content() {
+  local content
+  # shellcheck disable=SC2016  # single quotes are deliberate: a literal sample string, not a real substitution
+  for content in '' 'user@host:~$ ' '❯ ' '$(some unrelated output)' "$(classify 0 '❯')"; do
+    if fm_composer_endpoint_shell_present "$content"; then
+      fail "ordinary content '$content' must never be misread as the endpoint-shell marker"
+    fi
+  done
+  pass "fm_composer_endpoint_shell_present: never fires on ordinary content lacking the exact marker"
+}
+
+test_endpoint_shell_marker_detected_alone
+test_endpoint_shell_marker_detected_inside_captured_screen
+test_endpoint_shell_marker_absent_on_ordinary_content

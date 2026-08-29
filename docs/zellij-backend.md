@@ -58,6 +58,10 @@ Recorded pane ids are numeric and are never trusted alone after a session recrea
 Metadata-routed operations also verify the owning tab's expected scoped or unambiguous legacy title.
 An explicit raw `session:pane` target remains a pane-existence-only operator escape hatch.
 
+Zellij exposes no per-pane pid (see "Worktree-path discovery" below), so it has no process-identity signal at all, unlike tmux or herdr.
+`bin/fm-spawn.sh` compensates by writing fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the pane's own shell prompt before the harness launches; `bin/fm-busy-lib.sh`'s `fm_busy_classify` reads it back through `dump-screen` to report `dead endpoint-shell` for a pane that has reverted to that marked shell, rather than the generic `unknown` a bare Zellij prompt reported before.
+This is a busy-state read only: it does not change `fm_control_backend_state_verified`'s tmux/herdr-only recovery-grade gate, so `exit` and `relaunch` still refuse on Zellij.
+
 ## Current operation and safety
 
 Zellij's CLI action commands return exit 0 even for missing sessions or panes.

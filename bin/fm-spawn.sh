@@ -2859,6 +2859,21 @@ spawn_record_traceparent() {
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
+# Endpoint-shell marker (bin/fm-composer-lib.sh's
+# FM_COMPOSER_ENDPOINT_SHELL_MARKER): herdr, zellij, orca, and cmux have no
+# process-identity signal of their own for a bare shell the way tmux does, so
+# firstmate writes its own proof into the pane's shell prompt before the
+# harness ever runs there. Sent through the same pre-launch channel as
+# GOTMPDIR, on the same shell process the harness later runs as a plain
+# foreground job (never `exec`), so the prompt - and the marker in it -
+# reappears verbatim once that job exits. tmux needs no marker (its adapter
+# already proves liveness from the pane's real foreground process), so it is
+# deliberately excluded here.
+case "$BACKEND" in
+  herdr|zellij|orca|cmux)
+    spawn_send_text_line "$T" "PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '"
+    ;;
+esac
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.

@@ -383,6 +383,41 @@ FM_COMPOSER_LEFTBAR_FOOTER_RE_DEFAULT='^(Build|Plan)[[:space:]]+·[[:space:]]+'
 # boxes) from ever competing with the live composer.
 FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 
+# fm-spawn.sh's endpoint-shell marker (task fm-endpoint-shell-backends): a
+# fixed, unique literal every spawn writes into the interactive shell PS1 of a
+# freshly created herdr, zellij, orca, or cmux pane, before the harness launch
+# command is ever typed (bin/fm-spawn.sh, right before `spawn_send_literal
+# "$T" "$LAUNCH"`). It is a structural fact about that ONE persistent shell
+# process, not composer content the harness can be mistaken for: the shell
+# process runs the harness as a plain foreground job (never `exec`), so PS1
+# survives the harness exiting and reappears verbatim the next time that
+# exact shell prints its own prompt - which is exactly when a recovery path
+# needs proof that a bare pane is firstmate's own agent-free endpoint shell
+# rather than some unrelated shell that happens to sit at the recorded
+# coordinates. tmux and herdr's native `agent get` already prove liveness
+# from a structural source (process identity, registration), so the marker is
+# the only proof zellij, orca, and cmux have; herdr also carries it, for a
+# human or a generic capture-based tool to read the same fact the same way in
+# every backend. See fm_composer_endpoint_shell_present below. A backend or
+# harness that clears or rewrites the shell's PS1 before exiting (nothing
+# fleet-verified does today) makes the marker absent, which callers must read
+# as "cannot prove" - never as a false `dead`.
+FM_COMPOSER_ENDPOINT_SHELL_MARKER='[fm-endpoint-shell]'
+
+# fm_composer_endpoint_shell_present: 0 if <screen> contains the endpoint-shell
+# marker anywhere, 1 otherwise. A plain, unstyled substring match is
+# deliberate and sufficient: the marker is a fixed literal firstmate itself
+# writes, never de-emphasised ghost text a harness could render, so it needs
+# none of the ANSI-aware stripping fm_composer_strip_ghost exists for. Callers
+# never fake presence when a capture is empty or failed - the caller must
+# check that first and treat "could not read" as unproven, not absent.
+fm_composer_endpoint_shell_present() {  # <screen>
+  case "$1" in
+    *"$FM_COMPOSER_ENDPOINT_SHELL_MARKER"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Pi allows a multi-line composer between its horizontal separators. Bound the
 # structural candidate so two unrelated transcript rules with an arbitrarily
 # large region between them can never be promoted into a composer.

@@ -200,6 +200,12 @@ A Herdr pane id contains a colon, so the adapter splits `window=` on the first c
 The recorded pane is the operational fast path.
 Workspace and tab ids support verification and cleanup but are not inferred from mutable labels during normal operation.
 
+## Endpoint shell marker
+
+`bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the task pane's shell prompt before the harness ever launches, the same as on zellij, orca, and cmux.
+Herdr does not need it for its own dead/husk decision, which stays on the native `agent get` registration read above; the marker exists here purely so a plain capture of a Herdr pane reads the same fleet-wide fact the other three backends rely on.
+A capture that omits the marker (a harness that overwrote the shell's `PS1`, or a session predating this change) proves nothing either way and must not be read as "never a firstmate endpoint".
+
 ## Current transport behavior
 
 The adapter starts and polls a named server before workspace, tab, pane, or agent calls.
