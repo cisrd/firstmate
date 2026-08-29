@@ -2217,6 +2217,31 @@ kimi_capture() {
   fm_backend_capture "$BACKEND" "$T" 120 "$W" 2>/dev/null || true
 }
 
+# spawn_marker_residue_cleared: 0 only when a FRESH capture positively shows
+# the pane's current input row no longer carries <residue> - the exact text a
+# failed marker send left uncommitted there. Anything that cannot be read as
+# proof (a failed or empty capture, no non-blank row) returns 1: the caller
+# must refuse rather than paste the launch command onto an unknown line.
+# A leading endpoint-shell marker is stripped through the shared anchor
+# primitive first, so a relaunch whose PROMPT already carries the marker is not
+# mistaken for leftover residue.
+spawn_marker_residue_cleared() {  # <target> <residue>
+  local cap row last='' rest
+  cap=$(fm_backend_capture "$BACKEND" "$1" "${FM_COMPOSER_CAPTURE_LINES:-20}" "$W" 2>/dev/null) || return 1
+  [ -n "$cap" ] || return 1
+  while IFS= read -r row; do
+    case "$row" in *[![:space:]]*) last=$row ;; esac
+  done <<EOF
+$cap
+EOF
+  [ -n "$last" ] || return 1
+  fm_composer_endpoint_shell_lead_var rest "$last" || rest=$last
+  case "$rest" in
+    *"$2"*) return 1 ;;
+  esac
+  return 0
+}
+
 # Kimi launch-readiness and delivery route their composer-emptiness half
 # through the shared classifier (bin/fm-composer-lib.sh via
 # fm_backend_composer_state), the same owner every steer and injection guard
@@ -2895,20 +2920,58 @@ sleep 0.3
 # reject the WHOLE input line on a parse error, so chaining would take the
 # agent's launch down with it. On its own line the worst case is that the
 # assignment has no effect and the marker is simply absent, which every
-# reader already treats as undetermined. Sent LAST, immediately before the
-# launch text with no pre-launch command between them, so the interval in
-# which the pane shows a bare marked prompt - the shape a reader treats as
-# "the agent exited" - is bounded by two adjacent sends rather than by the
-# whole pre-launch sequence. A capture landing in exactly that instant can
-# still read `dead endpoint-shell` for a healthy launching endpoint; that
-# residual race is known and accepted. The marker lands on the same shell
-# process that runs the harness as a plain foreground job (never `exec`), so
-# the prompt - with the marker in it - reappears verbatim once the harness
-# exits. tmux needs no marker (its adapter already proves liveness from the
-# pane's real foreground process), so it is deliberately excluded from that
-# list.
+# reader already treats as undetermined.
+#
+# Sent LAST, immediately before the launch text with no pre-launch command
+# between them. On a FRESH spawn that bounds the interval in which the pane
+# shows a bare marked prompt - the shape a reader treats as "the agent
+# exited" - to those two adjacent sends, because PS1 is not the marker until
+# this very send; a capture landing in exactly that instant can still read
+# `dead endpoint-shell` for a healthy launching endpoint, and that residual
+# race is known and accepted. On a RELAUNCH the bound is wider and this
+# ordering does not narrow it: PS1 already carries the marker from the
+# endpoint's prior life, so every pre-launch send above redraws a bare marked
+# prompt and the exposure spans the whole pre-launch sequence. That is not a
+# false positive - a relaunch refuses unless the previous agent is already
+# positively verified gone (the RELAUNCH_STATE check above), so no agent is
+# running while it reads dead.
+#
+# The marker lands on the same shell process that runs the harness as a plain
+# foreground job (never `exec`), so the prompt - with the marker in it -
+# reappears verbatim once the harness exits. tmux needs no marker (its adapter
+# already proves liveness from the pane's real foreground process), so it is
+# deliberately excluded from that list.
 if fm_composer_endpoint_shell_backend "$BACKEND"; then
-  spawn_send_text_line "$T" "PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '" || true
+  MARKER_LINE="PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '"
+  MARKER_SEND_STATUS=0
+  spawn_send_text_line "$T" "$MARKER_LINE" || MARKER_SEND_STATUS=$?
+  # rc=2 is the ONE outcome that is not "the marker simply did not take": the
+  # text was pasted and neither the Enter submit nor the clearing C-c landed,
+  # so it is still sitting uncommitted in the pane's input line. Pasting the
+  # launch command on top of that residue would submit one concatenated line
+  # and the agent would never start, so clear it and prove it is gone before
+  # continuing - and refuse loudly rather than launch onto a line whose
+  # contents cannot be confirmed. Every other status is the documented,
+  # already-accepted outcome: the marker is absent and readers treat it as
+  # undetermined.
+  if [ "$MARKER_SEND_STATUS" -eq 2 ]; then
+    MARKER_RESIDUE_CLEARED=0
+    MARKER_CLEAR_TRY=1
+    while [ "$MARKER_CLEAR_TRY" -le 3 ]; do
+      spawn_send_key "$T" C-u >/dev/null 2>&1 || true
+      spawn_send_key "$T" C-c >/dev/null 2>&1 || true
+      sleep 0.2
+      if spawn_marker_residue_cleared "$T" "$MARKER_LINE"; then
+        MARKER_RESIDUE_CLEARED=1
+        break
+      fi
+      MARKER_CLEAR_TRY=$((MARKER_CLEAR_TRY + 1))
+    done
+    if [ "$MARKER_RESIDUE_CLEARED" -ne 1 ]; then
+      echo "error: the endpoint-shell marker was pasted into $W but could not be submitted or cleared, and the pane's input line cannot be confirmed clean; refusing to send the launch command on top of that residue" >&2
+      exit 1
+    fi
+  fi
 fi
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3

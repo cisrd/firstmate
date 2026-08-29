@@ -387,14 +387,30 @@ FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 # fixed, unique literal every spawn writes into the interactive shell PS1 of a
 # herdr, zellij, orca, or cmux pane, as a `PS1=` line of its own sent
 # immediately before the launch text (bin/fm-spawn.sh, just before
-# `spawn_send_literal "$T" "$LAUNCH"`). Between those two adjacent sends the
-# pane does show a BARE marked prompt, and on a RELAUNCH - where the shell
-# already carries the marker from its previous life - spawn's earlier
-# pre-launch `export` lines leave more of them in scrollback above it. That is
-# why readers below decide from the BOTTOM-MOST marked row - the pane's
-# current prompt - and never from stale scrollback above it; the one
-# remaining window, a capture landing between those two adjacent sends, is a
-# known and accepted residual race. It is a structural fact
+# `spawn_send_literal "$T" "$LAUNCH"`). The pane does show a BARE marked
+# prompt while spawn is still launching, and the bound on that window differs
+# per path - it is NOT one claim for both:
+#
+#   FRESH SPAWN: PS1 is not the marker until that one send, so no bare marked
+#   prompt exists before it, and the launch text follows with nothing in
+#   between. The window is bounded by those two adjacent sends. A capture
+#   landing in exactly that instant reads `dead endpoint-shell` for a healthy
+#   launching endpoint; that residual race is known and accepted.
+#
+#   RELAUNCH: PS1 already carries the marker from the endpoint's prior life
+#   before the pre-launch sequence even starts, so the GOTMPDIR export, the
+#   TRACEPARENT export, and the marker resend each land on an already-marked
+#   prompt and redraw a fresh bare one. The window spans the WHOLE pre-launch
+#   sequence, meta-lock wait and settle sleeps included. This one is not a
+#   false positive: a relaunch refuses unless the previous agent is already
+#   positively verified gone (bin/fm-spawn.sh's RELAUNCH_STATE check, gated to
+#   the backends bin/fm-control-lib.sh's fm_control_backend_state_verified
+#   trusts - among the marker backends, herdr only), so nothing is running
+#   while the pane reads dead.
+#
+# Either way only the pane's CURRENT prompt may decide, which is why the
+# readers below take the BOTTOM-MOST marked row and never stale scrollback
+# above it. It is a structural fact
 # about that ONE persistent shell
 # process, not composer content the harness can be mistaken for: the shell
 # process runs the harness as a plain foreground job (never `exec`), so PS1
@@ -413,7 +429,7 @@ FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 FM_COMPOSER_ENDPOINT_SHELL_MARKER='[fm-endpoint-shell]'
 
 # The backends whose panes carry the marker, declared here with the shape
-# itself so the writer (bin/fm-spawn.sh's launch-line prefix) and the reader
+# itself so the writer (bin/fm-spawn.sh's own `PS1=` pre-launch line) and the reader
 # (bin/fm-busy-lib.sh's endpoint-shell arm) can never drift apart: a backend
 # added to only one of the two lists would otherwise silently write a marker
 # nothing reads, or read one nothing writes. tmux is deliberately absent - its

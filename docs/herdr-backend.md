@@ -209,9 +209,12 @@ That read is per task and sits last in `fm_busy_classify`, so it is reached only
 `codex` and `kimi` tasks reach it only once their own semantic source is verified; until then they resolve as `unknown codex-unverified` / `unknown kimi-unverified`.
 Every other harness (`claude`, `opencode`, and the Pi-hosted harnesses) reaches it whenever the task has no record.
 A capture that omits the marker proves nothing either way and must not be read as "never a firstmate endpoint".
-Between those two adjacent sends the pane does show a bare marked prompt, and on a relaunch - where the shell already carries the marker from its previous life - spawn's earlier pre-launch `export` lines leave more of them in scrollback above the launch line.
+The pane does show a bare marked prompt while spawn is still launching, and the bound on that window differs per path.
+On a **fresh spawn** `PS1` is not the marker until that one send, so no bare marked prompt exists before it and the launch text follows with nothing in between: the window is bounded by those two adjacent sends.
+On a **relaunch** `PS1` already carries the marker from the endpoint's prior life before the pre-launch sequence starts, so the `GOTMPDIR` export, the `TRACEPARENT` export, and the marker resend each land on an already-marked prompt and redraw a fresh bare one - the window spans the whole pre-launch sequence, meta-lock wait and settle sleeps included.
 The read is therefore decided from the bottom-most marked row - the pane's current prompt - and never from stale scrollback above it.
-One residual race remains and is accepted: a capture landing in the instant between the marker line and the launch text can still read `dead endpoint-shell` for a healthy launching endpoint.
+The fresh-spawn window is a real residual race and is accepted: a capture landing in the instant between the marker line and the launch text reads `dead endpoint-shell` for a healthy launching endpoint.
+The wider relaunch window is not a false positive: a relaunch refuses unless the previous agent is already positively verified gone (herdr is one of only two backends whose agent state is trusted for that check), so nothing is running while the pane reads dead.
 The marker is planted with a one-shot `PS1=` assignment, so it is absent for a session predating this change, for a harness that overwrote the shell's `PS1`, for a shell that regenerates its prompt per command (starship, powerlevel10k, a `PROMPT_COMMAND` or `precmd` git prompt), and for a shell that never consults `PS1` at all (fish, nushell).
 In every one of those cases the pane classifies exactly as it did before this feature existed; absence is never read as "the agent is alive" and never on its own as `dead endpoint-shell`.
 

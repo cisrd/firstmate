@@ -156,9 +156,46 @@ case "$sub" in
         *) key=$1; shift ;;
       esac
     done
-    [ "$key" = Enter ] && commit_line
+    pending=$(cat "$S/pending")
+    # Failure injection, modelling the real adapter's rc=2 path: while the
+    # pane's uncommitted input matches FM_FAKE_ZJ_SUBMIT_FAIL_ON, neither the
+    # Enter submit nor the clearing Ctrl-c lands, so send_text_line returns 2
+    # with the pasted text still sitting on the input line.
+    if [ -n "${FM_FAKE_ZJ_SUBMIT_FAIL_ON:-}" ] && [ -n "$pending" ]; then
+      case "$pending" in
+        *"$FM_FAKE_ZJ_SUBMIT_FAIL_ON"*)
+          # FM_FAKE_ZJ_SUBMIT_FAIL_COUNT bounds how many submit/clear attempts
+          # fail (0 = never recovers). A bounded count models a TRANSIENT
+          # glitch: the marker send still returns 2 with its text stranded on
+          # the input line, but keys work again afterwards - which is what lets
+          # a launch pasted on top of that residue actually get submitted.
+          budget=${FM_FAKE_ZJ_SUBMIT_FAIL_COUNT:-0}
+          used=$(cat "$S/submitfails" 2>/dev/null || echo 0)
+          if [ "$budget" -eq 0 ] || [ "$used" -lt "$budget" ]; then
+            case "$key" in
+              Enter|'Ctrl c') printf '%s\n' "$((used + 1))" > "$S/submitfails"; exit 1 ;;
+            esac
+          fi
+          case "$key" in
+            'Ctrl u') [ "${FM_FAKE_ZJ_CLEAR_FAIL:-0}" = 1 ] && exit 1 ;;
+          esac
+          ;;
+      esac
+    fi
+    case "$key" in
+      Enter) commit_line ;;
+      # Ctrl-u discards the uncommitted input line, exactly as a shell does.
+      'Ctrl u') : > "$S/pending" ;;
+    esac
     ;;
-  dump-screen) cat "$S/screen" ;;
+  # A capture shows the pane's committed rows plus, when the input line holds
+  # uncommitted pasted text, that live row too - which is how residue left by
+  # a failed send is visible to a reader at all.
+  dump-screen)
+    cat "$S/screen"
+    pending=$(cat "$S/pending")
+    [ -z "$pending" ] || printf '%s%s\n' "$(cat "$S/ps1")" "$pending"
+    ;;
   *) : ;;
 esac
 exit 0
@@ -207,10 +244,20 @@ run_zellij_spawn() {  # <name> -> echoes sim-state dir
     FM_ZELLIJ_SESSION="fm-sim-$name" \
     FM_FAKE_ZJ_STATE="$sim" FM_FAKE_ZJ_SNAP_SEP="$SNAP_SEP" \
     FM_FAKE_ZJ_LAUNCH_MATCH='--dangerously-skip-permissions' \
+    FM_FAKE_ZJ_SUBMIT_FAIL_ON="${FM_FAKE_ZJ_SUBMIT_FAIL_ON:-}" \
+    FM_FAKE_ZJ_SUBMIT_FAIL_COUNT="${FM_FAKE_ZJ_SUBMIT_FAIL_COUNT:-0}" \
+    FM_FAKE_ZJ_CLEAR_FAIL="${FM_FAKE_ZJ_CLEAR_FAIL:-0}" \
     PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$proj" --backend zellij --mode no-mistakes --yolo off \
     > "$case_dir/spawn.out" 2>&1 || true
+  cp "$case_dir/spawn.out" "$sim/spawn.out"
   printf '%s\n' "$sim"
+}
+
+# Every line the pane actually submitted, in order, as the simulator committed
+# them - the record of what the shell was really asked to run.
+committed_lines() {  # <sim-dir>
+  sed -n 's/^echo //p' "$1/events"
 }
 
 # Classify one captured screen exactly as a concurrent supervisor would: no
@@ -320,5 +367,63 @@ test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits() {
   pass "the marker still proves a dead endpoint shell once the agent exits"
 }
 
+# rc=2 from the marker send is the one outcome that is NOT "the marker simply
+# did not take": the text was pasted and neither the Enter submit nor the
+# clearing Ctrl-c landed, so it is still sitting uncommitted on the pane's
+# input line. Pasting the launch command on top of that residue would submit
+# one concatenated line and the agent would never start. Spawn must either
+# clear the line and prove it clean before continuing, or refuse outright -
+# never silently corrupt the launch.
+test_marker_send_residue_is_cleared_before_the_launch_text() {
+  local sim launched line
+  # Two failed attempts (the Enter submit and the clearing Ctrl-c of the marker
+  # send), then keys work again - a transient glitch, so anything pasted onto
+  # the stranded residue really would be submitted.
+  sim=$(FM_FAKE_ZJ_SUBMIT_FAIL_ON="$FM_COMPOSER_ENDPOINT_SHELL_MARKER" \
+    FM_FAKE_ZJ_SUBMIT_FAIL_COUNT=2 run_zellij_spawn markerresidue)
+
+  launched=$(cat "$sim/launched" 2>/dev/null || echo 0)
+  [ "$launched" = 1 ] \
+    || fail "spawn cleared the residue but never launched; recovery must proceed to the launch:"$'\n'"$(cat "$sim/spawn.out")"
+
+  while IFS= read -r line; do
+    case "$line" in
+      *"$FM_COMPOSER_ENDPOINT_SHELL_MARKER"*--dangerously-skip-permissions*)
+        fail "the launch text was submitted concatenated onto the marker residue: $line"
+        ;;
+    esac
+  done < <(committed_lines "$sim")
+  pass "a marker send that leaves residue is cleared before the launch text, never pasted over"
+}
+
+# Same failure, but now nothing can clear the line either. Spawn must refuse
+# rather than launch onto a line whose contents it cannot confirm.
+test_unclearable_marker_residue_refuses_the_launch() {
+  local sim launched line out
+  sim=$(FM_FAKE_ZJ_SUBMIT_FAIL_ON="$FM_COMPOSER_ENDPOINT_SHELL_MARKER" FM_FAKE_ZJ_CLEAR_FAIL=1 \
+    run_zellij_spawn markerstuck)
+
+  launched=$(cat "$sim/launched" 2>/dev/null || echo 0)
+  [ "$launched" != 1 ] \
+    || fail "spawn launched onto a pane whose input line could not be confirmed clean"
+
+  while IFS= read -r line; do
+    case "$line" in
+      *--dangerously-skip-permissions*)
+        fail "the launch text was submitted despite unclearable residue: $line"
+        ;;
+    esac
+  done < <(committed_lines "$sim")
+
+  out=$(cat "$sim/spawn.out")
+  case "$out" in
+    *"refusing to send the launch command"*) : ;;
+    *) fail "the refusal must name its cause on stderr, got:"$'\n'"$out" ;;
+  esac
+  pass "an unclearable marker residue refuses the launch with a named cause instead of corrupting it"
+}
+
 test_marked_prompt_appears_only_immediately_before_the_launch_text
 test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits
+test_marker_send_residue_is_cleared_before_the_launch_text
+test_unclearable_marker_residue_refuses_the_launch
