@@ -2268,11 +2268,48 @@ test_unanswerable_status_query_under_force_is_loud_and_recorded() {
   expect_code 0 "$rc" "unrecovered-query-failure-force: --force authorizes the discard and teardown should complete"
   assert_present "$case_dir/treehouse.log" \
     "unrecovered-query-failure-force: --force did not reach the worktree return"
-  assert_grep "DISCARDING UNLANDED WORK" "$case_dir/stderr" \
-    "unrecovered-query-failure-force: teardown discarded an unverifiable worktree silently"
+  # The headline must not claim work was lost in the same breath as admitting
+  # teardown could not find out whether any exists.
+  assert_grep "DISCARDING UNVERIFIED WORKTREE" "$case_dir/stderr" \
+    "unrecovered-query-failure-force: teardown discarded an unverifiable worktree silently, or claimed more than it knew"
+  assert_not_contains "$(cat "$case_dir/stderr")" "DISCARDING UNLANDED WORK" \
+    "unrecovered-query-failure-force: teardown asserted lost work it never managed to verify"
   assert_grep "query-failed" "$case_dir/state/.discarded-pipeline-commits.log" \
     "unrecovered-query-failure-force: the unverifiable discard was not recorded durably"
   pass "an unanswerable status query under --force still announces and records what it could not verify"
+}
+
+# The durable record is the ONLY trace that survives the worktree, so it is a
+# precondition for the discard, not telemetry. If it cannot be written, --force
+# must stop rather than destroy work nothing afterwards can account for.
+# A directory standing where the log file goes makes every append fail the same
+# way a full or read-only $STATE would, without disturbing teardown's other
+# state writes.
+test_unrecordable_discard_under_force_refuses() {
+  local case_dir rc head
+  case_dir=$(make_case unrecordable-discard-force)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  mkdir -p "$case_dir/state/.discarded-pipeline-commits.log"
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(recover_custody_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "unrecordable-discard-force: --force must refuse when the discard cannot be recorded durably"
+  assert_grep "RECORD-WRITE failure" "$case_dir/stderr" \
+    "unrecordable-discard-force: teardown did not say which of the two checks failed"
+  assert_absent "$case_dir/treehouse.log" \
+    "unrecordable-discard-force: teardown returned the worktree despite being unable to record the discard"
+  assert_present "$case_dir/wt" \
+    "unrecordable-discard-force: teardown removed the worktree it could not account for"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "unrecordable-discard-force: teardown removed task metadata after refusing"
+  pass "--force refuses when the durable discard record cannot be written, rather than destroying untraceable work"
 }
 
 # The precondition guards an IRREVERSIBLE step, so a query that cannot answer
@@ -2373,6 +2410,62 @@ test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort() {
 # carrying no content the worktree is missing. Ancestry alone calls that
 # stranded work; patch identity does not. Builds a real rebased copy (same
 # tree, same parent, different commit) so `git cherry` sees an equivalent.
+# branch_sync keeps reporting state=pipeline_owned after a cancellation - this
+# change's own recover_custody fixture shows that shape - so the pipeline-head
+# trigger fires for TERMINAL runs too, via the state arm rather than the active
+# arm. next_action.code is not recover_custody here, so trigger 1 misses and
+# only trigger 2 catches it. The remedy must not tell the operator to wait for
+# a run that already ended.
+terminal_pipeline_owned_axi_status_toon() {  # <branch> <local-head> [run-id]
+  cat <<EOF
+run:
+  id: "${3:-01RUN}"
+  branch: $1
+  status: cancelled
+  head: fix7head
+  findings: none
+outcome: cancelled
+branch_sync:
+  state: pipeline_owned
+  changed: true
+  local:
+    branch: $1
+    head: "$2"
+    clean: true
+  pipeline:
+    run: "${3:-01RUN}"
+    status: cancelled
+    current_head: fix7head
+  safety: blocked_pipeline_owned
+  next_action:
+    code: none
+    command: ""
+EOF
+}
+
+test_terminal_pipeline_owned_run_gets_custody_remedy_not_wait() {
+  local case_dir rc head
+  case_dir=$(make_case pipeline-ahead-terminal)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(terminal_pipeline_owned_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "pipeline-ahead-terminal: teardown should still refuse when a terminal run left a pipeline head this worktree lacks"
+  assert_grep "axi sync --recover" "$case_dir/stderr" \
+    "pipeline-ahead-terminal: an ended run needs the custody-return remedy, which teardown did not give"
+  assert_not_contains "$(cat "$case_dir/stderr")" "Let it finish" \
+    "pipeline-ahead-terminal: teardown told the operator to wait for a run that already ended"
+  assert_absent "$case_dir/treehouse.log" \
+    "pipeline-ahead-terminal: teardown returned the worktree while a pipeline commit was unaccounted for"
+  pass "a terminal run holding a pipeline commit gets the custody-return remedy, not a wait for a finished run"
+}
+
 test_content_equivalent_rebase_does_not_refuse_teardown() {
   local case_dir rc head rebased tree parent
   case_dir=$(make_case pipeline-ahead-rebase-equivalent)
@@ -3055,7 +3148,9 @@ test_parked_run_abort_leaves_unrecovered_commits_refuses
 test_unrecovered_pipeline_commits_are_discarded_under_force
 test_unanswerable_status_query_refuses_teardown
 test_unanswerable_status_query_under_force_is_loud_and_recorded
+test_unrecordable_discard_under_force_refuses
 test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort
+test_terminal_pipeline_owned_run_gets_custody_remedy_not_wait
 test_content_equivalent_rebase_does_not_refuse_teardown
 test_resolvable_pipeline_commit_with_new_content_refuses_teardown
 test_toplevel_key_after_branch_sync_is_not_read_as_its_child

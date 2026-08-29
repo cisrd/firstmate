@@ -192,10 +192,23 @@
 #           TRACED  - one bounded append-only line lands in
 #                     "$STATE/.discarded-pipeline-commits.log", which is not
 #                     keyed to the task id teardown erases, so the commit is
-#                     never lost from EVERY record at once.
+#                     never lost from EVERY record at once. That record is a
+#                     PRECONDITION, not telemetry: if the append fails (full,
+#                     read-only, unwritable $STATE) --force refuses too rather
+#                     than destroying work nothing afterwards can account for,
+#                     and says it was the record write that failed and not the
+#                     axi status check, so the operator fixes the right thing.
 #         Both that message and the plain refusal say outright that --force is
 #         authorization to discard this specific work, not a convenience
 #         bypass, so an operator reading either one sees the distinction.
+#       - The REMEDY it prints keys off whether the run is still active, never
+#         off which trigger matched. branch_sync keeps reporting
+#         pipeline_owned after a cancellation, so the pipeline-head trigger
+#         fires for terminal runs too; those get the custody-return remedy
+#         (`axi sync --recover`), and only a genuinely in-flight run is told to
+#         let it finish and re-check. A discard whose stakes could not be
+#         verified at all is headlined as unverified rather than as known lost
+#         work, so the loud notice never claims more than teardown established.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -1692,6 +1705,7 @@ conclude_task_no_mistakes_run() {  # <worktree>
 NM_TEARDOWN_UNRECOVERED_REASON=
 NM_TEARDOWN_UNRECOVERED_BRANCH=
 NM_TEARDOWN_UNRECOVERED_HEAD=
+NM_TEARDOWN_UNRECOVERED_RUN_ACTIVE=0
 
 # 0 if pipeline head $2 carries content worktree $1's HEAD does not already
 # have. An unresolvable head, or a comparison git cannot complete, answers 0:
@@ -1712,6 +1726,7 @@ worktree_has_unrecovered_pipeline_commits() {  # <worktree>
   NM_TEARDOWN_UNRECOVERED_REASON=
   NM_TEARDOWN_UNRECOVERED_BRANCH=
   NM_TEARDOWN_UNRECOVERED_HEAD=
+  NM_TEARDOWN_UNRECOVERED_RUN_ACTIVE=0
   [ "$KIND" = ship ] || return 1
   [ -d "$wt" ] || return 1
   command -v no-mistakes >/dev/null 2>&1 || return 1
@@ -1735,6 +1750,7 @@ worktree_has_unrecovered_pipeline_commits() {  # <worktree>
     || fm_nm_run_is_pipeline_owned_active "$out" \
     || return 1
 
+  if fm_nm_run_is_active "$out"; then NM_TEARDOWN_UNRECOVERED_RUN_ACTIVE=1; fi
   pipeline_head=$(fm_nm_branch_sync_pipeline_current_head "$out")
   NM_TEARDOWN_UNRECOVERED_HEAD=$pipeline_head
 
@@ -1747,8 +1763,13 @@ worktree_has_unrecovered_pipeline_commits() {  # <worktree>
   # calls its state. A terminal run whose state is not pipeline_owned and whose
   # next_action is not recover_custody is the one shape AGENTS.md names as
   # "ownership already returned and no recovery required", and still passes.
+  # Note that BOTH arms can hold at once, and the state arm alone can hold for
+  # a TERMINAL run (branch_sync keeps reporting pipeline_owned after a
+  # cancellation), which is why the remedy the caller prints keys off
+  # NM_TEARDOWN_UNRECOVERED_RUN_ACTIVE and never off which arm matched.
   if [ -n "$pipeline_head" ] \
-     && { [ "$(fm_nm_branch_sync_state "$out")" = pipeline_owned ] || fm_nm_run_is_active "$out"; }; then
+     && { [ "$(fm_nm_branch_sync_state "$out")" = pipeline_owned ] \
+          || [ "$NM_TEARDOWN_UNRECOVERED_RUN_ACTIVE" = 1 ]; }; then
     if pipeline_head_carries_unlanded_content "$wt" "$pipeline_head"; then
       if fm_nm_head_resolvable "$wt" "$pipeline_head"; then
         NM_TEARDOWN_UNRECOVERED_REASON=pipeline-ahead-unlanded
@@ -1761,10 +1782,15 @@ worktree_has_unrecovered_pipeline_commits() {  # <worktree>
   return 1
 }
 
-# Durable, fleet-wide record of work discarded under --force, following the
-# same bounded append-only convention as bin/fm-push-transition-lib.sh's
-# triage log. Deliberately NOT keyed under "$STATE/$ID." - teardown erases
-# those, and this record has to outlive the task whose commit it names.
+# Durable, fleet-wide record of work discarded under --force, borrowing the
+# bounded append-only shape of bin/fm-push-transition-lib.sh's triage log but
+# NOT its best-effort contract: that log is supervision telemetry a lost line
+# costs nothing, while this one is the only surviving trace of destroyed work.
+# So the append is REQUIRED - a failure returns non-zero and the caller stops
+# before destroying anything. Only the size rotation stays best-effort, since
+# failing to trim cannot lose the line just written. Deliberately NOT keyed
+# under "$STATE/$ID." - teardown erases those, and this record has to outlive
+# the task whose commit it names.
 NM_DISCARD_LOG="$STATE/.discarded-pipeline-commits.log"
 NM_DISCARD_LOG_MAX_BYTES=${FM_DISCARD_LOG_MAX_BYTES:-262144}
 case "$NM_DISCARD_LOG_MAX_BYTES" in ''|*[!0-9]*|0) NM_DISCARD_LOG_MAX_BYTES=262144 ;; esac
@@ -1772,7 +1798,7 @@ record_discarded_pipeline_commits() {  # <reason> <branch> <pipeline-head> <work
   local sz
   printf '[%s] task=%s reason=%s branch=%s pipeline_head=%s worktree=%s\n' \
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$ID" "${1:-unknown}" "${2:-unknown}" \
-    "${3:-unknown}" "${4:-unknown}" >> "$NM_DISCARD_LOG" 2>/dev/null || return 0
+    "${3:-unknown}" "${4:-unknown}" >> "$NM_DISCARD_LOG" || return 1
   sz=$(wc -c < "$NM_DISCARD_LOG" 2>/dev/null | tr -d '[:space:]')
   case "$sz" in ''|*[!0-9]*) return 0 ;; esac
   if [ "$sz" -ge "$NM_DISCARD_LOG_MAX_BYTES" ]; then
@@ -1780,6 +1806,7 @@ record_discarded_pipeline_commits() {  # <reason> <branch> <pipeline-head> <work
       && mv -f "$NM_DISCARD_LOG.tmp" "$NM_DISCARD_LOG" 2>/dev/null
     rm -f "$NM_DISCARD_LOG.tmp" 2>/dev/null || true
   fi
+  return 0
 }
 
 # Fix 2 (see script header): pids of every process whose CURRENT WORKING
@@ -2910,26 +2937,45 @@ if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   if worktree_has_unrecovered_pipeline_commits "$WT"; then
     nm_discard_what="branch $NM_TEARDOWN_UNRECOVERED_BRANCH${NM_TEARDOWN_UNRECOVERED_HEAD:+, pipeline commit $NM_TEARDOWN_UNRECOVERED_HEAD}"
+    # The remedy for a pipeline-held commit depends on whether the run is still
+    # going, NOT on which trigger matched: branch_sync keeps reporting
+    # pipeline_owned after a cancellation, so the state arm fires for terminal
+    # runs too, and telling those to "let the run finish" names a wait that
+    # already ended. A terminal run is exactly the custody-return case.
+    if [ "$NM_TEARDOWN_UNRECOVERED_RUN_ACTIVE" = 1 ]; then
+      nm_pipeline_fix="The run is still going, so nothing can be recovered from it yet. Let it finish (or abort it), then re-check with 'no-mistakes axi status' and follow the branch_sync.next_action it reports."
+    else
+      nm_pipeline_fix="The run has already ended, so this is a custody return: run 'no-mistakes axi sync --recover' in that worktree to bring the commit back, then re-check with 'no-mistakes axi status'."
+    fi
     case "$NM_TEARDOWN_UNRECOVERED_REASON" in
       query-failed)
+        nm_discard_head="DISCARDING UNVERIFIED WORKTREE"
         nm_discard_why="cannot ask no-mistakes whether the run for $ID left pipeline-committed work that never reached this worktree ($WT); 'no-mistakes axi status' there did not answer, so what is at stake here is unknown"
-        nm_discard_fix="Retry once it answers." ;;
+        nm_discard_fix="Retry once 'no-mistakes axi status' answers again." ;;
       recover_custody)
+        nm_discard_head="DISCARDING UNLANDED WORK"
         nm_discard_why="no-mistakes run for $ID left pipeline-committed work in the gate that never reached this worktree ($WT)"
         nm_discard_fix="Run 'no-mistakes axi sync --recover' there to land it first." ;;
       pipeline-ahead-unlanded)
-        nm_discard_why="the no-mistakes pipeline for $ID holds commits on $NM_TEARDOWN_UNRECOVERED_BRANCH that are not in this worktree ($WT) and whose changes are in no commit this worktree has; the run has not returned the branch yet, so there is nothing to recover yet"
-        nm_discard_fix="Let the run finish (or abort it), then re-check with 'no-mistakes axi status'; follow the branch_sync.next_action it reports." ;;
+        nm_discard_head="DISCARDING UNLANDED WORK"
+        nm_discard_why="the no-mistakes pipeline for $ID holds commits on $NM_TEARDOWN_UNRECOVERED_BRANCH that are not in this worktree ($WT) and whose changes are in no commit this worktree has"
+        nm_discard_fix=$nm_pipeline_fix ;;
       *)
-        nm_discard_why="the no-mistakes pipeline for $ID reports head $NM_TEARDOWN_UNRECOVERED_HEAD on $NM_TEARDOWN_UNRECOVERED_BRANCH, which this worktree ($WT) does not have, so teardown cannot tell whether it carries a fix round that would be lost or is only a rebase of commits this worktree already has; the run has not returned the branch yet, so there is nothing to recover yet"
-        nm_discard_fix="Let the run finish (or abort it), then re-check with 'no-mistakes axi status'; follow the branch_sync.next_action it reports." ;;
+        nm_discard_head="DISCARDING UNVERIFIED WORKTREE"
+        nm_discard_why="the no-mistakes pipeline for $ID reports head $NM_TEARDOWN_UNRECOVERED_HEAD on $NM_TEARDOWN_UNRECOVERED_BRANCH, which this worktree ($WT) does not have, so teardown cannot tell whether it carries a fix round that would be lost or is only a rebase of commits this worktree already has"
+        nm_discard_fix=$nm_pipeline_fix ;;
     esac
     if [ "$FORCE" = "--force" ]; then
-      echo "DISCARDING UNLANDED WORK: $nm_discard_why." >&2
+      echo "$nm_discard_head: $nm_discard_why." >&2
       echo "Proceeding because --force was passed. Treat --force here as your explicit authorization to discard THIS work ($nm_discard_what) - it is not a convenience bypass, and teardown is about to make it unrecoverable." >&2
-      echo "Recording the discard in $NM_DISCARD_LOG." >&2
-      record_discarded_pipeline_commits "$NM_TEARDOWN_UNRECOVERED_REASON" \
-        "$NM_TEARDOWN_UNRECOVERED_BRANCH" "$NM_TEARDOWN_UNRECOVERED_HEAD" "$WT"
+      if record_discarded_pipeline_commits "$NM_TEARDOWN_UNRECOVERED_REASON" \
+        "$NM_TEARDOWN_UNRECOVERED_BRANCH" "$NM_TEARDOWN_UNRECOVERED_HEAD" "$WT"; then
+        echo "Recorded the discard in $NM_DISCARD_LOG." >&2
+      else
+        echo "REFUSED: --force authorized discarding $nm_discard_what, but the durable record of that discard could NOT be written to $NM_DISCARD_LOG, so teardown would destroy work that nothing afterwards can account for." >&2
+        echo "This is a RECORD-WRITE failure, not a no-mistakes failure: the axi status check itself completed. Fix write access to $STATE (permissions, disk space, read-only mount), then re-run with --force." >&2
+        exit 1
+      fi
     else
       echo "REFUSED: $nm_discard_why. Removing the worktree now would make it unrecoverable, so teardown stops instead." >&2
       echo "$nm_discard_fix" >&2
