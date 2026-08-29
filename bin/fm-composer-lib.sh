@@ -385,9 +385,11 @@ FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 
 # fm-spawn.sh's endpoint-shell marker (task fm-endpoint-shell-backends): a
 # fixed, unique literal every spawn writes into the interactive shell PS1 of a
-# freshly created herdr, zellij, orca, or cmux pane, before the harness launch
-# command is ever typed (bin/fm-spawn.sh, right before `spawn_send_literal
-# "$T" "$LAUNCH"`). It is a structural fact about that ONE persistent shell
+# freshly created herdr, zellij, orca, or cmux pane, as the leading `PS1=`
+# assignment prefixed onto the harness launch line itself (bin/fm-spawn.sh,
+# just before `spawn_send_literal "$T" "$LAUNCH"`), so the marker first
+# becomes visible on a shell that is already running the harness and never as
+# a bare prompt of its own. It is a structural fact about that ONE persistent shell
 # process, not composer content the harness can be mistaken for: the shell
 # process runs the harness as a plain foreground job (never `exec`), so PS1
 # survives the harness exiting and reappears verbatim the next time that
@@ -429,14 +431,14 @@ fm_composer_endpoint_shell_lead_var() {  # <out-varname> <row>
 
 # fm_composer_endpoint_shell_present: 0 when <screen> carries a BARE marked
 # prompt - a row the marker leads with nothing but whitespace after it - and 1
-# otherwise. The empty rest is what makes this proof that the agent exited and
-# handed the pane back to its own shell: between fm-spawn planting the marker
-# on PS1 and the harness painting, that same shell echoes its remaining
-# pre-launch lines (`[fm-endpoint-shell] export TRACEPARENT=...`, then
-# `[fm-endpoint-shell] <launch command>`), which lead with the marker too and
-# must never read as an exited agent. The looser "marker leads the row" shape,
-# which those echoed rows do satisfy, is a shell PROMPT row for the dead-shell
-# staleness rule and is read through fm_composer_leading_shell_glyph_var below.
+# otherwise. The empty rest is what makes this proof that the shell is idle at
+# its own prompt with no agent in front of it: any line typed at a marked
+# prompt (a human's, fm-send's, a recovery path's) echoes as
+# `[fm-endpoint-shell] <that line>`, which leads with the marker too and says
+# only that something is running there, never that the agent exited. The
+# looser "marker leads the row" shape, which those echoed rows do satisfy, is
+# a shell PROMPT row for the dead-shell staleness rule and is read through
+# fm_composer_leading_shell_glyph_var below.
 # No ANSI stripping is needed: the marker is a fixed literal firstmate itself
 # writes, never de-emphasised ghost text a harness could render. Callers never
 # fake presence when a capture is empty or failed - the caller must check that

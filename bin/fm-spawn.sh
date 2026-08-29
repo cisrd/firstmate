@@ -261,6 +261,13 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# The fleet-wide owner of composer and prompt shapes, including the
+# endpoint-shell marker planted on the launch line below. Sourced directly
+# rather than relied on through whichever backend adapter fm_backend_source
+# happens to load, so the marker is defined under `set -u` no matter how
+# adapter loading changes. Re-sourcing is safe: it only declares.
+# shellcheck source=bin/fm-composer-lib.sh
+. "$SCRIPT_DIR/fm-composer-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
@@ -2859,21 +2866,6 @@ spawn_record_traceparent() {
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.
 spawn_send_text_line "$T" "export GOTMPDIR=$TASK_TMP/gotmp"
-# Endpoint-shell marker (bin/fm-composer-lib.sh's
-# FM_COMPOSER_ENDPOINT_SHELL_MARKER): herdr, zellij, orca, and cmux have no
-# process-identity signal of their own for a bare shell the way tmux does, so
-# firstmate writes its own proof into the pane's shell prompt before the
-# harness ever runs there. Sent through the same pre-launch channel as
-# GOTMPDIR, on the same shell process the harness later runs as a plain
-# foreground job (never `exec`), so the prompt - and the marker in it -
-# reappears verbatim once that job exits. tmux needs no marker (its adapter
-# already proves liveness from the pane's real foreground process), so it is
-# deliberately excluded here.
-case "$BACKEND" in
-  herdr|zellij|orca|cmux)
-    spawn_send_text_line "$T" "PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '"
-    ;;
-esac
 # Send through the exact channel that already ships GOTMPDIR, so every backend
 # and harness - ship, scout, and secondmate - gets it before launch. Skipped
 # entirely when trace context is off.
@@ -2891,6 +2883,27 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
     LAUNCH="unset TRACEPARENT; $LAUNCH"
   fi
 fi
+# Endpoint-shell marker (bin/fm-composer-lib.sh's
+# FM_COMPOSER_ENDPOINT_SHELL_MARKER): herdr, zellij, orca, and cmux have no
+# process-identity signal of their own for a bare shell the way tmux does, so
+# firstmate writes its own proof into the pane's shell prompt. It is prefixed
+# onto the launch line itself - the same shape as the `unset TRACEPARENT; `
+# prefix above and for the same reason - rather than sent as its own
+# pre-launch line: a standalone line would set PS1 and then hand the pane back
+# to a BARE marked prompt for the whole interval until the launch text is
+# typed, and a bare marked prompt is exactly the shape a reader treats as
+# "the agent exited". Prefixed, the marker still lands on the same shell
+# process that runs the harness as a plain foreground job (never `exec`), so
+# it first becomes visible only once that shell has actually become the
+# endpoint's shell, and the prompt - with the marker in it - reappears
+# verbatim once the harness exits. tmux needs no marker (its adapter already
+# proves liveness from the pane's real foreground process), so it is
+# deliberately excluded here.
+case "$BACKEND" in
+  herdr|zellij|orca|cmux)
+    LAUNCH="PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '; $LAUNCH"
+    ;;
+esac
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3

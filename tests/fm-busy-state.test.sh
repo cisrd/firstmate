@@ -450,12 +450,11 @@ test_endpoint_shell_marker_never_checked_on_tmux() {
   pass "tmux is excluded from the endpoint-shell marker check"
 }
 
-# The launch window: fm-spawn plants the marker on PS1 before it sends the
-# remaining pre-launch lines, so for the seconds before the harness paints, the
-# pane shows those lines echoed behind the marker and no record exists yet.
-# A healthy endpoint that is still launching must classify exactly as it did
-# before this feature existed.
-test_endpoint_shell_launch_window_stays_unknown() {
+# A marked prompt carrying a typed command - anything run at the endpoint
+# shell, up to and including the launch line itself - is not an exited agent.
+# With no record yet, such a pane must classify exactly as it did before this
+# feature existed.
+test_endpoint_shell_typed_command_stays_unknown() {
   local state out backend
   state=$(new_state_dir endpoint-shell-launching)
   for backend in zellij orca cmux herdr; do
@@ -467,10 +466,10 @@ test_endpoint_shell_launch_window_stays_unknown() {
     }
     out=$(fm_busy_classify "$backend" w1 claude t1 "$state")
     [ "$out" = "unknown missing" ] \
-      || fail "$backend: a launching endpoint echoing marker-led pre-launch lines must not classify dead, got '$out'"
+      || fail "$backend: marker-led rows carrying a typed command must not classify dead, got '$out'"
   done
   unset -f fm_backend_capture
-  pass "a healthy endpoint still inside its launch window keeps its pre-feature unknown missing verdict"
+  pass "a marked prompt carrying a typed command keeps its pre-feature unknown missing verdict"
 }
 
 # The daemon and the watcher already hand fm_busy_classify a 40-line tail on
@@ -500,7 +499,7 @@ test_endpoint_shell_reuses_caller_tail40() {
 }
 
 test_endpoint_shell_marker_classifies_dead
-test_endpoint_shell_launch_window_stays_unknown
+test_endpoint_shell_typed_command_stays_unknown
 test_endpoint_shell_reuses_caller_tail40
 test_endpoint_shell_marker_absent_stays_unknown
 test_endpoint_shell_marker_never_checked_on_tmux

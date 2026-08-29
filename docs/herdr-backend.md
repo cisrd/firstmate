@@ -202,8 +202,12 @@ Workspace and tab ids support verification and cleanup but are not inferred from
 
 ## Endpoint shell marker
 
-`bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the task pane's shell prompt before the harness ever launches, the same as on zellij, orca, and cmux.
-Herdr does not need it for its own dead/husk decision, which stays on the native `agent get` registration read above; the marker exists here purely so a plain capture of a Herdr pane reads the same fleet-wide fact the other three backends rely on.
+`bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the task pane's shell prompt, as a `PS1=` assignment prefixed onto the harness launch line so the marker never shows as a bare prompt before the harness is running, the same as on zellij, orca, and cmux.
+Herdr does not need it for its own dead/husk decision, which stays on the native `agent get` registration read above, but `bin/fm-busy-lib.sh`'s `fm_busy_classify` does include herdr in the same `dead endpoint-shell` read as the other three backends, so a plain capture of a Herdr pane reads that fleet-wide fact exactly the way it reads everywhere else.
+That read is per task and sits last in `fm_busy_classify`, so it is reached only when the task has no busy record at all and no earlier harness-specific arm has already resolved it.
+`cursor`, `grok`, and `muse` tasks always resolve inside their own arm and never reach it, so an exited agent on those harnesses still reports that arm's verdict rather than `dead endpoint-shell`.
+`codex` and `kimi` tasks reach it only once their own semantic source is verified; until then they resolve as `unknown codex-unverified` / `unknown kimi-unverified`.
+Every other harness (`claude`, `opencode`, and the Pi-hosted harnesses) reaches it whenever the task has no record.
 A capture that omits the marker proves nothing either way and must not be read as "never a firstmate endpoint".
 The marker is planted with a one-shot `PS1=` assignment, so it is absent for a session predating this change, for a harness that overwrote the shell's `PS1`, for a shell that regenerates its prompt per command (starship, powerlevel10k, a `PROMPT_COMMAND` or `precmd` git prompt), and for a shell that never consults `PS1` at all (fish, nushell).
 In every one of those cases the pane classifies exactly as it did before this feature existed; absence is never read as "the agent is alive" and never on its own as `dead endpoint-shell`.

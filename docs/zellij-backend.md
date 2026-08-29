@@ -59,8 +59,12 @@ Metadata-routed operations also verify the owning tab's expected scoped or unamb
 An explicit raw `session:pane` target remains a pane-existence-only operator escape hatch.
 
 Zellij exposes no per-pane pid (see "Active limits" below), so it has no process-identity signal at all, unlike tmux or herdr.
-`bin/fm-spawn.sh` compensates by writing fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the pane's own shell prompt before the harness launches; `bin/fm-busy-lib.sh`'s `fm_busy_classify` reads it back through `dump-screen` to report `dead endpoint-shell` for a pane that has reverted to that marked shell, rather than the generic `unknown` a bare Zellij prompt reported before.
+`bin/fm-spawn.sh` compensates by writing fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the pane's own shell prompt, as a `PS1=` assignment prefixed onto the harness launch line so the marker never shows as a bare prompt before the harness is running; `bin/fm-busy-lib.sh`'s `fm_busy_classify` reads it back through `dump-screen` to report `dead endpoint-shell` for a pane that has reverted to that marked shell, rather than the generic `unknown` a bare Zellij prompt reported before.
 This is a busy-state read only: it does not change `fm_control_backend_state_verified`'s tmux/herdr-only recovery-grade gate, so `exit` and `relaunch` still refuse on Zellij.
+That read is per task and sits last in `fm_busy_classify`, so it is reached only when the task has no busy record at all and no earlier harness-specific arm has already resolved it.
+`cursor`, `grok`, and `muse` tasks always resolve inside their own arm and never reach it, so an exited agent on those harnesses still reports that arm's verdict rather than `dead endpoint-shell`.
+`codex` and `kimi` tasks reach it only once their own semantic source is verified; until then they resolve as `unknown codex-unverified` / `unknown kimi-unverified`.
+Every other harness (`claude`, `opencode`, and the Pi-hosted harnesses) reaches it whenever the task has no record.
 The marker is planted with a one-shot `PS1=` assignment on the pane's interactive shell, so it is absent whenever that shell regenerates its prompt per command (starship, powerlevel10k, a `PROMPT_COMMAND` or `precmd` git prompt) or never consults `PS1` at all (fish, nushell).
 An absent marker therefore proves nothing about the pane: it is read as undetermined, never as "the agent is alive", never as "this was never a firstmate endpoint", and never on its own as `dead endpoint-shell`.
 A pane with no marker classifies exactly as it did before this feature existed.

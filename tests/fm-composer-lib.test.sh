@@ -687,18 +687,18 @@ test_endpoint_shell_exited_agent_leaves_bare_marked_prompt() {
   pass "fm_composer_endpoint_shell_present: an exited agent's bare marked prompt is the endpoint shell"
 }
 
-# The launch window: fm-spawn sets PS1 to the marker BEFORE it sends the
-# remaining pre-launch lines, so the pane echoes them behind the marker while
-# the harness is still starting. Those rows lead with the marker but carry a
-# typed command, and must never be read as "the agent exited".
-test_endpoint_shell_launch_window_is_not_an_exited_agent() {
+# A command typed at the marked prompt - by a human, by fm-send, by a recovery
+# path - echoes as `[fm-endpoint-shell] <that command>`. Those rows lead with
+# the marker but carry a typed command, so they say something is running there
+# and must never be read as "the agent exited".
+test_endpoint_shell_typed_command_is_not_an_exited_agent() {
   local screen
   screen=$(printf '%s export GOTMPDIR=/tmp/t/gotmp\n%s export TRACEPARENT=00-4bf92f-00f067-01\n%s claude --model opus\n' \
     "$FM_COMPOSER_ENDPOINT_SHELL_MARKER" "$FM_COMPOSER_ENDPOINT_SHELL_MARKER" "$FM_COMPOSER_ENDPOINT_SHELL_MARKER")
   if fm_composer_endpoint_shell_present "$screen"; then
-    fail "the launch window's echoed marker-led command rows must not read as an exited agent"
+    fail "marker-led rows carrying a typed command must not read as an exited agent"
   fi
-  pass "fm_composer_endpoint_shell_present: the launch window's echoed command rows are not an exited agent"
+  pass "fm_composer_endpoint_shell_present: a marked prompt carrying a typed command is not an exited agent"
 }
 
 # The marker is a PROMPT construct, so it only counts as the leading content of
@@ -758,7 +758,7 @@ test_endpoint_shell_marker_absent_on_ordinary_content() {
 
 test_endpoint_shell_marker_detected_alone
 test_endpoint_shell_exited_agent_leaves_bare_marked_prompt
-test_endpoint_shell_launch_window_is_not_an_exited_agent
+test_endpoint_shell_typed_command_is_not_an_exited_agent
 test_endpoint_shell_marker_must_lead_the_row
 test_endpoint_shell_marked_prompt_invalidates_cursorless_candidate
 test_endpoint_shell_marker_absent_on_ordinary_content
