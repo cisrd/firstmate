@@ -289,6 +289,7 @@ Grok's own tool-approval dialog (a distinct state - the model has proposed a com
 The fix widens the per-harness signature `FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT` to `Esc:cancel|Ctrl\+c:cancel`, so every active-turn shape above classifies `busy grok-regex` and only the first, genuinely idle shape classifies `idle grok-regex`.
 `bin/fm-busy-lib.sh`'s defensive literal fallback, used only by a caller that sources it without `bin/fm-composer-lib.sh`, carries the same widened token pair so the two copies cannot drift apart.
 Pinned by `tests/fm-busy-state.test.sh`'s `test_grok_regex_active_turn_busy`, which fails against the pre-fix single-token regex, and by `test_grok_regex_fallback_literal_matches_without_composer_lib`, which unsets the canonical owner to exercise that fallback directly.
+That portable regression is the only automated coverage: the capture above was hand-driven (a private tmux session plus manual `tmux capture-pane` polling), and no scripted `live-harness-optin` guard reads a busy footer today, so unlike this file's guarded checks these shapes cannot self-refresh on a future Grok upgrade and a live busy-footer guard covering every installed harness is still owed.
 
 The widening is scoped to grok's own signature.
 The harness-less union `FM_DELIVERY_BUSY_REGEX_DEFAULT` deliberately does NOT gain `Esc:cancel`.
@@ -317,6 +318,7 @@ Observed, checked directly against OS process state rather than trusting Grok's 
 
 Conclusion: `Ctrl+C` cancels the turn AND kills the underlying command on grok 1.0.5, matching the 0.2.73 behavior this fact was originally verified against.
 The `Interrupt` row and the `bin/fm-control-lib.sh:109-110` comment are updated to cite this record instead of carrying forward an unverified claim.
+This re-verification was hand-driven too (the same private tmux session, `tmux send-keys` plus manual `kill -0` and `tmux capture-pane` polling) with no scripted `live-harness-optin` refresh guard, so it cannot self-refresh on a future Grok upgrade the way this file's guarded checks do.
 
 ## Steering-inbox doorbell
 
