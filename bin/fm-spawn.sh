@@ -2238,7 +2238,7 @@ kimi_capture() {
 # no non-blank row, an unusable width, or a capture too short to hold the
 # window all return 1.
 spawn_marker_residue_cleared() {  # <target> <residue>
-  local cap residue=$2 row width=0 rows_needed i joined='' trimmed='' spaced='' cell
+  local cap residue=$2 row width=0 rows_needed i joined='' needle=''
   local -a nonblank=()
   cap=$(fm_backend_capture "$BACKEND" "$1" "${FM_COMPOSER_CAPTURE_LINES:-20}" "$W" 2>/dev/null) || return 1
   [ -n "$cap" ] || return 1
@@ -2257,29 +2257,27 @@ EOF
   [ "$width" -gt 0 ] || return 1
   rows_needed=$(( (${#residue} + width - 1) / width + 1 ))
   [ "$rows_needed" -le "${#nonblank[@]}" ] || return 1
-  # Three joins, because a capture may render the same wrapped line three ways
-  # and the residue must be found under all of them. Raw concatenation is right
-  # when rows are emitted exactly as wide as the pane. Concatenating
-  # right-trimmed rows is right when rows are padded out to the pane width.
-  # And when the wrap falls on the residue's own space, a capture that emits
-  # each row only up to its last non-blank cell eats that space - it is gone
-  # from the rows before this function ever sees them, so neither of the first
-  # two joins can recover it; re-inserting one space between adjacent trimmed
-  # rows restores it. A capture can only have swallowed zero or one space at a
-  # boundary, so those two possibilities are exhaustive rather than a guess.
-  # A match in ANY join counts as residue still present.
+  # Whitespace is the one thing a capture may freely add or drop at a row
+  # boundary: some pad short rows out to the pane width, some emit each row
+  # only up to its last non-blank cell - and when the wrap lands on the
+  # residue's own space, that second kind deletes a genuinely typed character
+  # before this function ever sees it. No amount of re-joining can recover a
+  # character the capture never emitted, and enumerating join variants only
+  # works for as many boundaries as the variants anticipate. So whitespace is
+  # removed from BOTH sides instead: the residue is then matched on its
+  # non-whitespace shape alone, which is invariant under padding, trimming,
+  # and any number of wrap boundaries. Dropping whitespace can only join
+  # neighbours that were apart, never separate ones that were together, so
+  # this can turn a "clean" into a "dirty" but never the reverse.
   i=$(( ${#nonblank[@]} - rows_needed ))
   while [ "$i" -lt "${#nonblank[@]}" ]; do
-    row=${nonblank[$i]}
-    cell=${row%"${row##*[![:space:]]}"}
-    joined="$joined$row"
-    trimmed="$trimmed$cell"
-    if [ -z "$spaced" ]; then spaced=$cell; else spaced="$spaced $cell"; fi
+    joined="$joined${nonblank[$i]}"
     i=$((i + 1))
   done
-  case "$joined" in *"$residue"*) return 1 ;; esac
-  case "$trimmed" in *"$residue"*) return 1 ;; esac
-  case "$spaced" in *"$residue"*) return 1 ;; esac
+  joined=$(printf '%s' "$joined" | tr -d '[:space:]')
+  needle=$(printf '%s' "$residue" | tr -d '[:space:]')
+  [ -n "$needle" ] || return 1
+  case "$joined" in *"$needle"*) return 1 ;; esac
   return 0
 }
 
@@ -2986,16 +2984,20 @@ if fm_composer_endpoint_shell_backend "$BACKEND"; then
   MARKER_LINE="PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '"
   MARKER_SEND_STATUS=0
   spawn_send_text_line "$T" "$MARKER_LINE" || MARKER_SEND_STATUS=$?
-  # rc=2 is the ONE outcome that is not "the marker simply did not take": the
-  # text was pasted and neither the Enter submit nor the clearing C-c landed,
-  # so it is still sitting uncommitted in the pane's input line. Pasting the
-  # launch command on top of that residue would submit one concatenated line
-  # and the agent would never start, so clear it and prove it is gone before
-  # continuing - and refuse loudly rather than launch onto a line whose
-  # contents cannot be confirmed. Every other status is the documented,
-  # already-accepted outcome: the marker is absent and readers treat it as
-  # undetermined.
-  if [ "$MARKER_SEND_STATUS" -eq 2 ]; then
+  # rc=2 is the ONE outcome that is not "the marker simply did not take" - but
+  # only on a backend that actually sends in two phases, where "pasted but not
+  # committed" is a state that exists at all (bin/fm-composer-lib.sh's
+  # FM_COMPOSER_ENDPOINT_SHELL_TWO_PHASE_BACKENDS records which those are and
+  # why the others cannot be). There the text was pasted and neither the Enter
+  # submit nor the clearing C-c landed, so it is still sitting uncommitted in
+  # the pane's input line. Pasting the launch command on top of that residue
+  # would submit one concatenated line and the agent would never start, so
+  # clear it and prove it is gone before continuing - and refuse loudly rather
+  # than launch onto a line whose contents cannot be confirmed. Every other
+  # status, and every status at all from a single-call backend, is the
+  # documented, already-accepted outcome: the marker is absent and readers
+  # treat it as undetermined.
+  if [ "$MARKER_SEND_STATUS" -eq 2 ] && fm_composer_endpoint_shell_two_phase_send "$BACKEND"; then
     MARKER_RESIDUE_CLEARED=0
     MARKER_CLEAR_TRY=1
     while [ "$MARKER_CLEAR_TRY" -le 3 ]; do

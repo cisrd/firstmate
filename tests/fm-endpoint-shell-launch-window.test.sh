@@ -198,7 +198,16 @@ case "$sub" in
       cat "$S/screen"
       pending=$(cat "$S/pending")
       [ -z "$pending" ] || printf '%s%s\n' "$(cat "$S/ps1")" "$pending"
-    } | if [ -n "${FM_FAKE_ZJ_WIDTH:-}" ]; then fold -w "$FM_FAKE_ZJ_WIDTH"; else cat; fi \
+    } | if [ -n "${FM_FAKE_ZJ_WIDTH:-}" ]; then
+          # Wrap like a terminal grid: split any row wider than the pane. The
+          # adapter's own cwd-probe markers are passed through whole, because
+          # wrapping those would break worktree discovery rather than model a
+          # narrow pane.
+          awk -v w="$FM_FAKE_ZJ_WIDTH" '
+            index($0, "__FM_ZELLIJ_CWD_") { print; next }
+            { while (length($0) > w) { print substr($0, 1, w); $0 = substr($0, w + 1) } print }
+          '
+        else cat; fi \
       | if [ "${FM_FAKE_ZJ_TRIM_ROWS:-0}" = 1 ]; then sed 's/[[:space:]]*$//'; else cat; fi
     ;;
   *) : ;;
@@ -500,9 +509,44 @@ test_residue_space_eaten_at_the_wrap_column_is_still_detected() {
   pass "residue whose space is eaten at the wrap column is still detected and refuses the launch"
 }
 
+# The same eaten space, but now the residue spans THREE captured rows: a
+# 13-column prompt in a 19-column pane puts the residue's only space in the
+# last cell of the MIDDLE row, so a right-trimming capture drops it and the
+# window has two boundaries rather than one. Any scheme that repairs boundaries
+# by enumerating them gets this wrong - at most one boundary is the missing
+# space, and repairing the other corrupts what the first restored - so the
+# check has to be indifferent to whitespace entirely.
+test_residue_wrapped_across_three_rows_is_still_detected() {
+  local sim launched line out
+  sim=$(FM_FAKE_ZJ_SUBMIT_FAIL_ON="$FM_COMPOSER_ENDPOINT_SHELL_MARKER" \
+    FM_FAKE_ZJ_SUBMIT_FAIL_COUNT=2 FM_FAKE_ZJ_CLEAR_FAIL=1 \
+    FM_FAKE_ZJ_WIDTH=19 FM_FAKE_ZJ_TRIM_ROWS=1 FM_FAKE_ZJ_PROMPT='cap@ship:~/p$' \
+    run_zellij_spawn markerthreerow)
+
+  launched=$(cat "$sim/launched" 2>/dev/null || echo 0)
+  [ "$launched" != 1 ] \
+    || fail "spawn launched onto residue wrapped across three rows with its space eaten"
+
+  while IFS= read -r line; do
+    case "$line" in
+      *--dangerously-skip-permissions*)
+        fail "the launch text was submitted despite three-row wrapped residue: $line"
+        ;;
+    esac
+  done < <(committed_lines "$sim")
+
+  out=$(cat "$sim/spawn.out")
+  case "$out" in
+    *"refusing to send the launch command"*) : ;;
+    *) fail "a three-row wrapped residue must refuse with a named cause, got:"$'\n'"$out" ;;
+  esac
+  pass "residue wrapped across three rows with its space eaten is still detected and refuses the launch"
+}
+
 test_marked_prompt_appears_only_immediately_before_the_launch_text
 test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits
 test_marker_send_residue_is_cleared_before_the_launch_text
 test_unclearable_marker_residue_refuses_the_launch
 test_wrapped_marker_residue_is_still_detected_and_refuses_the_launch
 test_residue_space_eaten_at_the_wrap_column_is_still_detected
+test_residue_wrapped_across_three_rows_is_still_detected

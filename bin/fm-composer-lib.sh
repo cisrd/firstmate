@@ -445,6 +445,38 @@ fm_composer_endpoint_shell_backend() {  # <backend>
   return 1
 }
 
+# Which of those backends send a text line in TWO phases, so that "the text was
+# pasted but never committed" is a state that exists and can be detected. This
+# is what makes an exit status of 2 from a text-line send readable as leftover
+# residue on the pane's input line, and it is NOT a property all four share:
+#
+#   zellij pastes the text and then submits it with a separate `send-keys
+#   Enter`, falling back to a separate clearing C-c, so text can sit pasted and
+#   uncommitted between those calls.
+#   cmux does the same thing through its own paste and send-key pair, so the
+#   same intermediate state exists there.
+#   herdr sends and runs in ONE call (`pane run` executes the command rather
+#   than typing it into an input line), so nothing can be left pasted; whatever
+#   status its CLI returns describes some other failure.
+#   orca likewise sends and submits in one call (`terminal send --enter`), and
+#   its 2 comes from its JSON helper rejecting a malformed or `ok:false`
+#   response - an API-level failure where nothing was typed at all.
+#
+# So a status from herdr or orca must never be read as a residue signal: the
+# only correct reading there is the ordinary one, that the marker is absent and
+# every reader treats it as undetermined. Recorded here, with the shape it
+# qualifies, because over-generalizing this contract to all four backends is
+# exactly the mistake that has to stay fixed.
+FM_COMPOSER_ENDPOINT_SHELL_TWO_PHASE_BACKENDS='zellij cmux'
+
+# fm_composer_endpoint_shell_two_phase_send: 0 when <backend> is one of those.
+fm_composer_endpoint_shell_two_phase_send() {  # <backend>
+  case " $FM_COMPOSER_ENDPOINT_SHELL_TWO_PHASE_BACKENDS " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
+
 # fm_composer_endpoint_shell_lead_var: THE one anchoring definition of "the
 # marker leads this row", declared exactly once (see THE SAFETY RULE above) and
 # reached by every reader of the shape. The marker is a PROMPT construct: it is

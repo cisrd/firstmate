@@ -787,6 +787,24 @@ test_endpoint_shell_backend_set_is_the_four_marker_backends() {
   pass "fm_composer_endpoint_shell_backend: exactly herdr, zellij, orca, and cmux carry the marker"
 }
 
+# Only zellij and cmux send a text line in two phases, so only there can a
+# send leave text pasted-but-uncommitted. herdr and orca send and submit in one
+# call, so their exit statuses describe some other failure and must never be
+# read as a residue signal.
+test_endpoint_shell_two_phase_send_backends() {
+  local b
+  for b in zellij cmux; do
+    fm_composer_endpoint_shell_two_phase_send "$b" \
+      || fail "$b sends in two phases and must carry the uncommitted-residue contract"
+  done
+  for b in herdr orca tmux '' unknown-backend; do
+    if fm_composer_endpoint_shell_two_phase_send "$b"; then
+      fail "'$b' does not send in two phases and must not carry the residue contract"
+    fi
+  done
+  pass "fm_composer_endpoint_shell_two_phase_send: only zellij and cmux can leave uncommitted residue"
+}
+
 test_endpoint_shell_marker_absent_on_ordinary_content() {
   local content
   # shellcheck disable=SC2016  # single quotes are deliberate: a literal sample string, not a real substitution
@@ -805,4 +823,5 @@ test_endpoint_shell_marker_must_lead_the_row
 test_endpoint_shell_marked_prompt_invalidates_cursorless_candidate
 test_endpoint_shell_bare_marked_prompt_above_a_live_agent_is_not_dead
 test_endpoint_shell_backend_set_is_the_four_marker_backends
+test_endpoint_shell_two_phase_send_backends
 test_endpoint_shell_marker_absent_on_ordinary_content
