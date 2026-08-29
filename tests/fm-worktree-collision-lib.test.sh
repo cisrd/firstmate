@@ -10,11 +10,12 @@
 #
 # The guarantees under test:
 #   - fm_worktree_collision_path_state judges the SHARED PATH once from git
-#     alone, and separates the things one failed probe used to conflate:
-#     `missing` proves nothing is there, while `uninspectable` and
-#     `unverifiable` prove only that the path, or its working-tree state, could
-#     not be read, so both keep the do-not-discard force. No failed probe ever
-#     ends at `landed`.
+#     alone, and separates a probe's answer from a probe that could not answer.
+#     `missing`, `landed`, and `unlanded` are reserved for probes that actually
+#     ran; every unanswerable probe collapses into one `unverifiable:<cause>`
+#     verdict that names which probe failed and keeps the do-not-discard force.
+#     A failed probe never reaches `landed` or `missing` (falsely reassuring)
+#     and never claims `unlanded` work it did not see (falsely alarming).
 #   - fm_worktree_collision_claimant_process judges ONE claimant from its own
 #     recorded backend endpoint alone and passes the backend's own verdict
 #     through, so the printed detail never blames a backend that answered.
@@ -124,8 +125,8 @@ test_path_state_classification() {
   mkdir -p "$wt"
   echo "work nobody can account for" > "$wt/scratch.txt"
   got=$(fm_worktree_collision_path_state "$wt")
-  [ "$got" = uninspectable ] \
-    || fail "a path that exists but is not a readable git worktree should classify as uninspectable, got '$got'"
+  [ "$got" = unverifiable:not-a-worktree ] \
+    || fail "a path that exists but is not a readable git worktree should name that cause, got '$got'"
 
   # Present but not a work tree at all: a plain file, a bare repository, and a
   # dangling symlink each leave `-d`/exit-status probes free to fall back on a
@@ -134,19 +135,19 @@ test_path_state_classification() {
   wt="$TMP_ROOT/file-at-path"
   printf 'not a worktree\n' > "$wt"
   got=$(fm_worktree_collision_path_state "$wt")
-  [ "$got" = uninspectable ] \
+  [ "$got" = unverifiable:not-a-worktree ] \
     || fail "a plain file left at the recorded path is not proof the copy is gone, got '$got'"
 
   wt="$TMP_ROOT/bare-repo"
   git init -q --bare "$wt"
   got=$(fm_worktree_collision_path_state "$wt")
-  [ "$got" = uninspectable ] \
+  [ "$got" = unverifiable:not-a-worktree ] \
     || fail "a bare repository has no work tree to inspect, exactly as bin/fm-teardown.sh treats it, got '$got'"
 
   wt="$TMP_ROOT/dangling-link"
   ln -s "$TMP_ROOT/never-existed" "$wt"
   got=$(fm_worktree_collision_path_state "$wt")
-  [ "$got" = uninspectable ] \
+  [ "$got" = unverifiable:not-a-worktree ] \
     || fail "a dangling symlink at the recorded path is still an entry that could not be inspected, got '$got'"
 
   wt="$TMP_ROOT/landed-wt"
@@ -172,8 +173,8 @@ test_path_state_classification() {
   got=$(fm_worktree_collision_path_state "$wt")
   [ "$got" != landed ] \
     || fail "a worktree whose status probe failed must never read as landed, got '$got'"
-  [ "$got" = unverifiable ] \
-    || fail "a worktree git resolved but could not read should classify as unverifiable, got '$got'"
+  [ "$got" = unverifiable:worktree-state ] \
+    || fail "a worktree git resolved but could not read should name that cause, got '$got'"
   [ -n "$(fm_worktree_collision_path_caveat "$got")" ] \
     || fail "an unverifiable shared path must carry a caveat, got an empty one"
   assert_contains "$(fm_worktree_collision_path_caveat "$got")" "do not discard" \
@@ -187,7 +188,46 @@ test_path_state_classification() {
   [ "$got" = unlanded ] \
     || fail "a clean worktree whose HEAD is not reachable from the default branch should classify as unlanded, got '$got'"
 
-  pass "fm_worktree_collision_path_state: only an empty path reads missing; anything uninspectable keeps its warning"
+  # A project whose default branch is neither main nor master, wired with
+  # `git init` + `git remote add` rather than `git clone`, so nothing ever
+  # wrote refs/remotes/origin/HEAD. The copy is clean and may be sitting
+  # exactly on its own default branch; the ancestry check cannot run at all.
+  # Reporting unlanded work here names work no probe ever saw.
+  wt="$TMP_ROOT/no-default-branch-wt"
+  git init -q -b develop "$wt"
+  git -C "$wt" commit -q --allow-empty -m init
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" != unlanded ] \
+    || fail "an ancestry check that could not run must not be reported as unlanded work, got '$got'"
+  [ "$got" = unverifiable:default-branch ] \
+    || fail "a worktree with no resolvable default branch should name that cause, got '$got'"
+  assert_contains "$(fm_worktree_collision_path_caveat "$got")" "do not discard" \
+    "an unresolvable default branch must still keep the do-not-discard warning"
+  assert_not_contains "$(fm_worktree_collision_path_caveat "$got")" "still has unlanded work" \
+    "a check that never ran must not assert work at the shared path"
+
+  # Absence has to be observed, not assumed: a stat refused by an unsearchable
+  # ancestor is indistinguishable from a real ENOENT to `test`, while the
+  # worktree and its uncommitted file sit intact underneath. Root reads through
+  # the mode bits, so this drives the real distinction only where the
+  # filesystem can actually refuse the stat.
+  if [ "$(id -u)" != 0 ]; then
+    mkdir -p "$TMP_ROOT/locked-parent"
+    wt="$TMP_ROOT/locked-parent/wt"
+    make_worktree "$wt"
+    echo uncommitted > "$wt/uncommitted.txt"
+    chmod 000 "$TMP_ROOT/locked-parent"
+    got=$(fm_worktree_collision_path_state "$wt")
+    chmod 755 "$TMP_ROOT/locked-parent"
+    [ "$got" != missing ] \
+      || fail "a stat refused by an unsearchable ancestor is not proof the worktree is gone, got '$got'"
+    [ "$got" = unverifiable:path-unreadable ] \
+      || fail "a path whose absence could not be observed should name that cause, got '$got'"
+    assert_contains "$(fm_worktree_collision_path_caveat "$got")" "do not discard" \
+      "a path whose absence could not be observed must carry the do-not-discard warning"
+  fi
+
+  pass "fm_worktree_collision_path_state: only an observed absence reads missing, and no unanswerable probe claims a fact"
 }
 
 test_claimant_process_classification() {
@@ -462,6 +502,33 @@ test_collision_lines_unreadable_worktree_state_keeps_do_not_discard() {
   pass "fm_worktree_collision_lines: a failed working-tree probe never prints as a path with nothing to lose"
 }
 
+# The same overclaim one level up, in the other direction: an ancestry check
+# that could not run at all used to print `still has unlanded work`, telling
+# the reader a clean copy holds work in progress. The emitted line must name
+# the check that could not be made instead.
+test_collision_lines_unresolvable_default_branch_names_the_missing_check() {
+  local state fakebin wt out
+
+  state="$TMP_ROOT/no-default-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/no-default-tmux")
+
+  wt="$TMP_ROOT/wt-no-default"
+  git init -q -b develop "$wt"
+  git -C "$wt" commit -q --allow-empty -m init
+  fm_write_meta "$state/fm-d-a.meta" "window=deadsess:win" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-d-b.meta" "window=livesess:alive" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-d-a (process gone), fm-d-b (process alive) - shared path is a git worktree whose HEAD could not be checked against the project's default branch, so whether work would be lost cannot be verified, do not discard" \
+    "a shared path whose default branch could not be resolved must name that check and keep the do-not-discard warning"
+  assert_not_contains "$out" "still has unlanded work" \
+    "a check that never ran must never be printed as work seen at the shared path"
+
+  pass "fm_worktree_collision_lines: an ancestry check that could not run never invents unlanded work"
+}
+
 # A recorded worktree path may contain any character a directory name can hold.
 # A backslash used to be eaten by awk's own escape processing before the path
 # was compared, so no record matched, and the line printed with nothing at all
@@ -643,6 +710,7 @@ test_collision_lines_all_dead_unlanded_keeps_caveat
 test_collision_lines_gone_path_is_always_reported
 test_collision_lines_uninspectable_path_keeps_do_not_discard
 test_collision_lines_unreadable_worktree_state_keeps_do_not_discard
+test_collision_lines_unresolvable_default_branch_names_the_missing_check
 test_collision_lines_path_with_backslash_names_every_claimant
 test_collision_lines_record_removed_mid_scan_is_dropped
 test_collision_lines_skips_remote_records
