@@ -22,16 +22,19 @@
 #                 "SECONDMATE_HANDOFF: secondmate <id>: pending delivery: <n> item(s)",
 #                 "FMX: X mode on ..." or "FMX: X mode off ...",
 #                 "WORKTREE_COLLISION: live|stale <path> claimed by <id> (<detail>), ...".
-#          A WORKTREE_COLLISION line means two or more state/*.meta records
-#          recorded the same worktree= path (bin/fm-worktree-collision-lib.sh).
-#          `live` means two or more claimants' own agent processes still look
-#          hazardous (alive, or an unreadable/ambiguous/unverified state);
-#          `stale` means at most one does, so the rest are finished tasks'
-#          leftover records rather than a real collision. Every claimant's own
-#          process verdict is named in the line, and a `stale` line whose
-#          shared path still holds unlanded work says so once, for the path
-#          rather than for any one claimant. This check only detects and never
-#          repairs, because an automatic fix could discard unlanded work.
+#          A WORKTREE_COLLISION line means two or more LOCAL state/*.meta
+#          records recorded the same worktree= path
+#          (bin/fm-worktree-collision-lib.sh; remote secondmate records, whose
+#          worktree= is only unique when host-qualified, are out of scope).
+#          Process state alone decides the kind: `live` means two or more
+#          claimants' own agent processes still look hazardous (alive, or an
+#          unreadable/ambiguous/unverified state); `stale` means at most one
+#          does, so the rest are finished tasks' leftover records rather than a
+#          real collision. Unlanded shared work never makes a collision `live`
+#          - a `stale` line says so once, for the path rather than for any one
+#          claimant, so the hazard is still never silent. This check only
+#          detects and never repairs, because an automatic fix could discard
+#          unlanded work.
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
 #          purely local fast-forward and never an origin fetch. Remote routes
