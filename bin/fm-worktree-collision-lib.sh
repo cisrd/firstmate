@@ -35,14 +35,17 @@
 #
 # fm_worktree_collision_path_state classifies the shared worktree itself from
 # cheap, entirely local git reads (no network):
-#   missing       - nothing exists at the recorded path. The only state that
+#   missing       - nothing at all exists at the recorded path: no file, no
+#                   directory, not even a dangling symlink. The only state that
 #                   proves there is nothing left to lose there.
-#   uninspectable - something is at the path, but it is not a readable git
-#                   worktree (a dangling .git pointer after the admin dir was
+#   uninspectable - something is at the path, but git cannot resolve a work
+#                   tree there (a dangling .git pointer after the admin dir was
 #                   pruned or the repo moved, a returned-but-not-deleted pool
-#                   copy, an unreadable directory). Whether it holds unlanded
-#                   work cannot be verified, exactly as bin/fm-teardown.sh's
-#                   own inspectable_git_worktree refusal treats it.
+#                   copy, an unreadable directory, a bare repository, a plain
+#                   file, a path inside a .git dir). Whether it holds unlanded
+#                   work cannot be verified, so this uses the same
+#                   --show-toplevel probe bin/fm-teardown.sh's own
+#                   inspectable_git_worktree refuses on.
 #   unlanded      - the path has uncommitted changes, or its HEAD is not proven
 #                   reachable from the project's default branch. Discarding
 #                   this copy could lose real work, whichever claimant made it.
@@ -53,12 +56,13 @@
 # clause - `missing` is the one case where the probe itself proves there is
 # nothing at the path to discard.
 fm_worktree_collision_path_state() {  # <worktree-path>
-  local path=$1 default
-  if [ -z "$path" ] || [ ! -d "$path" ]; then
+  local path=$1 default top
+  if [ -z "$path" ] || { [ ! -e "$path" ] && [ ! -L "$path" ]; }; then
     printf 'missing'
     return 0
   fi
-  if ! git -C "$path" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)
+  if [ -z "$top" ] || [ ! -d "$top" ]; then
     printf 'uninspectable'
     return 0
   fi
@@ -127,17 +131,16 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state> [backend]
     alive) printf 'process alive' ;;
     dead|missing) printf 'process gone' ;;
     no-endpoint) printf 'process state unknown (record has no endpoint)' ;;
+    *)
+      if [ -z "$backend" ]; then
+        printf 'process state unknown (%s)' "$state"
+      elif [ "$state" = unverified ]; then
+        printf 'process state unknown (backend=%s has no recovery classifier)' "$backend"
+      else
+        printf 'process state unknown (backend=%s reported %s)' "$backend" "$state"
+      fi
+      ;;
   esac
-  case "$state" in
-    alive|dead|missing|no-endpoint) return 0 ;;
-  esac
-  if [ -z "$backend" ]; then
-    printf 'process state unknown (%s)' "$state"
-  elif [ "$state" = unverified ]; then
-    printf 'process state unknown (backend=%s has no recovery classifier)' "$backend"
-  else
-    printf 'process state unknown (backend=%s reported %s)' "$backend" "$state"
-  fi
 }
 
 # fm_worktree_collision_lines: scan every state/*.meta under <state-dir> for
@@ -155,11 +158,15 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state> [backend]
 # ssh:<host>:<home>), and neither the local git probe nor the local backend
 # probe can say anything true about it - so this check does NOT cover remote
 # secondmates, whose dedicated homes are never pooled or recycled anyway.
-# Prints nothing when no path is claimed twice.
+# Prints nothing when no path is claimed twice. The scan is a snapshot, and
+# this check holds no fleet lock, so a record torn down between the snapshot
+# and its own process probe is dropped rather than reported as an unverifiable
+# hazard: a path left with fewer than two surviving records is no longer a
+# collision and prints nothing.
 # Portable: no associative arrays, so this runs on bash 3.2 (macOS) too.
 fm_worktree_collision_lines() {  # <state-dir>
   local state=$1 meta id path pairs dup_paths p ids_for_path
-  local proc_state desc claimant_line live_count kind path_state caveat
+  local proc_state desc claimant_line claimant_count live_count kind path_state caveat
   [ -d "$state" ] || return 0
   pairs=$(
     for meta in "$state"/*.meta; do
@@ -176,13 +183,16 @@ fm_worktree_collision_lines() {  # <state-dir>
   [ -n "$dup_paths" ] || return 0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    ids_for_path=$(printf '%s\n' "$pairs" | awk -F'\t' -v p="$p" '$1 == p {print $2}' | sort)
+    ids_for_path=$(printf '%s\n' "$pairs" | fm_collision_p="$p" awk -F'\t' '$1 == ENVIRON["fm_collision_p"] {print $2}' | sort)
     path_state=$(fm_worktree_collision_path_state "$p")
     caveat=$(fm_worktree_collision_path_caveat "$path_state")
     live_count=0
+    claimant_count=0
     claimant_line=
     while IFS= read -r id; do
       [ -n "$id" ] || continue
+      [ -f "$state/$id.meta" ] || continue
+      claimant_count=$((claimant_count + 1))
       proc_state=$(fm_worktree_collision_claimant_process "$state/$id.meta")
       case "$proc_state" in
         dead|missing) ;;
@@ -193,6 +203,7 @@ fm_worktree_collision_lines() {  # <state-dir>
     done <<EOM
 $ids_for_path
 EOM
+    [ "$claimant_count" -ge 2 ] || continue
     if [ "$live_count" -ge 2 ]; then
       kind=live
     else
