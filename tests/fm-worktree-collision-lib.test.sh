@@ -21,7 +21,15 @@
 #     one live task plus a finished task's stale leftover record is `stale`,
 #     not `live`, even when the shared worktree holds the live task's own
 #     uncommitted work. That work is then reported once as a path-level
-#     caveat, so a leftover record is never cleaned up blind.
+#     caveat, so a leftover record is never cleaned up blind - including when
+#     every claimant's process is gone, where the caveat is the only thing
+#     keeping the hazard from going silent.
+#   - Path state modulates only whether a collision is reported, never the
+#     kind: over a path that no longer exists an unreadable process state
+#     stops manufacturing a collision, while a confirmed-alive claimant is
+#     still reported there.
+#   - Only LOCAL records are grouped: a record carrying remote_host= names a
+#     path on another machine, so it can never collide with a local worktree.
 #   - A path claimed by exactly one record never produces a line.
 #   - bin/fm-bootstrap.sh surfaces the same line and stays silent on a clean
 #     home, matching every other detect-only bootstrap check's contract.
@@ -244,6 +252,91 @@ test_collision_lines_live_claimants_wip_stays_path_level() {
   pass "fm_worktree_collision_lines: a live claimant's own WIP never promotes the kind or lands on a finished record"
 }
 
+# All claimants finished, shared path still dirty: the kind is decided by
+# process concurrency alone, so this reads `stale` - but the unlanded work must
+# still be stated, or the one thing that could be destroyed here goes unsaid.
+test_collision_lines_all_dead_unlanded_keeps_caveat() {
+  local state fakebin wt out
+
+  state="$TMP_ROOT/dead-unlanded-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/dead-unlanded-tmux")
+
+  wt="$TMP_ROOT/wt-dead-unlanded"
+  make_worktree "$wt"
+  echo dirty > "$wt/scratch.txt"
+  fm_write_meta "$state/fm-dead-a.meta" "window=deadsess:win" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-dead-b.meta" "window=deadsess:win" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-dead-a (process gone), fm-dead-b (process gone) - shared path still has unlanded work, do not discard" \
+    "two finished records over dirty shared work should read stale and still carry the unlanded caveat"
+
+  pass "fm_worktree_collision_lines: unlanded work is never silent even when no process is a hazard"
+}
+
+# A path that no longer exists cannot be contended over, so an unreadable
+# process state must not invent a collision there - but a confirmed-alive agent
+# whose worktree is unaccounted for is exactly the anomaly worth surfacing.
+test_collision_lines_gone_path_suppression_is_asymmetric() {
+  local state fakebin gone_path out
+
+  state="$TMP_ROOT/gone-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/gone-tmux")
+  gone_path="$TMP_ROOT/torn-down-wt"
+
+  fm_write_meta "$state/fm-ambig-a.meta" "window=livesess:ambig" "worktree=$gone_path" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:ambig" "worktree=$gone_path" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+  [ -z "$out" ] \
+    || fail "two unreadable process states over an already-torn-down worktree must not manufacture a collision, got:"$'\n'"$out"
+
+  fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:alive" "worktree=$gone_path" "harness=codex" "kind=ship"
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+  assert_contains "$out" "WORKTREE_COLLISION: stale $gone_path claimed by fm-ambig-a (process state unknown), fm-ambig-b (process alive)" \
+    "a confirmed-alive claimant of a worktree that no longer exists must still be reported"
+
+  pass "fm_worktree_collision_lines: a gone path silences unreadable claimants but never a live one"
+}
+
+# Remote secondmate records name a home on another machine: that path is unique
+# only when host-qualified, so it can never collide with a local worktree and
+# neither the local git probe nor the local backend probe can judge it.
+test_collision_lines_skips_remote_records() {
+  local state fakebin wt out
+
+  state="$TMP_ROOT/remote-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/remote-tmux")
+
+  wt="$TMP_ROOT/wt-shared-remote-home"
+  make_worktree "$wt"
+  fm_write_meta "$state/fm-remote-a.meta" "window=remote:fm-remote-a" "worktree=$wt" \
+    "harness=claude" "kind=secondmate" "remote_host=hostA" "remote_root=/srv/code"
+  fm_write_meta "$state/fm-remote-b.meta" "window=remote:fm-remote-b" "worktree=$wt" \
+    "harness=claude" "kind=secondmate" "remote_host=hostB" "remote_root=/srv/code"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+  [ -z "$out" ] \
+    || fail "two remote secondmates whose homes share a path string are on different machines and must not collide, got:"$'\n'"$out"
+
+  fm_write_meta "$state/fm-local-x.meta" "window=livesess:alive" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-local-y.meta" "window=livesess:ambig" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-local-x (process alive), fm-local-y (process state unknown)" \
+    "the local pair sharing that same path must still be reported"
+  assert_not_contains "$out" "fm-remote-a" \
+    "a remote record must never be named as a claimant of a local worktree"
+  assert_not_contains "$out" "fm-remote-b" \
+    "a remote record must never be named as a claimant of a local worktree"
+
+  pass "fm_worktree_collision_lines: remote_host= records are out of scope and never join a local collision"
+}
+
 test_collision_lines_silent_on_clean_home() {
   local state wt out
 
@@ -301,5 +394,8 @@ test_path_state_classification
 test_claimant_process_classification
 test_collision_lines_grouping
 test_collision_lines_live_claimants_wip_stays_path_level
+test_collision_lines_all_dead_unlanded_keeps_caveat
+test_collision_lines_gone_path_suppression_is_asymmetric
+test_collision_lines_skips_remote_records
 test_collision_lines_silent_on_clean_home
 test_bootstrap_surfaces_collision_line

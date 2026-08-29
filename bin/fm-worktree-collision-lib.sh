@@ -13,11 +13,23 @@
 # task still needs. This is detection only - it never repairs a collision,
 # because an automatic fix here could discard unlanded work.
 #
-# Two independent facts decide a collision, and each is owned by exactly one
-# classifier below: what state the SHARED PATH is in (one verdict per colliding
-# path, from git), and whether an INDIVIDUAL CLAIMANT's agent process is still
-# a hazard (one verdict per record, from the backend). The path fact belongs to
-# the path, not to any one claimant, so it is never counted once per record.
+# Two independent axes decide a collision, and each is owned by exactly one
+# classifier below. PROCESS STATE (alive/unknown/dead, one verdict per record,
+# from the backend) alone decides the kind: `live` means two or more claimants'
+# processes are concurrently hazardous, `stale` means at most one is. PATH
+# STATE (gone/landed/unlanded, one verdict per colliding path, from git) never
+# changes the kind - unlanded work is not a kind trigger; it is reported as a
+# caveat on the stale line instead, so the hazard is never silent even though
+# it is not called `live`. The path fact belongs to the path, not to any one
+# claimant, so it is never counted once per record.
+#
+# Path state does modulate whether a collision is reported at all, asymmetrically
+# and in one direction only: on a `gone` path an `unknown` process verdict stops
+# counting as a hazard, because absence of evidence must not manufacture a
+# collision over a worktree that no longer exists, while a confirmed `alive`
+# claimant is never suppressed by a gone path - confirmed evidence always
+# outranks a missing directory, and a live agent whose worktree is unaccounted
+# for is the most interesting anomaly this detector can surface.
 #
 # fm_worktree_collision_path_state classifies the shared worktree itself from
 # cheap, entirely local git reads (no network):
@@ -61,7 +73,8 @@ fm_worktree_collision_path_state() {  # <worktree-path>
 #             A hazard: the record still owns the path.
 #   unknown - the process state is ambiguous, unreadable, or unverified (or the
 #             record has no usable target). Cannot be proven finished, so it is
-#             treated as a hazard rather than guessed away.
+#             treated as a hazard rather than guessed away - unless the shared
+#             path is already gone, where the caller suppresses it.
 #   dead    - the process is confirmed dead or missing. This record alone is
 #             never a hazard; whatever is left at the path is the path's fact,
 #             reported by fm_worktree_collision_path_state instead.
@@ -98,16 +111,26 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state>
 # "WORKTREE_COLLISION: <kind> <path> claimed by <id> (<detail>), ..." line per
 # colliding path, in path order (the paths are sorted, so a stale collision can
 # print before a live one). kind is `live` when two or more claimants are
-# hazards on their own process state (alive or unknown above); otherwise
-# `stale` - at most one hazardous claimant, so the collision is a finished
-# task's leftover record rather than two tasks actually sharing a copy.
-# A `stale` line whose shared path still holds unlanded work carries one
-# path-level caveat, so a leftover record is never cleaned up blind. Prints
-# nothing when no path is claimed twice.
+# hazards on their own process state (alive, or unknown over a path that still
+# exists); otherwise `stale` - at most one hazardous claimant, so the collision
+# is a finished task's leftover record rather than two tasks actually sharing a
+# copy. Unlanded shared work never promotes the kind: a `stale` line whose
+# shared path still holds unlanded work carries one path-level caveat instead,
+# so a leftover record is never cleaned up blind. A gone path whose every
+# claimant is unknown is not reported at all - nothing remains on disk and
+# nothing is known about any claimant, so there is no collision to manufacture.
+# Scope: LOCAL task records only. A record carrying remote_host= is skipped,
+# because its worktree= is a path on another machine that is only unique when
+# host-qualified (bin/fm-secondmate-registry-lib.sh keys those homes as
+# ssh:<host>:<home>), and neither the local git probe nor the local backend
+# probe can say anything true about it - so this check does NOT cover remote
+# secondmates, whose dedicated homes are never pooled or recycled anyway.
+# Prints nothing when no path is claimed twice.
 # Portable: no associative arrays, so this runs on bash 3.2 (macOS) too.
 fm_worktree_collision_lines() {  # <state-dir>
   local state=$1 meta id path pairs dup_paths p ids_for_path
   local proc_state desc claimant_line live_count kind path_state caveat
+  local unknown_count claimant_count
   [ -d "$state" ] || return 0
   pairs=$(
     for meta in "$state"/*.meta; do
@@ -115,6 +138,7 @@ fm_worktree_collision_lines() {  # <state-dir>
       id=$(basename "$meta" .meta)
       path=$(fm_meta_get "$meta" worktree)
       [ -n "$path" ] || continue
+      [ -z "$(fm_meta_get "$meta" remote_host)" ] || continue
       printf '%s\t%s\n' "$path" "$id"
     done
   )
@@ -126,18 +150,30 @@ fm_worktree_collision_lines() {  # <state-dir>
     ids_for_path=$(printf '%s\n' "$pairs" | awk -F'\t' -v p="$p" '$1 == p {print $2}' | sort)
     path_state=$(fm_worktree_collision_path_state "$p")
     live_count=0
+    unknown_count=0
+    claimant_count=0
     claimant_line=
     while IFS= read -r id; do
       [ -n "$id" ] || continue
+      claimant_count=$((claimant_count + 1))
       proc_state=$(fm_worktree_collision_claimant_process "$state/$id.meta")
       case "$proc_state" in
-        alive|unknown) live_count=$((live_count + 1)) ;;
+        alive) live_count=$((live_count + 1)) ;;
+        unknown)
+          unknown_count=$((unknown_count + 1))
+          if [ "$path_state" != gone ]; then
+            live_count=$((live_count + 1))
+          fi
+          ;;
       esac
       desc=$(fm_worktree_collision_claimant_desc "$proc_state")
       claimant_line="${claimant_line:+$claimant_line, }$id ($desc)"
     done <<EOM
 $ids_for_path
 EOM
+    if [ "$path_state" = gone ] && [ "$unknown_count" -eq "$claimant_count" ]; then
+      continue
+    fi
     caveat=
     if [ "$live_count" -ge 2 ]; then
       kind=live
