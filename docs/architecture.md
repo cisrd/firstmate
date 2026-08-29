@@ -149,6 +149,7 @@ Codex and standalone Kimi classify unknown behind explicit probes until a semant
 Missing, malformed, stale, untrusted, or unverified semantic state is unknown, never idle, and unknown is never promoted to busy either.
 Ordinary task-state consumers act only on an exact busy verdict, so an unreadable worker surfaces for a closer look instead of being absorbed as still-working or written off as finished.
 Endpoint death is the only process-level override and yields dead; child processes, CPU, process sleep state, and marker modification times are not state signals.
+A pane whose current prompt is firstmate's own bare endpoint-shell marker also yields dead, read from the pane's own content rather than from any process signal, on the four backends that plant that marker at spawn ([herdr](herdr-backend.md#endpoint-shell-marker), [zellij](zellij-backend.md), [orca](orca-backend.md), and [cmux](cmux-backend.md) own its per-backend scope and its accepted launch-window race).
 `state/<id>.turn-ended` files remain wake notifications, not current state.
 
 Each record is bound to an incarnation token minted when the task's wiring is armed, so an event from a superseded incarnation is rejected rather than applied, and a record left behind by one classifies unknown.

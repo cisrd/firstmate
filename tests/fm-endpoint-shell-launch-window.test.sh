@@ -543,6 +543,100 @@ test_residue_wrapped_across_three_rows_is_still_detected() {
   pass "residue wrapped across three rows with its space eaten is still detected and refuses the launch"
 }
 
+
+# A send status of 2 means "pasted but not committed" ONLY on a backend that
+# sends text in two phases (zellij, cmux). Orca sends and submits in ONE call
+# (`terminal send --enter`), and its 2 comes from its JSON helper rejecting a
+# malformed or `ok:false` response - an API-level failure where nothing was
+# typed into the terminal at all. Reading that as stranded residue would abort
+# a spawn whose pane is perfectly clean, leaving a registered task with a live
+# worktree and no agent. The correct reading is the ordinary one: the marker is
+# absent, which every reader treats as undetermined, and the launch proceeds.
+make_orca_fakebin() {  # <dir> <worktree-path> -> echoes fakebin dir
+  local fakebin
+  fakebin=$(fm_fakebin "$1")
+  cat > "$fakebin/orca" <<SH
+#!/usr/bin/env bash
+set -u
+WT='$2'
+SH
+  cat >> "$fakebin/orca" <<'SH'
+LOG="${FM_FAKE_ORCA_LOG:?}"
+{ printf 'orca'; for a in "$@"; do printf '\x1f%s' "$a"; done; printf '\n'; } >> "$LOG"
+text=
+prev=
+for a in "$@"; do
+  [ "$prev" = --text ] && text=$a
+  prev=$a
+done
+case "${1:-} ${2:-}" in
+  "status --json")
+    printf '{"ok":true,"result":{"runtime":{"reachable":true,"state":"ready"}}}\n' ;;
+  "repo show")   printf '{"ok":false,"error":{"message":"no such repo"}}\n'; exit 1 ;;
+  "repo add")    printf '{"ok":true,"result":{"repo":{"id":"repo-1"}}}\n' ;;
+  "worktree create")
+    printf '{"ok":true,"result":{"worktree":{"id":"wt-1","path":"%s"},"terminal":{"handle":"term-1"}}}\n' "$WT" ;;
+  "terminal read")
+    printf '{"ok":true,"result":{"terminal":{"tail":["all quiet"]}}}\n' ;;
+  "terminal send")
+    # The one injected failure: Orca rejects the marker send at the API level,
+    # so nothing reached the terminal and fm_backend_orca_send_text_line
+    # returns 2.
+    if [ -n "${FM_FAKE_ORCA_SEND_FAIL_ON:-}" ]; then
+      case "$text" in
+        *"$FM_FAKE_ORCA_SEND_FAIL_ON"*)
+          printf '{"ok":false,"error":{"code":"terminal_handle_stale","message":"terminal handle stale"}}\n'
+          exit 0 ;;
+      esac
+    fi
+    printf '{"ok":true}\n'
+    printf '%s\n' "$text" >> "$LOG.sent" ;;
+  *) printf '{"ok":true}\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/orca"
+  fm_fake_exit0 "$fakebin" treehouse claude tmux
+  printf '%s\n' "$fakebin"
+}
+
+test_single_call_backend_send_failure_does_not_refuse_the_launch() {
+  command -v node >/dev/null 2>&1 || { pass "orca marker-send skipped without node"; return; }
+  local case_dir home proj wt fakebin log id out status
+  case_dir="$TMP_ROOT/orcamarkerfail"
+  home="$case_dir/home"; proj="$case_dir/project"; wt="$case_dir/wt"
+  log="$case_dir/orca.log"
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  touch "$home/state/.last-watcher-beat"
+  fm_git_worktree "$proj" "$wt" "wt-orcamarkerfail"
+  fakebin=$(make_orca_fakebin "$case_dir/fake" "$wt")
+  : > "$log"
+  id="orcamarkerfail1"
+  mkdir -p "$home/data/$id"
+  printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+  out=$( env -u TMUX FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_ORCA_LOG="$log" \
+    FM_FAKE_ORCA_SEND_FAIL_ON="$FM_COMPOSER_ENDPOINT_SHELL_MARKER" \
+    PATH="$fakebin:$PATH" \
+    "$SPAWN" "$id" "$proj" claude --backend orca --mode no-mistakes --yolo off 2>&1 )
+  status=$?
+
+  case "$out" in
+    *"refusing to send the launch command"*)
+      fail "an Orca send failure - where nothing was typed into the terminal at all - was read as stranded residue and aborted the spawn:"$'\n'"$out"
+      ;;
+  esac
+  [ "$status" -eq 0 ] || fail "spawn must carry on when the marker send fails on a single-call backend, exited $status:"$'\n'"$out"
+  assert_contains "$(cat "$log.sent" 2>/dev/null || true)" '--dangerously-skip-permissions' \
+    "the harness launch command was never sent after a failed marker send"
+  assert_contains "$(cat "$log")" "$FM_COMPOSER_ENDPOINT_SHELL_MARKER" \
+    "the fixture never attempted the marker send, so nothing was exercised"
+  rm -rf "/tmp/fm-$id"
+  pass "a marker send that fails on a single-call backend leaves the marker absent and still launches the agent"
+}
+
 test_marked_prompt_appears_only_immediately_before_the_launch_text
 test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits
 test_marker_send_residue_is_cleared_before_the_launch_text
@@ -550,3 +644,4 @@ test_unclearable_marker_residue_refuses_the_launch
 test_wrapped_marker_residue_is_still_detected_and_refuses_the_launch
 test_residue_space_eaten_at_the_wrap_column_is_still_detected
 test_residue_wrapped_across_three_rows_is_still_detected
+test_single_call_backend_send_failure_does_not_refuse_the_launch

@@ -60,11 +60,14 @@
 #      shell, never a guess from an unmarked or unreadable pane - then
 #      unknown missing
 #   5. malformed, stale, or untrusted records -> unknown, never a fallback
-# The Grok arm is the ONLY rendered-text classification that survives the
-# redesign, because Grok's structured lifecycle was not credited-live-verified
-# in the approved audit; it is scoped to harness=grok and can never classify
-# another adapter. The delivery guards in bin/fm-composer-lib.sh match rendered
-# footers for submit acknowledgement and away-mode supervisor injection only;
+# The Grok arm is the ONLY classification of VENDOR-rendered text that
+# survives the redesign, because Grok's structured lifecycle was not
+# credited-live-verified in the approved audit; it is scoped to harness=grok
+# and can never classify another adapter. The endpoint-shell arm above also
+# reads the pane, but it matches firstmate's OWN planted marker rather than
+# anything a harness renders, so no vendor string is load-bearing there. The
+# delivery guards in bin/fm-composer-lib.sh match rendered footers for submit
+# acknowledgement and away-mode supervisor injection only;
 # neither is a recorded worker state source.
 #
 # The muse pull source is semantic, not rendered: it folds muse's own durable
