@@ -404,18 +404,53 @@ FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 # as "cannot prove" - never as a false `dead`.
 FM_COMPOSER_ENDPOINT_SHELL_MARKER='[fm-endpoint-shell]'
 
-# fm_composer_endpoint_shell_present: 0 if <screen> contains the endpoint-shell
-# marker anywhere, 1 otherwise. A plain, unstyled substring match is
-# deliberate and sufficient: the marker is a fixed literal firstmate itself
-# writes, never de-emphasised ghost text a harness could render, so it needs
-# none of the ANSI-aware stripping fm_composer_strip_ghost exists for. Callers
-# never fake presence when a capture is empty or failed - the caller must
-# check that first and treat "could not read" as unproven, not absent.
-fm_composer_endpoint_shell_present() {  # <screen>
-  case "$1" in
-    *"$FM_COMPOSER_ENDPOINT_SHELL_MARKER"*) return 0 ;;
-    *) return 1 ;;
+# fm_composer_endpoint_shell_lead_var: THE one anchoring definition of "the
+# marker leads this row", declared exactly once (see THE SAFETY RULE above) and
+# reached by every reader of the shape. The marker is a PROMPT construct: it is
+# the leading content of the shell's own prompt row, so a row merely containing
+# it somewhere - an echoed command line, a capture of source or docs that quote
+# the literal - is not this shape. Sets <out-varname> to the REST of the row
+# after the marker (a prompt row's typed command, empty on a bare prompt) so
+# callers can impose their own condition on it, and returns 1 with an empty
+# out-var when the row does not lead with the marker. Leading whitespace is
+# ignored, matching the glyph readers below.
+fm_composer_endpoint_shell_lead_var() {  # <out-varname> <row>
+  local __fmes_out=$1 __fmes_row=$2
+  __fmes_row="${__fmes_row#"${__fmes_row%%[![:space:]]*}"}"
+  case "$__fmes_row" in
+    "$FM_COMPOSER_ENDPOINT_SHELL_MARKER"*)
+      printf -v "$__fmes_out" '%s' "${__fmes_row#"$FM_COMPOSER_ENDPOINT_SHELL_MARKER"}"
+      return 0
+      ;;
   esac
+  printf -v "$__fmes_out" '%s' ''
+  return 1
+}
+
+# fm_composer_endpoint_shell_present: 0 when <screen> carries a BARE marked
+# prompt - a row the marker leads with nothing but whitespace after it - and 1
+# otherwise. The empty rest is what makes this proof that the agent exited and
+# handed the pane back to its own shell: between fm-spawn planting the marker
+# on PS1 and the harness painting, that same shell echoes its remaining
+# pre-launch lines (`[fm-endpoint-shell] export TRACEPARENT=...`, then
+# `[fm-endpoint-shell] <launch command>`), which lead with the marker too and
+# must never read as an exited agent. The looser "marker leads the row" shape,
+# which those echoed rows do satisfy, is a shell PROMPT row for the dead-shell
+# staleness rule and is read through fm_composer_leading_shell_glyph_var below.
+# No ANSI stripping is needed: the marker is a fixed literal firstmate itself
+# writes, never de-emphasised ghost text a harness could render. Callers never
+# fake presence when a capture is empty or failed - the caller must check that
+# first and treat "could not read" as unproven, not absent.
+fm_composer_endpoint_shell_present() {  # <screen>
+  local __fmesp_line __fmesp_rest
+  while IFS= read -r __fmesp_line; do
+    fm_composer_endpoint_shell_lead_var __fmesp_rest "$__fmesp_line" || continue
+    fm_composer_normalize_trim_var __fmesp_rest
+    [ -n "$__fmesp_rest" ] || return 0
+  done <<EOF
+$1
+EOF
+  return 1
 }
 
 # Pi allows a multi-line composer between its horizontal separators. Bound the
@@ -474,9 +509,23 @@ EOF
   return 1
 }
 
+# fm_composer_leading_shell_glyph_var: SHELL prompt rows only. Besides the
+# glyph list, firstmate's own endpoint-shell prompt is a shell prompt row here:
+# fm-spawn replaces PS1 with FM_COMPOSER_ENDPOINT_SHELL_MARKER on herdr,
+# zellij, orca, and cmux, so on those panes the prompt no longer begins with
+# any of `>`/`$`/`%`/`#` and the dead-shell rule would otherwise have nothing
+# left to anchor on. Any marker-led row counts, echoed command and all - a
+# prompt row carrying a typed command is still a shell prompt, and this reader
+# only has to FIND the shell row, not prove the agent exited (that stricter
+# question is fm_composer_endpoint_shell_present's, above). The out-var gets
+# the marker as a literal, so `${v#"$glyph"}` stays byte-exact as for a glyph.
 fm_composer_leading_shell_glyph_var() {  # <out-varname> <content>
   local __fmsg_out=$1 __fmsg_text=$2 __fmsg_glyph
   __fmsg_text="${__fmsg_text#"${__fmsg_text%%[![:space:]]*}"}"
+  if fm_composer_endpoint_shell_lead_var __fmsg_glyph "$__fmsg_text"; then
+    printf -v "$__fmsg_out" '%s' "$FM_COMPOSER_ENDPOINT_SHELL_MARKER"
+    return 0
+  fi
   while IFS= read -r __fmsg_glyph; do
     [ -n "$__fmsg_glyph" ] || continue
     case "$__fmsg_text" in

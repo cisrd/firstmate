@@ -204,7 +204,9 @@ Workspace and tab ids support verification and cleanup but are not inferred from
 
 `bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the task pane's shell prompt before the harness ever launches, the same as on zellij, orca, and cmux.
 Herdr does not need it for its own dead/husk decision, which stays on the native `agent get` registration read above; the marker exists here purely so a plain capture of a Herdr pane reads the same fleet-wide fact the other three backends rely on.
-A capture that omits the marker (a harness that overwrote the shell's `PS1`, or a session predating this change) proves nothing either way and must not be read as "never a firstmate endpoint".
+A capture that omits the marker proves nothing either way and must not be read as "never a firstmate endpoint".
+The marker is planted with a one-shot `PS1=` assignment, so it is absent for a session predating this change, for a harness that overwrote the shell's `PS1`, for a shell that regenerates its prompt per command (starship, powerlevel10k, a `PROMPT_COMMAND` or `precmd` git prompt), and for a shell that never consults `PS1` at all (fish, nushell).
+In every one of those cases the pane classifies exactly as it did before this feature existed; absence is never read as "the agent is alive" and never on its own as `dead endpoint-shell`.
 
 ## Current transport behavior
 

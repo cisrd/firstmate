@@ -84,6 +84,9 @@ Workspace UUIDs are not stable across an app relaunch, so recovery searches by t
 cmux exposes no native generic agent busy signal and no process-identity read, so `bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the surface's own shell prompt before the harness launches, the same as on zellij and orca.
 `bin/fm-busy-lib.sh`'s `fm_busy_classify` reads it back through `read-screen` to report `dead endpoint-shell` for a surface that has reverted to that marked shell, rather than the generic `unknown` a bare prompt reported before.
 This is a busy-state read only: it does not change `fm_control_backend_state_verified`'s tmux/herdr-only recovery-grade gate, so `exit` and `relaunch` still refuse on cmux.
+The marker is planted with a one-shot `PS1=` assignment on the pane's interactive shell, so it is absent whenever that shell regenerates its prompt per command (starship, powerlevel10k, a `PROMPT_COMMAND` or `precmd` git prompt) or never consults `PS1` at all (fish, nushell).
+An absent marker therefore proves nothing about the pane: it is read as undetermined, never as "the agent is alive", never as "this was never a firstmate endpoint", and never on its own as `dead endpoint-shell`.
+A pane with no marker classifies exactly as it did before this feature existed.
 
 ## Current operation and safety
 

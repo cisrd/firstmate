@@ -679,12 +679,70 @@ test_endpoint_shell_marker_detected_alone() {
   pass "fm_composer_endpoint_shell_present: detects the marker on its own"
 }
 
-test_endpoint_shell_marker_detected_inside_captured_screen() {
+test_endpoint_shell_exited_agent_leaves_bare_marked_prompt() {
   local screen
   screen=$(printf 'some earlier scrollback\nmore output\n%s \n' "$FM_COMPOSER_ENDPOINT_SHELL_MARKER")
   fm_composer_endpoint_shell_present "$screen" \
-    || fail "the marker must be detected anywhere inside a multi-line capture"
-  pass "fm_composer_endpoint_shell_present: detects the marker inside a larger capture"
+    || fail "an exited agent's bare marked prompt inside a larger capture must be detected"
+  pass "fm_composer_endpoint_shell_present: an exited agent's bare marked prompt is the endpoint shell"
+}
+
+# The launch window: fm-spawn sets PS1 to the marker BEFORE it sends the
+# remaining pre-launch lines, so the pane echoes them behind the marker while
+# the harness is still starting. Those rows lead with the marker but carry a
+# typed command, and must never be read as "the agent exited".
+test_endpoint_shell_launch_window_is_not_an_exited_agent() {
+  local screen
+  screen=$(printf '%s export GOTMPDIR=/tmp/t/gotmp\n%s export TRACEPARENT=00-4bf92f-00f067-01\n%s claude --model opus\n' \
+    "$FM_COMPOSER_ENDPOINT_SHELL_MARKER" "$FM_COMPOSER_ENDPOINT_SHELL_MARKER" "$FM_COMPOSER_ENDPOINT_SHELL_MARKER")
+  if fm_composer_endpoint_shell_present "$screen"; then
+    fail "the launch window's echoed marker-led command rows must not read as an exited agent"
+  fi
+  pass "fm_composer_endpoint_shell_present: the launch window's echoed command rows are not an exited agent"
+}
+
+# The marker is a PROMPT construct, so it only counts as the leading content of
+# a row: a capture that merely quotes the literal (an agent editing this
+# repo's own source or docs) is not an endpoint shell.
+test_endpoint_shell_marker_must_lead_the_row() {
+  local screen
+  screen=$(printf 'FM_COMPOSER_ENDPOINT_SHELL_MARKER=%s\ngrep -n %s bin/fm-composer-lib.sh\n' \
+    "$FM_COMPOSER_ENDPOINT_SHELL_MARKER" "$FM_COMPOSER_ENDPOINT_SHELL_MARKER")
+  if fm_composer_endpoint_shell_present "$screen"; then
+    fail "a capture that merely quotes the marker mid-row must not read as an endpoint shell"
+  fi
+  pass "fm_composer_endpoint_shell_present: the marker only counts as the leading content of a row"
+}
+
+# THE SAFETY RULE on the four cursorless backends: fm-spawn replaces PS1 with
+# the marker, so the pane's prompt no longer starts with a shell glyph. The
+# marked prompt must still be a shell row, or a stale composer painted above a
+# dead shell would win selection and read as a safe injection target.
+test_endpoint_shell_marked_prompt_invalidates_cursorless_candidate() {
+  # A killed TUI leaves its `❯` composer row painted; the shell prompt is
+  # below it, separated by the blank row that ends the composer's wrap region.
+  # Without the guard the stale row wins selection and reads `empty` - a
+  # "safe injection target" on a pane with no agent.
+  local head stale caps out
+  head=$'old transcript\n❯\n\n'
+  for caps in "$CAPS_STYLED" "$CAPS_STYLED_NOID" "$CAPS_PLAIN"; do
+    stale="$head$FM_COMPOSER_ENDPOINT_SHELL_MARKER "
+    assert_screen "stale composer above a bare marked prompt" unknown "$caps" "$stale"
+    # Looser than the exited-agent shape on purpose: a marked prompt carrying a
+    # typed command is still a shell prompt for the staleness rule.
+    stale="$head$FM_COMPOSER_ENDPOINT_SHELL_MARKER ls -la"
+    assert_screen "stale composer above a marked prompt with a command" unknown "$caps" "$stale"
+  done
+  # The guard is the marker, not the bracket: an unrelated bracketed prompt is
+  # not a shell row and still reads empty, which is what the marked prompt
+  # wrongly read before the marker was recognized here.
+  out=$(fm_composer_classify_screen "$CAPS_STYLED" "${head}[not-a-marker] ")
+  [ "$out" = empty ] \
+    || fail "only the endpoint-shell marker may arm the guard, got '$out'"
+  out=$(fm_composer_classify_screen "$CAPS_TMUX" "$head$FM_COMPOSER_ENDPOINT_SHELL_MARKER " 1)
+  [ "$out" = empty ] \
+    || fail "cursor mode must keep the cursor-anchored composer verdict, got '$out'"
+  pass "fm_composer_classify_screen: a marked endpoint-shell prompt invalidates a stale cursorless composer"
 }
 
 test_endpoint_shell_marker_absent_on_ordinary_content() {
@@ -699,5 +757,8 @@ test_endpoint_shell_marker_absent_on_ordinary_content() {
 }
 
 test_endpoint_shell_marker_detected_alone
-test_endpoint_shell_marker_detected_inside_captured_screen
+test_endpoint_shell_exited_agent_leaves_bare_marked_prompt
+test_endpoint_shell_launch_window_is_not_an_exited_agent
+test_endpoint_shell_marker_must_lead_the_row
+test_endpoint_shell_marked_prompt_invalidates_cursorless_candidate
 test_endpoint_shell_marker_absent_on_ordinary_content

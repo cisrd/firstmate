@@ -52,9 +52,10 @@
 #      (generation state is sufficient for busy, not for idle), then the
 #      muse session-log and cursor transcript pull sources, then the Grok-only
 #      temporary regex fallback classifies a grok task from its rendered tail;
-#      on herdr, zellij, orca, or cmux, a pane positively carrying fm-spawn's
-#      endpoint-shell marker (bin/fm-composer-lib.sh
-#      FM_COMPOSER_ENDPOINT_SHELL_MARKER) classifies dead endpoint-shell -
+#      on herdr, zellij, orca, or cmux, a pane whose own prompt row is a BARE
+#      fm-spawn endpoint-shell marker with nothing typed after it
+#      (bin/fm-composer-lib.sh fm_composer_endpoint_shell_present) classifies
+#      dead endpoint-shell -
 #      the endpoint exists but is confirmed to be firstmate's own agent-free
 #      shell, never a guess from an unmarked or unreadable pane - then
 #      unknown missing
@@ -955,17 +956,20 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   # reports dead rather than the generic unknown every other unmatched case
   # here reports. A missing capture, a missing marker, or a marker this
   # backend was never taught to write all fail toward unknown - the marker
-  # is never assumed, only read.
+  # is never assumed, only read. The caller's pre-captured <tail40> is reused
+  # when it has one (the daemon and the watcher always do), exactly as the Grok
+  # arm above does, so supervision does not pay a second backend round trip per
+  # poll; its 40 rows are a superset of the bounded window captured otherwise.
   case "$backend" in
     herdr|zellij|orca|cmux)
-      if command -v fm_backend_capture >/dev/null 2>&1; then
-        local shell_cap
+      local shell_cap=$tail40
+      if [ -z "$shell_cap" ] && command -v fm_backend_capture >/dev/null 2>&1; then
         shell_cap=$(fm_backend_capture "$backend" "$target" "${FM_COMPOSER_CAPTURE_LINES:-20}" 2>/dev/null) || shell_cap=
-        if [ -n "$shell_cap" ] && command -v fm_composer_endpoint_shell_present >/dev/null 2>&1 \
-           && fm_composer_endpoint_shell_present "$shell_cap"; then
-          printf 'dead endpoint-shell'
-          return 0
-        fi
+      fi
+      if [ -n "$shell_cap" ] && command -v fm_composer_endpoint_shell_present >/dev/null 2>&1 \
+         && fm_composer_endpoint_shell_present "$shell_cap"; then
+        printf 'dead endpoint-shell'
+        return 0
       fi
       ;;
   esac
