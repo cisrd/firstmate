@@ -287,9 +287,10 @@ Grok's own tool-approval dialog (a distinct state - the model has proposed a com
 ```
 
 The fix widens the per-harness signature `FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT` to `Esc:cancel|Ctrl\+c:cancel`, so every active-turn shape above classifies `busy grok-regex` and only the first, genuinely idle shape classifies `idle grok-regex`.
-Pinned by `tests/fm-busy-state.test.sh`'s `test_grok_regex_active_turn_busy`, which fails against the pre-fix single-token regex.
+`bin/fm-busy-lib.sh`'s defensive literal fallback, used only by a caller that sources it without `bin/fm-composer-lib.sh`, carries the same widened token pair so the two copies cannot drift apart.
+Pinned by `tests/fm-busy-state.test.sh`'s `test_grok_regex_active_turn_busy`, which fails against the pre-fix single-token regex, and by `test_grok_regex_fallback_literal_matches_without_composer_lib`, which unsets the canonical owner to exercise that fallback directly.
 
-Only that per-harness default was widened.
+The widening is scoped to grok's own signature.
 The harness-less union `FM_DELIVERY_BUSY_REGEX_DEFAULT` deliberately does NOT gain `Esc:cancel`.
 `fm_tmux_submit_core` (`bin/fm-tmux-lib.sh`) reads the pane's busy state with no harness argument, so widening the union would also change `fm-send`'s delivery verdict for a grok pane that is genuinely mid-turn when a steer is typed: a structurally proven-pending composer would convert from the safe `pending` (exit 3, unconfirmed) to `empty` (reported delivered).
 That pending+busy conversion is verified only against opencode 1.18.4's known behavior of accepting and queueing a mid-turn Enter, and this capture establishes only what grok RENDERS, not that grok queues a mid-turn Enter rather than silently dropping it.
