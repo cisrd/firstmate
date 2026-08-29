@@ -34,47 +34,68 @@
 # about.
 #
 # fm_worktree_collision_path_state classifies the shared worktree itself from
-# cheap, entirely local git reads (no network):
-#   missing       - nothing at all exists at the recorded path: no file, no
-#                   directory, not even a dangling symlink. The only state that
-#                   proves there is nothing left to lose there.
-#   uninspectable - something is at the path, but git cannot resolve a work
-#                   tree there (a dangling .git pointer after the admin dir was
-#                   pruned or the repo moved, a returned-but-not-deleted pool
-#                   copy, an unreadable directory, a bare repository, a plain
-#                   file, a path inside a .git dir). Whether it holds unlanded
-#                   work cannot be verified, so this uses the same
-#                   --show-toplevel probe bin/fm-teardown.sh's own
-#                   inspectable_git_worktree refuses on.
-#   unverifiable  - git resolved a work tree there, but the working-tree probe
-#                   itself failed (a truncated or unreadable .git/index, a copy
-#                   an agent was killed in mid-git-operation). It printed no
-#                   changes because it read none, which is not the same fact as
-#                   a clean tree, so this never reads as landed.
-#   unlanded      - the path has uncommitted changes, or its HEAD is not proven
-#                   reachable from the project's default branch. Discarding
-#                   this copy could lose real work, whichever claimant made it.
-#   landed        - the worktree is clean and its HEAD is reachable from the
-#                   project's default branch. Nothing at the path is at risk.
-# No failed probe may end at `landed`: a probe that could not read the path
-# yields uninspectable or unverifiable, and a probe that could not resolve the
-# default branch yields unlanded. Only `landed` proves the path is safe to
-# reclaim, so every other verdict carries a caveat, and every verdict except
-# `missing` carries a do-not-discard clause - `missing` is the one case where
-# the probe itself proves there is nothing at the path to discard.
+# cheap, entirely local git reads (no network). Exactly three verdicts are
+# conclusions, and every probe that could not reach one shares a single
+# fourth:
+#   missing              - the path's absence was actually observed: nothing is
+#                          there, and the nearest existing ancestor directory
+#                          was searchable, so the absence is a fact rather than
+#                          a stat that was refused. The only verdict that
+#                          proves there is nothing left to lose there, and so
+#                          the only one whose caveat carries no do-not-discard
+#                          clause.
+#   unlanded             - a probe answered, and its answer was that work is at
+#                          risk: the worktree has uncommitted changes, or the
+#                          ancestry check ran and said HEAD is not reachable
+#                          from the project's default branch.
+#   landed               - the worktree is clean and its HEAD was checked and
+#                          found reachable from the project's default branch.
+#                          Nothing at the path is at risk.
+#   unverifiable:<cause> - a probe could not answer at all, so the path is
+#                          NEITHER landed nor unlanded, and the emitted caveat
+#                          says so while naming <cause>. This is the one shared
+#                          mechanism for every unanswerable probe; new causes
+#                          are added to it rather than given a branch of their
+#                          own. Current causes:
+#                            not-a-worktree  - git resolved no work tree there
+#                              (a dangling .git pointer, a bare repository, a
+#                              plain file, a path inside a .git dir), the same
+#                              --show-toplevel condition bin/fm-teardown.sh's
+#                              own inspectable_git_worktree refuses on.
+#                            worktree-state  - the working-tree probe itself
+#                              failed (a truncated or unreadable .git/index).
+#                              It printed no changes because it read none,
+#                              which is not the same fact as a clean tree.
+#                            default-branch  - the ancestry check could not be
+#                              performed: no origin/HEAD and no local
+#                              main/master to resolve a default branch, no ref
+#                              for the resolved name, or a shallow or grafted
+#                              history that made merge-base error out.
+#                            path-unreadable - the path could not be stat'ed
+#                              because an ancestor directory is not searchable,
+#                              so its absence was refused rather than observed.
+# The rule those verdicts encode, in both directions: a probe that could not
+# run proves nothing, so it may never reach `landed` or `missing` (a falsely
+# reassuring claim) and may never claim `unlanded` work it did not see (a
+# falsely alarming one). Safety does not change either way - every verdict
+# except `missing` carries the same do-not-discard clause.
 fm_worktree_collision_path_state() {  # <worktree-path>
-  local path=$1 default top status_out
+  local path=$1 default top status_out ref rc answered=0
   if [ -z "$path" ] || { [ ! -e "$path" ] && [ ! -L "$path" ]; }; then
+    if [ -n "$path" ] && ! fm_worktree_collision_absence_observed "$path"; then
+      printf 'unverifiable:path-unreadable'
+      return 0
+    fi
     printf 'missing'
     return 0
   fi
   top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)
   if [ -z "$top" ] || [ ! -d "$top" ]; then
-    printf 'uninspectable'
+    printf 'unverifiable:not-a-worktree'
     return 0
   fi
   if ! status_out=$(git -C "$path" status --porcelain 2>/dev/null); then
-    printf 'unverifiable'
+    printf 'unverifiable:worktree-state'
     return 0
   fi
   if [ -n "$status_out" ]; then
@@ -83,33 +104,63 @@ fm_worktree_collision_path_state() {  # <worktree-path>
   fi
   default=$(fm_default_branch "$path" 2>/dev/null || true)
   if [ -n "$default" ]; then
-    if git -C "$path" rev-parse --verify -q "$default" >/dev/null 2>&1 \
-      && git -C "$path" merge-base --is-ancestor HEAD "$default" 2>/dev/null; then
-      printf 'landed'
-      return 0
-    fi
-    if git -C "$path" rev-parse --verify -q "origin/$default" >/dev/null 2>&1 \
-      && git -C "$path" merge-base --is-ancestor HEAD "origin/$default" 2>/dev/null; then
-      printf 'landed'
-      return 0
-    fi
+    for ref in "$default" "origin/$default"; do
+      git -C "$path" rev-parse --verify -q "$ref" >/dev/null 2>&1 || continue
+      if git -C "$path" merge-base --is-ancestor HEAD "$ref" 2>/dev/null; then
+        printf 'landed'
+        return 0
+      else
+        rc=$?
+      fi
+      if [ "$rc" = 1 ]; then
+        answered=1
+      fi
+    done
   fi
-  printf 'unlanded'
+  if [ "$answered" = 1 ]; then
+    printf 'unlanded'
+    return 0
+  fi
+  printf 'unverifiable:default-branch'
+}
+
+# True only when a path's absence was OBSERVED rather than refused: walk up to
+# the nearest ancestor that can be stat'ed and require it to be a searchable
+# directory. A chmod-000 ancestor makes `[ ! -e ]` true for a worktree that is
+# still there, holding work, so absence is a claim this has to earn.
+fm_worktree_collision_absence_observed() {  # <path>
+  local dir=$1
+  while [ "$dir" != / ] && [ "$dir" != . ]; do
+    dir=$(dirname "$dir")
+    if [ -e "$dir" ] || [ -L "$dir" ]; then
+      { [ -d "$dir" ] && [ -x "$dir" ]; }
+      return
+    fi
+  done
+  [ -x "$dir" ]
 }
 
 # One caveat per path state, appended to the printed line whatever its kind -
 # the risk at a shared path does not depend on how many processes are hazards.
+# Every `unverifiable:<cause>` verdict shares one sentence, built here once:
+# the cause names which probe could not answer, and the same do-not-discard
+# clause every non-landed verdict carries closes it.
 fm_worktree_collision_path_caveat() {  # <path-state>
+  local cause
   case "$1" in
     landed) ;;
     unlanded) printf ' - shared path still has unlanded work, do not discard' ;;
-    uninspectable)
-      printf ' - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard'
-      ;;
-    unverifiable)
-      printf ' - shared path is a git worktree whose working-tree state could not be read, so whether work would be lost cannot be verified, do not discard'
-      ;;
     missing) printf ' - shared worktree no longer exists at that path' ;;
+    unverifiable:*)
+      case "${1#unverifiable:}" in
+        not-a-worktree) cause='is not an inspectable git worktree' ;;
+        worktree-state) cause='is a git worktree whose working-tree state could not be read' ;;
+        default-branch) cause="is a git worktree whose HEAD could not be checked against the project's default branch" ;;
+        path-unreadable) cause='could not be examined because an ancestor directory is not searchable' ;;
+        *) cause='could not be examined' ;;
+      esac
+      printf ' - shared path %s, so whether work would be lost cannot be verified, do not discard' "$cause"
+      ;;
   esac
 }
 
