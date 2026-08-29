@@ -99,6 +99,22 @@ fm_nm_branch_sync_state() {  # <toon-output>
   fm_nm_strip_quotes "$s"
 }
 
+# branch_sync.next_action.code from captured `axi status` TOON $1: same
+# first-match-in-block technique as fm_nm_branch_sync_state, since no other
+# branch_sync sub-block (local/pipeline/target/remote) carries a `code:` key.
+# `recover_custody` means the run left pipeline-committed work that never
+# reached this worktree's branch (a fix round the daemon committed in its own
+# gate-repo clone before the run went terminal) - `no-mistakes axi sync
+# --recover` is the only way to land it. fm-teardown.sh's Fix 1 uses this to
+# refuse discarding that work instead of orphaning it under a removed worktree.
+fm_nm_branch_sync_next_action_code() {  # <toon-output>
+  local s
+  s=$(printf '%s\n' "$1" \
+    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}code:[[:space:]]*\(.*\)/\1/p' \
+    | head -1)
+  fm_nm_strip_quotes "$s"
+}
+
 # 0 if the run in captured `axi status` TOON $1 is still in flight: no
 # terminal outcome and no terminal status.
 fm_nm_run_is_active() {  # <toon-output>

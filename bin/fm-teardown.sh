@@ -128,6 +128,20 @@
 #     that verified run instance. A run already terminal
 #     (an outcome is set) or not parked at a gate is left untouched. Idempotent:
 #     an already-aborted run reads back terminal and is skipped on retry.
+#     A parked run that already had a fix round applied (the worker answered a
+#     gate with `--action fix` and was removed before answering the resulting
+#     fix-review gate) commits that round in the daemon's own gate-repo clone,
+#     never in this worktree - reproduced live 2026-08-29: aborting such a run
+#     leaves `axi status --run <id>`'s branch_sync.next_action.code set to
+#     `recover_custody`, meaning the commit exists only in the gate and this
+#     worktree's own git log never advanced past the pre-fix head. Removing the
+#     worktree at that point is unlanded-work loss no `git status` check here
+#     ever sees, because the work was never in this worktree to begin with.
+#     conclude_task_no_mistakes_run therefore refuses when abort's confirming
+#     `axi status` still reports `recover_custody`, the same fail-closed shape
+#     as the still-parked refusal below, so the operator runs `no-mistakes axi
+#     sync --recover` to land the commit (or discards it with explicit
+#     authority) before worktree removal can proceed.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -1543,7 +1557,7 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 # worktree (scouts and secondmates never do, mirroring bin/fm-crew-state.sh);
 # a run not attributed to this exact branch+head is left completely alone.
 conclude_task_no_mistakes_run() {  # <worktree>
-  local wt=$1 out run_id
+  local wt=$1 out run_id next_action
   [ "$KIND" = ship ] || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
@@ -1554,7 +1568,14 @@ conclude_task_no_mistakes_run() {  # <worktree>
   # live-state condition; fully closing the resume race needs upstream compare-and-cancel.
   fm_nm_run_checked "$wt" "$NM_TEARDOWN_TIMEOUT" axi abort --run "$run_id" >/dev/null 2>&1 || true
   if out=$(fm_nm_run_bounded "$wt" "$NM_TEARDOWN_TIMEOUT" axi status --run "$run_id" 2>&1); then
-    task_status_is_terminal_run "$out" "$run_id" && return 0
+    if task_status_is_terminal_run "$out" "$run_id"; then
+      next_action=$(fm_nm_branch_sync_next_action_code "$out")
+      if [ "$next_action" = recover_custody ]; then
+        echo "REFUSED: no-mistakes run for $ID left pipeline-committed work in the gate that never reached this worktree ($wt); run 'no-mistakes axi sync --recover' there to land it, or discard it with explicit authority, before retrying teardown." >&2
+        return 1
+      fi
+      return 0
+    fi
   elif task_status_is_run_not_found "$out" "$run_id"; then
     return 0
   fi
