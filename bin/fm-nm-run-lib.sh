@@ -87,16 +87,26 @@ fm_nm_head_resolvable() {  # <worktree> <head>
 }
 
 # Text of top-level TOON block $2 (e.g. branch_sync) in captured `axi status`
-# output $1: every line from the block's own header through the next
-# top-level (zero-indent) key, header dropped and the block's own
+# output $1: the block's own children only, header dropped and the block's own
 # indentation stripped so its direct children read as top-level - letting a
 # caller re-scope into one of THOSE children by calling this again on the
 # result (fm_nm_branch_sync_next_action_code does exactly that for
 # branch_sync's next_action: child, below).
+#
+# sed ranges are inclusive of their end address, so the next top-level key -
+# the line that TERMINATES the block - is part of the matched range and must be
+# dropped here, at the source. Leaving it in would put a key from OUTSIDE the
+# block into the block text every fm_nm_toon_field search below then scans,
+# which is a false match on the block's own key name (`branch_sync:` followed
+# by a top-level `state:` would answer fm_nm_branch_sync_state). Dropping it
+# here rather than re-tightening fm_nm_toon_field's indentation requirement
+# keeps fm_nm_toon_field usable on already-dedented recursive input, which the
+# next_action lookup below relies on.
 fm_nm_toon_block() {  # <toon-output> <block-key>
   printf '%s\n' "$1" | sed -n "
     /^[[:space:]]*$2:[[:space:]]*\$/,/^[^[:space:]][^:]*:/{
       /^[[:space:]]*$2:[[:space:]]*\$/d
+      /^[^[:space:]][^:]*:/d
       s/^  //
       p
     }"
@@ -140,6 +150,30 @@ fm_nm_branch_sync_next_action_code() {  # <toon-output>
   local branch_sync
   branch_sync=$(fm_nm_toon_block "$1" branch_sync)
   fm_nm_toon_field "$(fm_nm_toon_block "$branch_sync" next_action)" code
+}
+
+# branch_sync.local.head from captured `axi status` TOON $1: the daemon's own
+# reading of the head this branch is at in the CREW's checkout, as opposed to
+# the run's `head:` (the run's lane tip, which for a pipeline-owned run is
+# routinely a gate-repo commit that never reached the worktree). Scoped twice
+# for the same reason next_action.code is: `head:` is not unique to the local:
+# sub-block within branch_sync (pipeline: carries current_head, and a future
+# release could add another head-bearing sibling ordered ahead of local:).
+fm_nm_branch_sync_local_head() {  # <toon-output>
+  local branch_sync
+  branch_sync=$(fm_nm_toon_block "$1" branch_sync)
+  fm_nm_toon_field "$(fm_nm_toon_block "$branch_sync" local)" head
+}
+
+# branch_sync.pipeline.current_head from captured `axi status` TOON $1: the
+# commit the PIPELINE currently holds for this branch in its own gate-repo
+# clone. When that commit is not reachable from the crew worktree's HEAD, the
+# pipeline is holding work the worktree has never seen - the unlanded fix-round
+# commit fm-teardown.sh refuses to strand. Scoped twice, as above.
+fm_nm_branch_sync_pipeline_current_head() {  # <toon-output>
+  local branch_sync
+  branch_sync=$(fm_nm_toon_block "$1" branch_sync)
+  fm_nm_toon_field "$(fm_nm_toon_block "$branch_sync" pipeline)" current_head
 }
 
 # 0 if the run in captured `axi status` TOON $1 is still in flight: no

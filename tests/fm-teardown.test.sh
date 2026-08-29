@@ -135,6 +135,13 @@ case "${1:-}" in
         shift
         run_id=""
         if [ "${1:-}" = --run ]; then run_id=${2:-}; fi
+        # A bare `axi status` that cannot answer at all: the daemon erroring
+        # out, or the bounded call timing out. Scoped to the bare form because
+        # that is the one the unrecovered-pipeline-commits precondition uses.
+        if [ -z "$run_id" ] && [ "${FM_FAKE_NM_STATUS_FAILS:-0}" = 1 ]; then
+          echo 'error: could not reach the no-mistakes daemon' >&2
+          exit 1
+        fi
         aborted=0
         if [ -n "${FM_FAKE_NM_ABORT_LOG:-}" ]; then
           if [ -n "$run_id" ]; then
@@ -144,9 +151,14 @@ case "${1:-}" in
           fi
         fi
         if [ "$aborted" = 1 ] && [ "${FM_FAKE_NM_ABORT_NOOP:-0}" != 1 ]; then
-          if [ "${FM_FAKE_NM_NOT_FOUND_AFTER_ABORT:-0}" = 1 ]; then
+          if [ "${FM_FAKE_NM_NOT_FOUND_AFTER_ABORT:-0}" = 1 ] && [ -n "$run_id" ]; then
+            # Only the `--run <id>` form can report THAT run as not found; the
+            # bare form reports whatever run the branch currently has, or
+            # nothing, and never errors just because one run id is gone.
             printf 'error: "run \\"%s\\" not found"\n' "$run_id" >&2
             exit 1
+          elif [ "${FM_FAKE_NM_NOT_FOUND_AFTER_ABORT:-0}" = 1 ]; then
+            exit 0
           elif [ "${FM_FAKE_NM_EMPTY_AFTER_ABORT:-0}" = 1 ]; then
             exit 0
           elif [ -n "${FM_FAKE_AXI_STATUS_AFTER_ABORT:-}" ]; then
@@ -2181,16 +2193,28 @@ test_parked_run_abort_leaves_unrecovered_commits_refuses() {
   pass "teardown refuses identically on a second attempt, so unrecovered pipeline commits are never silently stranded"
 }
 
-# --force skips validate_worktree_teardown_safety (the uncommitted/unpushed
-# checks) but must NOT skip this precondition: unrecovered pipeline commits
-# are unlanded work, and hard rule 3 never discards unlanded work without the
-# captain's explicit word for that specific discard - --force alone is a
-# different, broader escape hatch than that, so it must not double as this one.
-test_parked_run_abort_leaves_unrecovered_commits_refuses_under_force() {
+# Record every treehouse invocation so the ALLOW cases below can prove teardown
+# actually reached the irreversible worktree return, not merely exited 0.
+log_treehouse_returns() {  # <case-dir>
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<EOF
+#!/usr/bin/env bash
+printf 'returned\n' >> "$case_dir/treehouse.log"
+EOF
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# --force is the ONE escape hatch past this precondition, exactly as it is for
+# validate_worktree_teardown_safety: hard rule 3 never discards unlanded work
+# without the captain's explicit word for that specific discard, and passing
+# --force here IS that word. Without it the same case refuses (above); with it
+# teardown runs all the way through the worktree return.
+test_unrecovered_pipeline_commits_are_discarded_under_force() {
   local case_dir rc head
   case_dir=$(make_case parked-run-recover-custody-force)
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
   rc=0
@@ -2199,12 +2223,148 @@ test_parked_run_abort_leaves_unrecovered_commits_refuses_under_force() {
   FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
-  expect_code 1 "$rc" "parked-run-recover-custody-force: --force should still refuse rather than discard unrecovered pipeline commits"
+  expect_code 0 "$rc" "parked-run-recover-custody-force: --force is the captain's explicit authorization to discard, so teardown should complete"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "parked-run-recover-custody-force: --force still hit a refusal"
+  assert_present "$case_dir/treehouse.log" \
+    "parked-run-recover-custody-force: --force did not reach the worktree return"
+  pass "--force is an explicit, working escape hatch past the unrecovered-pipeline-commits refusal"
+}
+
+# The precondition guards an IRREVERSIBLE step, so a query that cannot answer
+# must NOT read as "nothing to preserve": the invocation that fail-opens is the
+# one that destroys the evidence, and there is no later retry to catch it.
+test_unanswerable_status_query_refuses_teardown() {
+  local case_dir rc
+  case_dir=$(make_case unrecovered-query-failure)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+
+  rc=0
+  FM_FAKE_NM_STATUS_FAILS=1 \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "unrecovered-query-failure: an unanswerable axi status must refuse, not fail open into an irreversible removal"
+  assert_grep "did not answer" "$case_dir/stderr" \
+    "unrecovered-query-failure: teardown did not explain that it could not confirm the worktree was safe to remove"
+  assert_absent "$case_dir/treehouse.log" \
+    "unrecovered-query-failure: teardown returned the worktree without ever confirming there was no unrecovered work"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "unrecovered-query-failure: teardown removed task metadata after refusing"
+  pass "an unanswerable axi status refuses teardown instead of destroying the evidence"
+}
+
+# A LIVE pipeline-owned run mid fix-round: the daemon holds a gate-repo commit
+# (branch_sync.pipeline.current_head) this worktree has never seen, and nothing
+# has been cancelled, so next_action.code is an in-flight code and never
+# recover_custody. Fix 1's own abort cannot fire either - the run head does not
+# resolve here, so it is not attributable as a parked run - which is exactly why
+# waiting for recover_custody would strand this commit.
+pipeline_owned_ahead_axi_status_toon() {  # <branch> <local-head> [run-id]
+  cat <<EOF
+run:
+  id: "${3:-01RUN}"
+  branch: $1
+  status: fixing
+  head: fix9head
+  pr: ""
+branch_sync:
+  state: pipeline_owned
+  changed: true
+  local:
+    branch: $1
+    head: "$2"
+    clean: true
+  pipeline:
+    run: "${3:-01RUN}"
+    status: fixing
+    current_head: fix9head
+  safety: blocked_pipeline_owned
+  next_action:
+    code: continue_active_run
+    command: no-mistakes axi status
+EOF
+}
+
+test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort() {
+  local case_dir rc head
+  case_dir=$(make_case pipeline-ahead-live)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(pipeline_owned_ahead_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "pipeline-ahead-live: teardown should refuse while the pipeline holds a commit this worktree has never seen"
+  assert_absent "$case_dir/nm-abort.log" \
+    "pipeline-ahead-live: the refusal must not depend on a cancellation having happened first"
   assert_grep "axi sync --recover" "$case_dir/stderr" \
-    "parked-run-recover-custody-force: --force path did not tell the operator how to land the preserved commit"
-  assert_present "$case_dir/wt" \
-    "parked-run-recover-custody-force: --force removed the worktree while pipeline-committed work was still unrecovered"
-  pass "--force does not bypass the unrecovered-pipeline-commits refusal"
+    "pipeline-ahead-live: teardown did not tell the operator how to land the pipeline-held commit"
+  assert_absent "$case_dir/treehouse.log" \
+    "pipeline-ahead-live: teardown returned the worktree while the pipeline held an unlanded commit"
+  assert_present "$case_dir/state/task-x1.meta" \
+    "pipeline-ahead-live: teardown removed task metadata after refusing"
+  pass "a live pipeline-owned run whose commit never reached this worktree refuses teardown, with no cancellation required"
+}
+
+# The shared TOON extractors scope by block, and a sed range is inclusive of the
+# line that TERMINATES the block - so the first top-level key AFTER branch_sync
+# must not be read as one of branch_sync's own children. Here branch_sync
+# carries no `state:` of its own and an unrelated top-level `state:
+# pipeline_owned` follows it: leaking that key across the boundary turns this
+# ordinary, already-synced run into a false "the pipeline owns the branch"
+# refusal. No no-mistakes release emits this shape today; it is the same class
+# of future-shape false match next_action.code is anchored against.
+toplevel_key_after_branch_sync_axi_status_toon() {  # <branch> <head> [run-id]
+  cat <<EOF
+run:
+  id: "${3:-01RUN}"
+  branch: $1
+  status: running
+  head: "$2"
+  pr: ""
+branch_sync:
+  changed: false
+  local:
+    branch: $1
+    head: "$2"
+    clean: true
+  pipeline:
+    run: "${3:-01RUN}"
+    status: running
+    current_head: fix0head
+  next_action:
+    code: continue_active_run
+    command: no-mistakes axi status
+state: pipeline_owned
+EOF
+}
+
+test_toplevel_key_after_branch_sync_is_not_read_as_its_child() {
+  local case_dir rc head
+  case_dir=$(make_case toplevel-key-leak)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(toplevel_key_after_branch_sync_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "toplevel-key-leak: a top-level key after branch_sync must not be read as branch_sync.state"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "toplevel-key-leak: teardown refused on a branch_sync that never reported pipeline_owned"
+  assert_present "$case_dir/treehouse.log" \
+    "toplevel-key-leak: teardown never reached the worktree return"
+  pass "block extraction stops at the block boundary, so a following top-level key cannot answer for a missing child"
 }
 
 test_mismatched_run_after_abort_refuses_unconfirmed() {
@@ -2771,7 +2931,10 @@ test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
 test_parked_own_run_is_aborted_before_teardown
 test_parked_run_abort_leaves_unrecovered_commits_refuses
-test_parked_run_abort_leaves_unrecovered_commits_refuses_under_force
+test_unrecovered_pipeline_commits_are_discarded_under_force
+test_unanswerable_status_query_refuses_teardown
+test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort
+test_toplevel_key_after_branch_sync_is_not_read_as_its_child
 test_parked_own_run_refuses_when_abort_is_unconfirmed
 test_mismatched_run_after_abort_refuses_unconfirmed
 test_empty_status_after_abort_refuses_unconfirmed
