@@ -9,16 +9,27 @@
 # direction is unsafe: a false negative hides a genuinely parked run, and a
 # false positive lets teardown act on a run it does not own.
 #
+# Name of the tool this host can bound a subprocess with, or non-zero when it
+# has none. ONE owner for that detection: fm_nm_run_bounded below uses it to
+# pick how to run, and a caller that must tell "the call failed" apart from
+# "this host cannot make a bounded call at all" - which fm_nm_run_bounded
+# reports identically, as a bare exit 1 - asks here FIRST rather than
+# re-deriving the same three probes and drifting from them.
+fm_nm_bounded_tool() {
+  if command -v timeout >/dev/null 2>&1; then printf 'timeout'
+  elif command -v gtimeout >/dev/null 2>&1; then printf 'gtimeout'
+  elif command -v perl >/dev/null 2>&1; then printf 'perl'
+  else return 1
+  fi
+}
+
 # Bounded call to `no-mistakes "$@"` in dir $1, timeout $2 seconds. The bounded
 # form preserves stdout, stderr, and exit status; the checked form discards
 # stderr, while fm_nm_run keeps the fail-open query contract for read-only callers.
 fm_nm_run_bounded() {  # <dir> <timeout_secs> <args...>
-  local dir=$1 timeout_secs=$2 have_timeout=none
+  local dir=$1 timeout_secs=$2 have_timeout
   shift 2
-  if command -v timeout >/dev/null 2>&1; then have_timeout=timeout
-  elif command -v gtimeout >/dev/null 2>&1; then have_timeout=gtimeout
-  elif command -v perl >/dev/null 2>&1; then have_timeout=perl
-  fi
+  have_timeout=$(fm_nm_bounded_tool) || have_timeout=none
   case "$have_timeout" in
     timeout)  ( cd "$dir" && timeout "$timeout_secs" no-mistakes "$@" ) ;;
     gtimeout) ( cd "$dir" && gtimeout "$timeout_secs" no-mistakes "$@" ) ;;

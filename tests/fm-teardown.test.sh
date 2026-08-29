@@ -195,6 +195,12 @@ SH
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
   # Add a worktree on a fresh task branch; that branch is where the crewmate commits.
   git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+  # The local evidence the unrecovered-pipeline-commits guard requires before it
+  # queries anything: the remote-tracking ref a crew repo's `no-mistakes` remote
+  # (fetch refspec +refs/heads/*:refs/remotes/no-mistakes/*) carries once the
+  # gate knows the branch. Present here because these cases model a GATED ship
+  # project; unmark_branch_gated below models one that was never gated.
+  git -C "$case_dir/project" update-ref "refs/remotes/no-mistakes/fm/task-x1" main
 
   # Fresh watcher beacon so fm-guard stays quiet.
   touch "$case_dir/state/.last-watcher-beat"
@@ -2279,6 +2285,105 @@ test_unanswerable_status_query_under_force_is_loud_and_recorded() {
   pass "an unanswerable status query under --force still announces and records what it could not verify"
 }
 
+# Model a ship project that was never gated: no `no-mistakes` remote ever
+# fetched this branch, so no refs/remotes/no-mistakes/<branch> exists.
+unmark_branch_gated() {  # <case-dir>
+  git -C "$1/project" update-ref -d "refs/remotes/no-mistakes/fm/task-x1"
+}
+
+# Without local evidence that a pipeline ever held this branch there is nothing
+# for it to have committed, so the guard must not run at all - not even the
+# query. Otherwise a reachable daemon becomes a hard precondition for tearing
+# down ANY ship worktree, including one in a project that was never gated.
+test_ungated_branch_tears_down_despite_unanswerable_query() {
+  local case_dir rc
+  case_dir=$(make_case ungated-branch-query-failure)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  unmark_branch_gated "$case_dir"
+
+  rc=0
+  FM_FAKE_NM_STATUS_FAILS=1 \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "ungated-branch: a branch no pipeline ever held must tear down even when axi status cannot answer"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "ungated-branch: teardown refused a worktree with no local evidence a run ever existed"
+  assert_present "$case_dir/treehouse.log" \
+    "ungated-branch: teardown never reached the worktree return"
+  assert_absent "$case_dir/state/.discarded-pipeline-commits.log" \
+    "ungated-branch: teardown recorded a discard for work that never existed"
+  pass "a ship worktree whose branch was never gated tears down normally even when the daemon cannot answer"
+}
+
+# The counterpart, and the case the fail-closed rule exists for: the same
+# unanswerable query on a branch the gate demonstrably knows must still refuse.
+# test_unanswerable_status_query_refuses_teardown covers the plain refusal; this
+# pins that the local-evidence ref is what separates the two.
+test_gated_branch_still_refuses_on_unanswerable_query() {
+  local case_dir rc
+  case_dir=$(make_case gated-branch-query-failure)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  git -C "$case_dir/project" rev-parse --verify --quiet "refs/remotes/no-mistakes/fm/task-x1" >/dev/null \
+    || fail "gated-branch: fixture did not carry the local gated-branch evidence"
+
+  rc=0
+  FM_FAKE_NM_STATUS_FAILS=1 \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "gated-branch: an unanswerable query on a gated branch must still refuse"
+  assert_grep "did not answer" "$case_dir/stderr" \
+    "gated-branch: teardown did not explain that it could not verify what was at stake"
+  assert_absent "$case_dir/treehouse.log" \
+    "gated-branch: teardown returned the worktree without confirming there was no unrecovered work"
+  pass "the same unanswerable query still refuses on a branch the gate demonstrably knows"
+}
+
+# Build a PATH with no timeout, gtimeout, or perl, so fm_nm_run_bounded has no
+# way to bound the CLI call at all - a condition it reports with the same bare
+# exit 1 as a genuine query failure, but which needs a completely different fix.
+make_path_without_bounded_tools() {  # <case-dir>
+  local case_dir=$1 path_dir="$1/path-without-bounded" cmd resolved
+  mkdir -p "$path_dir"
+  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
+    mkdir mktemp mv ps readlink realpath rm sed sh sleep sort stat tail tr uname wc xargs; do
+    resolved=$(command -v "$cmd" 2>/dev/null) || continue
+    case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
+  done
+  printf '%s\n' "$path_dir"
+}
+
+test_missing_bounded_execution_tool_is_named_in_the_refusal() {
+  local case_dir rc head
+  case_dir=$(make_case no-bounded-tool)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$(make_path_without_bounded_tools "$case_dir")" \
+  FM_FAKE_AXI_STATUS="$(recover_custody_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "no-bounded-tool: teardown should refuse when it cannot bound the verification call"
+  assert_grep "no bounded-execution tool" "$case_dir/stderr" \
+    "no-bounded-tool: teardown did not name the missing-tool condition, leaving an unexplained refusal"
+  assert_grep "timeout" "$case_dir/stderr" \
+    "no-bounded-tool: teardown did not name which tools would fix it"
+  assert_not_contains "$(cat "$case_dir/stderr")" "did not answer" \
+    "no-bounded-tool: teardown reported a daemon failure for a missing local tool"
+  assert_absent "$case_dir/treehouse.log" \
+    "no-bounded-tool: teardown returned the worktree without verifying anything"
+  pass "a host with no timeout, gtimeout, or perl gets a refusal that names the missing tool, not a generic query failure"
+}
+
 # The durable record is the ONLY trace that survives the worktree, so it is a
 # precondition for the discard, not telemetry. If it cannot be written, --force
 # must stop rather than destroy work nothing afterwards can account for.
@@ -2443,7 +2548,7 @@ branch_sync:
 EOF
 }
 
-test_terminal_pipeline_owned_run_gets_custody_remedy_not_wait() {
+test_terminal_pipeline_owned_run_gets_reachable_remedy_not_wait() {
   local case_dir rc head
   case_dir=$(make_case pipeline-ahead-terminal)
   write_meta "$case_dir" no-mistakes ship
@@ -2457,13 +2562,21 @@ test_terminal_pipeline_owned_run_gets_custody_remedy_not_wait() {
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 1 "$rc" "pipeline-ahead-terminal: teardown should still refuse when a terminal run left a pipeline head this worktree lacks"
-  assert_grep "axi sync --recover" "$case_dir/stderr" \
-    "pipeline-ahead-terminal: an ended run needs the custody-return remedy, which teardown did not give"
+  # The run already ended, so telling the operator to wait for it is nonsense.
   assert_not_contains "$(cat "$case_dir/stderr")" "Let it finish" \
     "pipeline-ahead-terminal: teardown told the operator to wait for a run that already ended"
+  # next_action.code is `none` here, and AGENTS.md permits axi sync's guarded
+  # recovery ONLY when that code is recover_custody - so teardown must not hand
+  # over a command the daemon will refuse.
+  assert_grep "does not report this branch as needing recovery" "$case_dir/stderr" \
+    "pipeline-ahead-terminal: teardown did not say the guarded recovery does not apply to this state"
+  assert_grep "follow branch_sync.next_action" "$case_dir/stderr" \
+    "pipeline-ahead-terminal: teardown did not point at the one signal that is actually authoritative here"
+  assert_grep "--force is the intended way to finish teardown" "$case_dir/stderr" \
+    "pipeline-ahead-terminal: teardown left the operator with no reachable way out"
   assert_absent "$case_dir/treehouse.log" \
     "pipeline-ahead-terminal: teardown returned the worktree while a pipeline commit was unaccounted for"
-  pass "a terminal run holding a pipeline commit gets the custody-return remedy, not a wait for a finished run"
+  pass "a terminal run holding a pipeline commit gets a remedy that actually applies, not a wait nor a forbidden recovery"
 }
 
 test_content_equivalent_rebase_does_not_refuse_teardown() {
@@ -3148,9 +3261,12 @@ test_parked_run_abort_leaves_unrecovered_commits_refuses
 test_unrecovered_pipeline_commits_are_discarded_under_force
 test_unanswerable_status_query_refuses_teardown
 test_unanswerable_status_query_under_force_is_loud_and_recorded
+test_ungated_branch_tears_down_despite_unanswerable_query
+test_gated_branch_still_refuses_on_unanswerable_query
+test_missing_bounded_execution_tool_is_named_in_the_refusal
 test_unrecordable_discard_under_force_refuses
 test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort
-test_terminal_pipeline_owned_run_gets_custody_remedy_not_wait
+test_terminal_pipeline_owned_run_gets_reachable_remedy_not_wait
 test_content_equivalent_rebase_does_not_refuse_teardown
 test_resolvable_pipeline_commit_with_new_content_refuses_teardown
 test_toplevel_key_after_branch_sync_is_not_read_as_its_child

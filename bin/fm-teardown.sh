@@ -167,13 +167,26 @@
 #         content, while the pipeline still owns the branch), so it refuses
 #         WITHOUT claiming lost work: the message names the plain-rebase
 #         possibility and gives the wait-and-re-check remedy.
-#       - It FAILS CLOSED. This precondition stands immediately before an
-#         irreversible step (branch delete plus worktree return), so unlike
-#         task_run_is_own_parked_run's fail-open residual there is no "caught
-#         on the next retry" - the fail-opening invocation is the one that
-#         destroys the evidence. Any query failure (daemon error, timeout
-#         expiry, or no timeout/gtimeout/perl on PATH to bound the call with)
-#         refuses. Only a query that SUCCEEDS can clear the worktree.
+#       - It only APPLIES AT ALL when plain git can see local evidence that a
+#         run could exist for this branch: refs/remotes/no-mistakes/<branch>,
+#         the tracking ref the crew's own `no-mistakes` remote leaves once the
+#         gate knows the branch (verified present for a gated branch and absent
+#         for one that was never gated). No such ref means no pipeline ever
+#         held this branch, so the guard steps aside without querying anything
+#         - otherwise the fail-closed rule below would quietly make a reachable
+#         daemon a precondition for tearing down ANY ship worktree, including
+#         one in a project that was never gated, which is exactly the trap
+#         task_run_is_own_parked_run's own fail-open comment warns about.
+#       - Given that evidence, it FAILS CLOSED. This precondition stands
+#         immediately before an irreversible step (branch delete plus worktree
+#         return), so unlike task_run_is_own_parked_run's fail-open residual
+#         there is no "caught on the next retry" - the fail-opening invocation
+#         is the one that destroys the evidence. A daemon error or timeout
+#         expiry refuses, and so does a host with no timeout/gtimeout/perl to
+#         bound the call with - but those two are reported as DISTINCT reasons,
+#         because "the daemon did not answer" and "this host cannot make a
+#         bounded call at all" need different fixes. Only a query that SUCCEEDS
+#         can clear the worktree.
 #       - It attributes by identity, not by branch name alone, reusing
 #         bin/fm-nm-run-lib.sh's fm_nm_head_matches_worktree (against the run
 #         head or the daemon's own branch_sync.local.head reading of this
@@ -201,14 +214,20 @@
 #         Both that message and the plain refusal say outright that --force is
 #         authorization to discard this specific work, not a convenience
 #         bypass, so an operator reading either one sees the distinction.
-#       - The REMEDY it prints keys off whether the run is still active, never
-#         off which trigger matched. branch_sync keeps reporting
-#         pipeline_owned after a cancellation, so the pipeline-head trigger
-#         fires for terminal runs too; those get the custody-return remedy
-#         (`axi sync --recover`), and only a genuinely in-flight run is told to
-#         let it finish and re-check. A discard whose stakes could not be
-#         verified at all is headlined as unverified rather than as known lost
-#         work, so the loud notice never claims more than teardown established.
+#       - The REMEDY it prints keys off the run's own outcome/status, never off
+#         which trigger matched. branch_sync keeps reporting pipeline_owned
+#         after a cancellation, so the pipeline-head trigger fires for terminal
+#         runs too, and only a genuinely in-flight run is told to let it finish
+#         and re-check. A terminal one is NOT told to run `axi sync --recover`:
+#         the pipeline-head trigger is only reached after next_action.code was
+#         already checked and was not recover_custody, which is precisely the
+#         state AGENTS.md says the guarded recovery must not be used in. It is
+#         told to re-check next_action instead, and that if the daemon reports
+#         ownership returned with nothing to recover then the head is simply
+#         not an object here and --force is the intended way out. A discard
+#         whose stakes could not be verified at all is headlined as unverified
+#         rather than as known lost work, so the loud notice never claims more
+#         than teardown established.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -1733,7 +1752,24 @@ worktree_has_unrecovered_pipeline_commits() {  # <worktree>
   branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
   [ -n "$branch" ] || return 1
   NM_TEARDOWN_UNRECOVERED_BRANCH=$branch
+  # Cheap LOCAL evidence, read with plain git and no daemon call, that a run
+  # can plausibly exist for THIS branch: the remote-tracking ref the crew's
+  # `no-mistakes` remote (fetch refspec +refs/heads/*:refs/remotes/no-mistakes/*)
+  # leaves behind once the gate knows the branch. Without it there is nothing
+  # for a pipeline to have committed, so the whole guard steps aside rather
+  # than making a reachable daemon a precondition for tearing down a ship
+  # worktree that never had a run - which is what the fail-closed query below
+  # would otherwise impose on an ungated project, a stopped daemon, or a host
+  # with no bounded-execution tool.
+  git -C "$wt" rev-parse --verify --quiet "refs/remotes/no-mistakes/$branch" >/dev/null 2>&1 || return 1
 
+  # Asked BEFORE the call: fm_nm_run_bounded reports "no way to bound a call on
+  # this host" with the same bare exit 1 as a genuine query failure, and those
+  # need different remedies (install timeout/gtimeout/perl vs. fix the daemon).
+  if ! fm_nm_bounded_tool >/dev/null 2>&1; then
+    NM_TEARDOWN_UNRECOVERED_REASON=no-bounded-tool
+    return 0
+  fi
   out=$(fm_nm_run_checked "$wt" "$NM_TEARDOWN_TIMEOUT" axi status) || rc=$?
   if [ "$rc" -ne 0 ]; then
     NM_TEARDOWN_UNRECOVERED_REASON=query-failed
@@ -2945,13 +2981,21 @@ if [ "$KIND" != secondmate ]; then
     if [ "$NM_TEARDOWN_UNRECOVERED_RUN_ACTIVE" = 1 ]; then
       nm_pipeline_fix="The run is still going, so nothing can be recovered from it yet. Let it finish (or abort it), then re-check with 'no-mistakes axi status' and follow the branch_sync.next_action it reports."
     else
-      nm_pipeline_fix="The run has already ended, so this is a custody return: run 'no-mistakes axi sync --recover' in that worktree to bring the commit back, then re-check with 'no-mistakes axi status'."
+      # Reaching here means next_action.code was already checked and was NOT
+      # recover_custody, so 'axi sync --recover' is exactly the case AGENTS.md
+      # says the guarded recovery must not be used for. Say what is actually
+      # actionable instead of naming a command the daemon will refuse.
+      nm_pipeline_fix="The run has already ended and the daemon does not report this branch as needing recovery, so there is no 'no-mistakes axi sync --recover' to run here. Re-check with 'no-mistakes axi status' and follow branch_sync.next_action; if it reports ownership already returned with no recovery required, then this head is simply not an object in this worktree (a pipeline rebase carrying nothing new), and --force is the intended way to finish teardown."
     fi
     case "$NM_TEARDOWN_UNRECOVERED_REASON" in
       query-failed)
         nm_discard_head="DISCARDING UNVERIFIED WORKTREE"
         nm_discard_why="cannot ask no-mistakes whether the run for $ID left pipeline-committed work that never reached this worktree ($WT); 'no-mistakes axi status' there did not answer, so what is at stake here is unknown"
         nm_discard_fix="Retry once 'no-mistakes axi status' answers again." ;;
+      no-bounded-tool)
+        nm_discard_head="DISCARDING UNVERIFIED WORKTREE"
+        nm_discard_why="cannot ask no-mistakes whether the run for $ID left pipeline-committed work that never reached this worktree ($WT): this host has no bounded-execution tool, so the check cannot be given a timeout and teardown will not run it unbounded"
+        nm_discard_fix="Install one of 'timeout' (GNU coreutils), 'gtimeout', or 'perl' on this host so the check can run bounded, then retry." ;;
       recover_custody)
         nm_discard_head="DISCARDING UNLANDED WORK"
         nm_discard_why="no-mistakes run for $ID left pipeline-committed work in the gate that never reached this worktree ($WT)"
@@ -2973,7 +3017,12 @@ if [ "$KIND" != secondmate ]; then
         echo "Recorded the discard in $NM_DISCARD_LOG." >&2
       else
         echo "REFUSED: --force authorized discarding $nm_discard_what, but the durable record of that discard could NOT be written to $NM_DISCARD_LOG, so teardown would destroy work that nothing afterwards can account for." >&2
-        echo "This is a RECORD-WRITE failure, not a no-mistakes failure: the axi status check itself completed. Fix write access to $STATE (permissions, disk space, read-only mount), then re-run with --force." >&2
+        case "$NM_TEARDOWN_UNRECOVERED_REASON" in
+          query-failed|no-bounded-tool)
+            echo "TWO separate things failed here: the discard record could not be written, AND the check that would have said what is at stake never completed either. Fix write access to $STATE (permissions, disk space, read-only mount) and the verification problem above, then re-run with --force." >&2 ;;
+          *)
+            echo "This is a RECORD-WRITE failure, not a no-mistakes failure: the axi status check itself completed. Fix write access to $STATE (permissions, disk space, read-only mount), then re-run with --force." >&2 ;;
+        esac
         exit 1
       fi
     else
