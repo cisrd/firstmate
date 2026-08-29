@@ -76,7 +76,10 @@
 # Usage: fm-teardown.sh <task-id> [--force]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
-#   when the captain has explicitly said to discard the work.
+#   when the captain has explicitly said to discard the work. One check it does
+#   NOT skip: the unrecovered-pipeline-commits precondition under "Fix 1" below
+#   still runs, and --force only changes what happens on it (an announced,
+#   recorded discard instead of a refusal) - see that block for the contract.
 #
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
