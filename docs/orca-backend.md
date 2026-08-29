@@ -43,11 +43,12 @@ worktree=<absolute Orca worktree path>
 `window=` remains the caller-facing Firstmate alias.
 `terminal=` and `orca_worktree_id=` are the backend authority used by operation and cleanup paths.
 
-Orca exposes no process-identity or native agent-registration signal, so `bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the terminal's own shell prompt, as a `PS1=` assignment prefixed onto the harness launch line so a freshly created pane never shows a bare marked prompt before the harness is running, the same as on zellij and cmux.
+Orca exposes no process-identity or native agent-registration signal, so `bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the terminal's own shell prompt, as a `PS1=` line of its own sent immediately before the launch text - never chained onto the launch command, because a `VAR=value` prefix is a parse error on a non-POSIX pane shell (fish, nushell) and those shells reject the whole line, which would stop the agent from launching at all, the same as on zellij and cmux.
 `bin/fm-busy-lib.sh`'s `fm_busy_classify` reads it back through `terminal read` to report `dead endpoint-shell` for a terminal that has reverted to that marked shell, rather than the generic `unknown` a bare prompt reported before.
 This is a busy-state read only: it does not change `fm_control_backend_state_verified`'s tmux/herdr-only recovery-grade gate, so `exit` and `relaunch` still refuse on Orca.
-A relaunch is the exception: that endpoint's shell already carries the marker from its previous life, so spawn's pre-launch `export` lines echo behind it and each hand the pane back to a bare marked prompt above the launch line.
-The read below is therefore decided from the bottom-most marked row - the pane's current prompt - and never from stale scrollback above it.
+Between those two adjacent sends the pane does show a bare marked prompt, and on a relaunch - where the shell already carries the marker from its previous life - spawn's earlier pre-launch `export` lines leave more of them in scrollback above the launch line.
+The read is therefore decided from the bottom-most marked row - the pane's current prompt - and never from stale scrollback above it.
+One residual race remains and is accepted: a capture landing in the instant between the marker line and the launch text can still read `dead endpoint-shell` for a healthy launching endpoint.
 That read is per task and sits last in `fm_busy_classify`, so it is reached only when the task has no busy record at all and no earlier harness-specific arm has already resolved it.
 `cursor`, `grok`, and `muse` tasks always resolve inside their own arm and never reach it, so an exited agent on those harnesses still reports that arm's verdict rather than `dead endpoint-shell`.
 `codex` and `kimi` tasks reach it only once their own semantic source is verified; until then they resolve as `unknown codex-unverified` / `unknown kimi-unverified`.

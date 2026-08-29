@@ -385,15 +385,16 @@ FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 
 # fm-spawn.sh's endpoint-shell marker (task fm-endpoint-shell-backends): a
 # fixed, unique literal every spawn writes into the interactive shell PS1 of a
-# herdr, zellij, orca, or cmux pane, as the leading `PS1=` assignment prefixed
-# onto the harness launch line itself (bin/fm-spawn.sh, just before
-# `spawn_send_literal "$T" "$LAUNCH"`), so a FRESH pane never draws a bare
-# marked prompt before the harness is running. A RELAUNCH into an endpoint
-# whose shell already carries the marker from its previous life does draw
-# them: spawn's own pre-launch `export` lines each complete and hand the pane
-# back to a bare marked prompt above the eventual launch line. That is why
-# readers below decide from the BOTTOM-MOST marked row - the pane's current
-# prompt - and never from stale scrollback above it. It is a structural fact
+# herdr, zellij, orca, or cmux pane, as a `PS1=` line of its own sent
+# immediately before the launch text (bin/fm-spawn.sh, just before
+# `spawn_send_literal "$T" "$LAUNCH"`). Between those two adjacent sends the
+# pane does show a BARE marked prompt, and on a RELAUNCH - where the shell
+# already carries the marker from its previous life - spawn's earlier
+# pre-launch `export` lines leave more of them in scrollback above it. That is
+# why readers below decide from the BOTTOM-MOST marked row - the pane's
+# current prompt - and never from stale scrollback above it; the one
+# remaining window, a capture landing between those two adjacent sends, is a
+# known and accepted residual race. It is a structural fact
 # about that ONE persistent shell
 # process, not composer content the harness can be mistaken for: the shell
 # process runs the harness as a plain foreground job (never `exec`), so PS1

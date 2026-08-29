@@ -202,15 +202,16 @@ Workspace and tab ids support verification and cleanup but are not inferred from
 
 ## Endpoint shell marker
 
-`bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the task pane's shell prompt, as a `PS1=` assignment prefixed onto the harness launch line so a freshly created pane never shows a bare marked prompt before the harness is running, the same as on zellij, orca, and cmux.
+`bin/fm-spawn.sh` writes fm-composer-lib.sh's `FM_COMPOSER_ENDPOINT_SHELL_MARKER` into the task pane's shell prompt, as a `PS1=` line of its own sent immediately before the launch text - never chained onto the launch command, because a `VAR=value` prefix is a parse error on a non-POSIX pane shell (fish, nushell) and those shells reject the whole line, which would stop the agent from launching at all, the same as on zellij, orca, and cmux.
 Herdr does not need it for its own dead/husk decision, which stays on the native `agent get` registration read above, but `bin/fm-busy-lib.sh`'s `fm_busy_classify` does include herdr in the same `dead endpoint-shell` read as the other three backends, so a plain capture of a Herdr pane reads that fleet-wide fact exactly the way it reads everywhere else.
 That read is per task and sits last in `fm_busy_classify`, so it is reached only when the task has no busy record at all and no earlier harness-specific arm has already resolved it.
 `cursor`, `grok`, and `muse` tasks always resolve inside their own arm and never reach it, so an exited agent on those harnesses still reports that arm's verdict rather than `dead endpoint-shell`.
 `codex` and `kimi` tasks reach it only once their own semantic source is verified; until then they resolve as `unknown codex-unverified` / `unknown kimi-unverified`.
 Every other harness (`claude`, `opencode`, and the Pi-hosted harnesses) reaches it whenever the task has no record.
 A capture that omits the marker proves nothing either way and must not be read as "never a firstmate endpoint".
-A relaunch is the exception: that endpoint's shell already carries the marker from its previous life, so spawn's pre-launch `export` lines echo behind it and each hand the pane back to a bare marked prompt above the launch line.
-The read below is therefore decided from the bottom-most marked row - the pane's current prompt - and never from stale scrollback above it.
+Between those two adjacent sends the pane does show a bare marked prompt, and on a relaunch - where the shell already carries the marker from its previous life - spawn's earlier pre-launch `export` lines leave more of them in scrollback above the launch line.
+The read is therefore decided from the bottom-most marked row - the pane's current prompt - and never from stale scrollback above it.
+One residual race remains and is accepted: a capture landing in the instant between the marker line and the launch text can still read `dead endpoint-shell` for a healthy launching endpoint.
 The marker is planted with a one-shot `PS1=` assignment, so it is absent for a session predating this change, for a harness that overwrote the shell's `PS1`, for a shell that regenerates its prompt per command (starship, powerlevel10k, a `PROMPT_COMMAND` or `precmd` git prompt), and for a shell that never consults `PS1` at all (fish, nushell).
 In every one of those cases the pane classifies exactly as it did before this feature existed; absence is never read as "the agent is alive" and never on its own as `dead endpoint-shell`.
 

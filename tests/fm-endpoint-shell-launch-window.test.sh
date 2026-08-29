@@ -4,16 +4,26 @@
 #
 # The marker is a PS1 assignment firstmate plants on the task pane's own shell,
 # and a BARE marked prompt is the fleet-wide proof that the agent exited
-# (bin/fm-busy-lib.sh's `dead endpoint-shell`). So the pane must never show a
-# bare marked prompt while the endpoint is HEALTHY and merely still launching -
-# a spawn that plants the marker on a line of its own hands the pane back to a
-# bare marked prompt for the whole interval until the launch text is typed, and
-# a concurrent reader classifies that live endpoint as dead.
+# (bin/fm-busy-lib.sh's `dead endpoint-shell`). A healthy endpoint that is
+# merely still launching must not look like that.
+#
+# The property asserted here is NOT "zero bare marked prompts": the marker is
+# planted on a line of its own (chaining it onto the launch command would be a
+# parse error on a non-POSIX pane shell and would stop the agent launching at
+# all), so the pane necessarily draws one bare marked prompt when that line
+# completes. What must hold is that this prompt appears ONLY immediately
+# before the launch text, with no pre-launch command sent after it - so the
+# window is bounded by two adjacent sends instead of by the whole pre-launch
+# sequence, and no bare marked prompt can linger across an export, a
+# meta-lock wait, or a settle sleep. The residual race is real and accepted:
+# a capture landing in the exact instant between those two sends still reads
+# `dead endpoint-shell` for a live endpoint.
 #
 # This drives the REAL bin/fm-spawn.sh against a fake `zellij` CLI that
 # simulates the pane's shell (a PS1, an input buffer, a rendered screen), snaps
-# the screen after every draw, and then classifies every one of those snapshots
-# through the real fm_busy_classify. Nothing here reads spawn's source.
+# the screen after every draw with the pane event that caused it, and then
+# classifies every one of those snapshots through the real fm_busy_classify.
+# Nothing here reads spawn's source.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -22,6 +32,8 @@ set -u
 . "$ROOT/bin/fm-composer-lib.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-busy-lib.sh"
+# shellcheck source=/dev/null
+. "$ROOT/bin/fm-trace-context-lib.sh"
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the zellij adapter)"; exit 0; }
 
@@ -49,16 +61,23 @@ set -u
 S="${FM_FAKE_ZJ_STATE:?}"
 SEP="${FM_FAKE_ZJ_SNAP_SEP:?}"
 
-snapshot() { { cat "$S/screen"; printf '%s\n' "$SEP"; } >> "$S/snapshots"; }
+# Every snapshot is paired with the pane event that produced it, so the
+# assertions can say WHERE in the send order a screen appeared, not just that
+# it appeared: "echo <line>" for a submitted line landing at the prompt,
+# "prompt" for the shell drawing its prompt again, "output" for command output.
+snapshot() {  # <event>
+  printf '%s\n' "$1" >> "$S/events"
+  { cat "$S/screen"; printf '%s\n' "$SEP"; } >> "$S/snapshots"
+}
 
-draw_prompt() { printf '%s\n' "$(cat "$S/ps1")" >> "$S/screen"; snapshot; }
+draw_prompt() { printf '%s\n' "$(cat "$S/ps1")" >> "$S/screen"; snapshot prompt; }
 
 commit_line() {
   local line ps1 rest
   line=$(cat "$S/pending"); : > "$S/pending"
   ps1=$(cat "$S/ps1")
   printf '%s%s\n' "$ps1" "$line" >> "$S/screen"
-  snapshot
+  snapshot "echo $line"
   rest=$line
   # A leading PS1 assignment takes effect for every later prompt, exactly as a
   # real shell applies it; the rest of the line still runs.
@@ -74,7 +93,7 @@ commit_line() {
     *__FM_ZELLIJ_CWD_BEGIN__*)
       printf '__FM_ZELLIJ_CWD_BEGIN__\n%s\n__FM_ZELLIJ_CWD_END__\n' \
         "${FM_FAKE_PANE_PATH:-/}" >> "$S/screen"
-      snapshot
+      snapshot output
       ;;
   esac
   case "$rest" in
@@ -163,14 +182,24 @@ run_zellij_spawn() {  # <name> -> echoes sim-state dir
   printf 'claude\n' > "$home/config/crew-harness"
   printf 'zellij\n' > "$home/config/backend"
   touch "$home/state/.last-watcher-beat"
+  # Trace context ON on purpose: it makes spawn send an `export TRACEPARENT=`
+  # line (and take the meta lock) in the pre-launch sequence. Without a
+  # pre-launch send after the marker line there is nothing for a lingering
+  # bare marked prompt to linger ACROSS, and the assertion below would hold
+  # for any placement of the marker line.
+  : > "$home/config/trace-context"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  FM_TRACE_CONTEXT=on FM_CONFIG_OVERRIDE="$home/config" \
+    fm_trace_context_session_start "$home/config" "$home/state/.trace-context-effective"
   : > "$sim/tabs"; : > "$sim/pending"; : > "$sim/screen"; : > "$sim/snapshots"
+  : > "$sim/events"
   printf 'fm-sim-%s\n' "$name" > "$sim/session"
   printf 'captain@ship:~$ ' > "$sim/ps1"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   id="$name-z1"
   mkdir -p "$home/data/$id"
   printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
-  env -u FM_TRACE_CONTEXT -u TMUX \
+  env -u TMUX FM_TRACE_CONTEXT=on \
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
@@ -191,8 +220,9 @@ classify_screen() {  # <state-dir> <screen>
   fm_busy_classify zellij "sim:1" claude sim-task "$1" "$2"
 }
 
-test_launch_window_never_reads_as_a_dead_endpoint_shell() {
+test_marked_prompt_appears_only_immediately_before_the_launch_text() {
   local sim state snap line n=0 verdict launched
+  local -a verdicts=() events=()
   sim=$(run_zellij_spawn launchwindow)
   state="$sim/norecord"
   mkdir -p "$state"
@@ -200,16 +230,16 @@ test_launch_window_never_reads_as_a_dead_endpoint_shell() {
   launched=$(cat "$sim/launched" 2>/dev/null || echo 0)
   [ "$launched" = 1 ] \
     || fail "the fixture never reached the launch command; the simulated spawn did not run to launch"
-
   [ -s "$sim/snapshots" ] || fail "the simulated pane recorded no screen at all"
+
+  while IFS= read -r line; do events+=("$line"); done < "$sim/events"
 
   snap=
   while IFS= read -r line; do
     if [ "$line" = "$SNAP_SEP" ]; then
-      n=$((n + 1))
       verdict=$(classify_screen "$state" "$snap")
-      [ "$verdict" != "dead endpoint-shell" ] \
-        || fail "screen #$n during the launch window classified '$verdict'; a healthy launching endpoint must never read as a dead endpoint shell:"$'\n'"$snap"
+      verdicts+=("$verdict")
+      n=$((n + 1))
       snap=
       continue
     fi
@@ -217,11 +247,59 @@ test_launch_window_never_reads_as_a_dead_endpoint_shell() {
   done < "$sim/snapshots"
 
   [ "$n" -gt 2 ] || fail "expected the simulated pane to be drawn repeatedly during spawn, saw only $n screens"
-  pass "no screen drawn during a real spawn's launch window reads as a dead endpoint shell ($n screens)"
+  [ "${#events[@]}" -eq "$n" ] \
+    || fail "the simulator recorded ${#events[@]} events for $n screens; they must pair one to one"
+
+  # The launch text is the last thing the pane is sent, so its echo is the last
+  # screen. Every screen before it must be safe EXCEPT the one immediately
+  # preceding it, which is the accepted residual window described above.
+  local last=$((n - 1)) i launch_line first_word
+  case "${events[$last]}" in
+    "echo "*--dangerously-skip-permissions*) : ;;
+    *) fail "expected the final screen to be the launch text landing, got event '${events[$last]}'" ;;
+  esac
+
+  # The launch text the pane actually receives must stay a plain command. A
+  # leading `NAME=value` is a PARSE error on a pane shell that is not
+  # POSIX-compatible (fish, nushell), and those shells reject the whole input
+  # line on a parse error - so chaining the marker onto the launch command
+  # would not merely lose the marker, it would stop the agent from launching.
+  # A `NAME=value` further along (the harness template's own env prefix after
+  # `env`) is an argument, not an assignment, and is fine.
+  launch_line=${events[$last]#echo }
+  first_word=${launch_line%% *}
+  case "$first_word" in
+    *=*) fail "the launch text begins with the assignment '$first_word'; a non-POSIX pane shell rejects the whole line and never starts the agent" ;;
+  esac
+  case "$launch_line" in
+    *"$FM_COMPOSER_ENDPOINT_SHELL_MARKER"*)
+      fail "the endpoint-shell marker rode along on the launch text; it must arrive as a line of its own"
+      ;;
+  esac
+
+  i=0
+  while [ "$i" -lt "$last" ]; do
+    if [ "${verdicts[$i]}" = "dead endpoint-shell" ]; then
+      [ "$i" -eq $((last - 1)) ] \
+        || fail "screen #$((i + 1)) (event '${events[$i]}') read as a dead endpoint shell, but only the screen immediately before the launch text may: a bare marked prompt must never linger across another pre-launch send"
+      [ "${events[$i]}" = prompt ] \
+        || fail "the one permitted dead-reading screen must be the shell drawing its marked prompt, got event '${events[$i]}'"
+    fi
+    i=$((i + 1))
+  done
+
+  # ... and nothing sent after the marker line may be a pre-launch command:
+  # the marker line and the launch text must be adjacent in the send order.
+  case "${events[$((last - 1))]}" in
+    prompt|"echo PS1="*) : ;;
+    *) fail "a pre-launch command was sent between the marker line and the launch text (event '${events[$((last - 1))]}'); the window must be bounded by two adjacent sends" ;;
+  esac
+
+  pass "the bare marked prompt appears only immediately before the launch text, never lingering across another pre-launch send ($n screens)"
 }
 
-# The companion half: the marker must still MEAN what it meant. The launch line
-# itself carries the PS1 assignment, so by the time the harness is running the
+# The companion half: the marker must still MEAN what it meant. The PS1 line
+# lands before the launch text, so by the time the harness is running the
 # pane's prompt is the marked one - and the first prompt it draws after the
 # harness exits is the bare marked prompt the recovery path reads as dead.
 test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits() {
@@ -242,5 +320,5 @@ test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits() {
   pass "the marker still proves a dead endpoint shell once the agent exits"
 }
 
-test_launch_window_never_reads_as_a_dead_endpoint_shell
+test_marked_prompt_appears_only_immediately_before_the_launch_text
 test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits
