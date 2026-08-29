@@ -2884,26 +2884,27 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
   fi
 fi
 # Endpoint-shell marker (bin/fm-composer-lib.sh's
-# FM_COMPOSER_ENDPOINT_SHELL_MARKER): herdr, zellij, orca, and cmux have no
-# process-identity signal of their own for a bare shell the way tmux does, so
-# firstmate writes its own proof into the pane's shell prompt. It is prefixed
-# onto the launch line itself - the same shape as the `unset TRACEPARENT; `
-# prefix above and for the same reason - rather than sent as its own
-# pre-launch line: a standalone line would set PS1 and then hand the pane back
-# to a BARE marked prompt for the whole interval until the launch text is
-# typed, and a bare marked prompt is exactly the shape a reader treats as
-# "the agent exited". Prefixed, the marker still lands on the same shell
-# process that runs the harness as a plain foreground job (never `exec`), so
-# it first becomes visible only once that shell has actually become the
-# endpoint's shell, and the prompt - with the marker in it - reappears
-# verbatim once the harness exits. tmux needs no marker (its adapter already
-# proves liveness from the pane's real foreground process), so it is
-# deliberately excluded here.
-case "$BACKEND" in
-  herdr|zellij|orca|cmux)
-    LAUNCH="PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '; $LAUNCH"
-    ;;
-esac
+# FM_COMPOSER_ENDPOINT_SHELL_MARKER): the backends in that file's
+# FM_COMPOSER_ENDPOINT_SHELL_BACKENDS - the one list the reader in
+# bin/fm-busy-lib.sh consults too - have no process-identity signal of their
+# own for a bare shell the way tmux does, so firstmate writes its own proof
+# into the pane's shell prompt. It is prefixed onto the launch line itself -
+# the same shape as the `unset TRACEPARENT; ` prefix above and for the same
+# reason - rather than sent as its own pre-launch line: a standalone line
+# would set PS1 and then hand a FRESH pane back to a BARE marked prompt for
+# the whole interval until the launch text is typed, and a bare marked prompt
+# is exactly the shape a reader treats as "the agent exited". Prefixed, the
+# marker still lands on the same shell process that runs the harness as a
+# plain foreground job (never `exec`), and the prompt - with the marker in it
+# - reappears verbatim once the harness exits. On a RELAUNCH the endpoint's
+# shell already carries the marker from its previous life, so the pre-launch
+# lines above do echo behind it and complete; the reader decides from the
+# bottom-most marked row for exactly that reason. tmux needs no marker (its
+# adapter already proves liveness from the pane's real foreground process),
+# so it is deliberately excluded from that list.
+if fm_composer_endpoint_shell_backend "$BACKEND"; then
+  LAUNCH="PS1='$FM_COMPOSER_ENDPOINT_SHELL_MARKER '; $LAUNCH"
+fi
 sleep 0.3
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3

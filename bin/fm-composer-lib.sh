@@ -385,11 +385,16 @@ FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 
 # fm-spawn.sh's endpoint-shell marker (task fm-endpoint-shell-backends): a
 # fixed, unique literal every spawn writes into the interactive shell PS1 of a
-# freshly created herdr, zellij, orca, or cmux pane, as the leading `PS1=`
-# assignment prefixed onto the harness launch line itself (bin/fm-spawn.sh,
-# just before `spawn_send_literal "$T" "$LAUNCH"`), so the marker first
-# becomes visible on a shell that is already running the harness and never as
-# a bare prompt of its own. It is a structural fact about that ONE persistent shell
+# herdr, zellij, orca, or cmux pane, as the leading `PS1=` assignment prefixed
+# onto the harness launch line itself (bin/fm-spawn.sh, just before
+# `spawn_send_literal "$T" "$LAUNCH"`), so a FRESH pane never draws a bare
+# marked prompt before the harness is running. A RELAUNCH into an endpoint
+# whose shell already carries the marker from its previous life does draw
+# them: spawn's own pre-launch `export` lines each complete and hand the pane
+# back to a bare marked prompt above the eventual launch line. That is why
+# readers below decide from the BOTTOM-MOST marked row - the pane's current
+# prompt - and never from stale scrollback above it. It is a structural fact
+# about that ONE persistent shell
 # process, not composer content the harness can be mistaken for: the shell
 # process runs the harness as a plain foreground job (never `exec`), so PS1
 # survives the harness exiting and reappears verbatim the next time that
@@ -405,6 +410,23 @@ FM_COMPOSER_CAPTURE_LINES=${FM_COMPOSER_CAPTURE_LINES:-20}
 # fleet-verified does today) makes the marker absent, which callers must read
 # as "cannot prove" - never as a false `dead`.
 FM_COMPOSER_ENDPOINT_SHELL_MARKER='[fm-endpoint-shell]'
+
+# The backends whose panes carry the marker, declared here with the shape
+# itself so the writer (bin/fm-spawn.sh's launch-line prefix) and the reader
+# (bin/fm-busy-lib.sh's endpoint-shell arm) can never drift apart: a backend
+# added to only one of the two lists would otherwise silently write a marker
+# nothing reads, or read one nothing writes. tmux is deliberately absent - its
+# adapter already proves liveness from the pane's real foreground process.
+FM_COMPOSER_ENDPOINT_SHELL_BACKENDS='herdr zellij orca cmux'
+
+# fm_composer_endpoint_shell_backend: 0 when <backend> is one of the backends
+# above, so both the planting and the reading site ask this one question.
+fm_composer_endpoint_shell_backend() {  # <backend>
+  case " $FM_COMPOSER_ENDPOINT_SHELL_BACKENDS " in
+    *" $1 "*) return 0 ;;
+  esac
+  return 1
+}
 
 # fm_composer_endpoint_shell_lead_var: THE one anchoring definition of "the
 # marker leads this row", declared exactly once (see THE SAFETY RULE above) and
@@ -429,30 +451,43 @@ fm_composer_endpoint_shell_lead_var() {  # <out-varname> <row>
   return 1
 }
 
-# fm_composer_endpoint_shell_present: 0 when <screen> carries a BARE marked
-# prompt - a row the marker leads with nothing but whitespace after it - and 1
-# otherwise. The empty rest is what makes this proof that the shell is idle at
-# its own prompt with no agent in front of it: any line typed at a marked
-# prompt (a human's, fm-send's, a recovery path's) echoes as
-# `[fm-endpoint-shell] <that line>`, which leads with the marker too and says
-# only that something is running there, never that the agent exited. The
-# looser "marker leads the row" shape, which those echoed rows do satisfy, is
-# a shell PROMPT row for the dead-shell staleness rule and is read through
-# fm_composer_leading_shell_glyph_var below.
+# fm_composer_endpoint_shell_present: 0 when <screen>'s BOTTOM-MOST marked row
+# is a BARE marked prompt - the marker leads it with nothing but whitespace
+# after it - and 1 otherwise.
+#
+# Bottom-most, not "any row": every marked row above the last one is history,
+# and history is not the pane's state. A relaunch replays spawn's pre-launch
+# lines into a shell that already carries the marker, leaving bare marked
+# prompts in scrollback above a perfectly live harness; deciding from any of
+# them would report an exited agent for a running one.
+#
+# Blank rest, on that row: a line typed at a marked prompt (a human's,
+# fm-send's, spawn's own launch line) echoes as `[fm-endpoint-shell] <that
+# line>`, which leads with the marker too and says only that something is
+# running there.
+#
+# WHY THIS IS NOT fm_composer_leading_shell_glyph_var's question, though both
+# read marked rows through the same anchor primitive: that one answers "where
+# is a shell prompt row, of ANY shell, relative to a candidate composer" for
+# the cursorless staleness rule, so it must accept plain `>`/`$`/`%`/`#`
+# prompts and rows carrying a typed command; this one answers "is this pane
+# right now firstmate's OWN agent-free endpoint shell", which only the marker
+# can prove and only with nothing typed after it.
+#
 # No ANSI stripping is needed: the marker is a fixed literal firstmate itself
 # writes, never de-emphasised ghost text a harness could render. Callers never
 # fake presence when a capture is empty or failed - the caller must check that
 # first and treat "could not read" as unproven, not absent.
 fm_composer_endpoint_shell_present() {  # <screen>
-  local __fmesp_line __fmesp_rest
+  local __fmesp_line __fmesp_rest __fmesp_bare=1
   while IFS= read -r __fmesp_line; do
     fm_composer_endpoint_shell_lead_var __fmesp_rest "$__fmesp_line" || continue
     fm_composer_normalize_trim_var __fmesp_rest
-    [ -n "$__fmesp_rest" ] || return 0
+    if [ -n "$__fmesp_rest" ]; then __fmesp_bare=1; else __fmesp_bare=0; fi
   done <<EOF
 $1
 EOF
-  return 1
+  return "$__fmesp_bare"
 }
 
 # Pi allows a multi-line composer between its horizontal separators. Bound the
@@ -511,7 +546,13 @@ EOF
   return 1
 }
 
-# fm_composer_leading_shell_glyph_var: SHELL prompt rows only. Besides the
+# fm_composer_leading_shell_glyph_var: SHELL prompt rows only - deliberately a
+# different question from fm_composer_endpoint_shell_present above, which is
+# why the two predicates differ: this one locates a shell prompt row of ANY
+# shell for the cursorless staleness rule (so glyph prompts count, and a row
+# carrying a typed command is still a prompt row), while that one proves the
+# pane is firstmate's own agent-free endpoint shell (so only the marker
+# counts, and only with nothing typed after it). Besides the
 # glyph list, firstmate's own endpoint-shell prompt is a shell prompt row here:
 # fm-spawn replaces PS1 with FM_COMPOSER_ENDPOINT_SHELL_MARKER on herdr,
 # zellij, orca, and cmux, so on those panes the prompt no longer begins with

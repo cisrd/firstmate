@@ -475,6 +475,25 @@ test_endpoint_shell_typed_command_stays_unknown() {
 # The daemon and the watcher already hand fm_busy_classify a 40-line tail on
 # every poll; the endpoint-shell arm must read that instead of paying a second
 # backend round trip, the same as the Grok arm.
+# The relaunch shape end to end: a relaunch retires the busy wiring, so there
+# is no record, and the pane the daemon captures still shows the bare marked
+# prompts spawn's own pre-launch lines left above the live harness. That
+# endpoint is healthy and must classify exactly as it did before this feature
+# existed.
+test_endpoint_shell_relaunch_scrollback_stays_unknown() {
+  local state out backend m
+  state=$(new_state_dir endpoint-shell-relaunch)
+  m=$FM_COMPOSER_ENDPOINT_SHELL_MARKER
+  for backend in zellij orca cmux herdr; do
+    out=$(fm_busy_classify "$backend" w1 claude t1 "$state" \
+      "$(printf '%s export GOTMPDIR=/tmp/t/gotmp\n%s\n%s export TRACEPARENT=00-4bf92f-00f067-01\n%s\n%s claude --model opus\n\n> reading the brief\n' \
+        "$m" "$m" "$m" "$m" "$m")")
+    [ "$out" = "unknown missing" ] \
+      || fail "$backend: a relaunched endpoint with bare marked prompts in scrollback above a live harness must not classify dead, got '$out'"
+  done
+  pass "a relaunched endpoint's stale bare marked prompts never outrank the live harness below them"
+}
+
 test_endpoint_shell_reuses_caller_tail40() {
   local state out captures
   state=$(new_state_dir endpoint-shell-tail40)
@@ -500,6 +519,7 @@ test_endpoint_shell_reuses_caller_tail40() {
 
 test_endpoint_shell_marker_classifies_dead
 test_endpoint_shell_typed_command_stays_unknown
+test_endpoint_shell_relaunch_scrollback_stays_unknown
 test_endpoint_shell_reuses_caller_tail40
 test_endpoint_shell_marker_absent_stays_unknown
 test_endpoint_shell_marker_never_checked_on_tmux

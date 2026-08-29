@@ -745,6 +745,48 @@ test_endpoint_shell_marked_prompt_invalidates_cursorless_candidate() {
   pass "fm_composer_classify_screen: a marked endpoint-shell prompt invalidates a stale cursorless composer"
 }
 
+# A RELAUNCH into an endpoint whose shell already carries the marker replays
+# spawn's pre-launch lines through that marked prompt, so the capture keeps
+# bare marked prompts in scrollback ABOVE a live, healthy harness. Only the
+# bottom-most marked row is the pane's current state; deciding from any marked
+# row would report an exited agent for a running one.
+test_endpoint_shell_bare_marked_prompt_above_a_live_agent_is_not_dead() {
+  local m screen
+  m=$FM_COMPOSER_ENDPOINT_SHELL_MARKER
+  screen=$(printf '%s export GOTMPDIR=/tmp/t/gotmp\n%s\n%s export TRACEPARENT=00-4bf92f-00f067-01\n%s\n%s PS1=%s; claude --model opus\n\n> working on the brief\n' \
+    "$m" "$m" "$m" "$m" "$m" "'$m '")
+  if fm_composer_endpoint_shell_present "$screen"; then
+    fail "a bare marked prompt left in scrollback above a live harness must not read as an exited agent"
+  fi
+  # The same shape with nothing below the launch line is still live.
+  screen=$(printf '%s\n%s claude --model opus\n' "$m" "$m")
+  if fm_composer_endpoint_shell_present "$screen"; then
+    fail "the launch line under an earlier bare marked prompt must not read as an exited agent"
+  fi
+  # ... and once that agent really exits, the pane's own new prompt is the
+  # bottom-most marked row again, so the verdict comes back.
+  screen=$(printf '%s\n%s claude --model opus\nsession ended\n%s \n' "$m" "$m" "$m")
+  fm_composer_endpoint_shell_present "$screen" \
+    || fail "the bare marked prompt drawn after that agent exits must read as an exited agent"
+  pass "fm_composer_endpoint_shell_present: only the bottom-most marked row decides, so stale bare prompts never outrank a live agent"
+}
+
+# One list owns which backends carry the marker, so the planting site
+# (bin/fm-spawn.sh) and the reading site (bin/fm-busy-lib.sh) cannot drift.
+test_endpoint_shell_backend_set_is_the_four_marker_backends() {
+  local b
+  for b in herdr zellij orca cmux; do
+    fm_composer_endpoint_shell_backend "$b" \
+      || fail "$b must be a marker-carrying backend"
+  done
+  for b in tmux '' unknown-backend herd zellijx; do
+    if fm_composer_endpoint_shell_backend "$b"; then
+      fail "'$b' must not be a marker-carrying backend"
+    fi
+  done
+  pass "fm_composer_endpoint_shell_backend: exactly herdr, zellij, orca, and cmux carry the marker"
+}
+
 test_endpoint_shell_marker_absent_on_ordinary_content() {
   local content
   # shellcheck disable=SC2016  # single quotes are deliberate: a literal sample string, not a real substitution
@@ -761,4 +803,6 @@ test_endpoint_shell_exited_agent_leaves_bare_marked_prompt
 test_endpoint_shell_typed_command_is_not_an_exited_agent
 test_endpoint_shell_marker_must_lead_the_row
 test_endpoint_shell_marked_prompt_invalidates_cursorless_candidate
+test_endpoint_shell_bare_marked_prompt_above_a_live_agent_is_not_dead
+test_endpoint_shell_backend_set_is_the_four_marker_backends
 test_endpoint_shell_marker_absent_on_ordinary_content
