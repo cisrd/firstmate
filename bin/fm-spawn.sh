@@ -2238,7 +2238,7 @@ kimi_capture() {
 # no non-blank row, an unusable width, or a capture too short to hold the
 # window all return 1.
 spawn_marker_residue_cleared() {  # <target> <residue>
-  local cap residue=$2 row width=0 rows_needed i joined='' trimmed=''
+  local cap residue=$2 row width=0 rows_needed i joined='' trimmed='' spaced='' cell
   local -a nonblank=()
   cap=$(fm_backend_capture "$BACKEND" "$1" "${FM_COMPOSER_CAPTURE_LINES:-20}" "$W" 2>/dev/null) || return 1
   [ -n "$cap" ] || return 1
@@ -2257,20 +2257,29 @@ EOF
   [ "$width" -gt 0 ] || return 1
   rows_needed=$(( (${#residue} + width - 1) / width + 1 ))
   [ "$rows_needed" -le "${#nonblank[@]}" ] || return 1
-  # Two joins, because a capture may or may not pad short rows out to the pane
-  # width: the raw join is right when it does not pad, and the join of
-  # right-trimmed rows is right when it does. The residue itself ends in a
-  # quote but contains a space, so trimming alone could split it - a match in
-  # EITHER join counts as residue still present.
+  # Three joins, because a capture may render the same wrapped line three ways
+  # and the residue must be found under all of them. Raw concatenation is right
+  # when rows are emitted exactly as wide as the pane. Concatenating
+  # right-trimmed rows is right when rows are padded out to the pane width.
+  # And when the wrap falls on the residue's own space, a capture that emits
+  # each row only up to its last non-blank cell eats that space - it is gone
+  # from the rows before this function ever sees them, so neither of the first
+  # two joins can recover it; re-inserting one space between adjacent trimmed
+  # rows restores it. A capture can only have swallowed zero or one space at a
+  # boundary, so those two possibilities are exhaustive rather than a guess.
+  # A match in ANY join counts as residue still present.
   i=$(( ${#nonblank[@]} - rows_needed ))
   while [ "$i" -lt "${#nonblank[@]}" ]; do
     row=${nonblank[$i]}
+    cell=${row%"${row##*[![:space:]]}"}
     joined="$joined$row"
-    trimmed="$trimmed${row%"${row##*[![:space:]]}"}"
+    trimmed="$trimmed$cell"
+    if [ -z "$spaced" ]; then spaced=$cell; else spaced="$spaced $cell"; fi
     i=$((i + 1))
   done
   case "$joined" in *"$residue"*) return 1 ;; esac
   case "$trimmed" in *"$residue"*) return 1 ;; esac
+  case "$spaced" in *"$residue"*) return 1 ;; esac
   return 0
 }
 

@@ -198,7 +198,8 @@ case "$sub" in
       cat "$S/screen"
       pending=$(cat "$S/pending")
       [ -z "$pending" ] || printf '%s%s\n' "$(cat "$S/ps1")" "$pending"
-    } | if [ -n "${FM_FAKE_ZJ_WIDTH:-}" ]; then fold -w "$FM_FAKE_ZJ_WIDTH"; else cat; fi
+    } | if [ -n "${FM_FAKE_ZJ_WIDTH:-}" ]; then fold -w "$FM_FAKE_ZJ_WIDTH"; else cat; fi \
+      | if [ "${FM_FAKE_ZJ_TRIM_ROWS:-0}" = 1 ]; then sed 's/[[:space:]]*$//'; else cat; fi
     ;;
   *) : ;;
 esac
@@ -212,7 +213,7 @@ SH
 # Run one real spawn onto the simulated zellij pane. Echoes the state dir the
 # simulator wrote (screen, ps1, snapshots).
 run_zellij_spawn() {  # <name> -> echoes sim-state dir
-  local name=$1 case_dir home proj wt fakebin sim id
+  local name=$1 case_dir home proj wt fakebin sim id prompt
   case_dir="$TMP_ROOT/$name"
   home="$case_dir/home"
   proj="$case_dir/project"
@@ -235,7 +236,9 @@ run_zellij_spawn() {  # <name> -> echoes sim-state dir
   : > "$sim/tabs"; : > "$sim/pending"; : > "$sim/screen"; : > "$sim/snapshots"
   : > "$sim/events"
   printf 'fm-sim-%s\n' "$name" > "$sim/session"
-  printf 'captain@ship:~$ ' > "$sim/ps1"
+  prompt=${FM_FAKE_ZJ_PROMPT:-}
+  [ -n "$prompt" ] || prompt='captain@ship:~$ '
+  printf '%s' "$prompt" > "$sim/ps1"
   fm_git_worktree "$proj" "$wt" "wt-$name"
   id="$name-z1"
   mkdir -p "$home/data/$id"
@@ -252,6 +255,7 @@ run_zellij_spawn() {  # <name> -> echoes sim-state dir
     FM_FAKE_ZJ_SUBMIT_FAIL_COUNT="${FM_FAKE_ZJ_SUBMIT_FAIL_COUNT:-0}" \
     FM_FAKE_ZJ_CLEAR_FAIL="${FM_FAKE_ZJ_CLEAR_FAIL:-0}" \
     FM_FAKE_ZJ_WIDTH="${FM_FAKE_ZJ_WIDTH:-}" \
+    FM_FAKE_ZJ_TRIM_ROWS="${FM_FAKE_ZJ_TRIM_ROWS:-0}" \
     PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$proj" --backend zellij --mode no-mistakes --yolo off \
     > "$case_dir/spawn.out" 2>&1 || true
@@ -462,8 +466,43 @@ test_wrapped_marker_residue_is_still_detected_and_refuses_the_launch() {
   pass "residue wrapped across two rows of a narrow pane is still detected and refuses the launch"
 }
 
+# The worst wrap: the residue's single space lands exactly ON the wrap column,
+# and the capture emits each grid row only up to its last non-blank cell - so
+# that genuinely-typed space is eaten as if it were row padding and is absent
+# from BOTH captured rows. Rejoining the rows, however carefully, cannot
+# recover a character the capture never emitted, so the check has to consider
+# that a boundary space may have been swallowed. The 15-column prompt puts the
+# residue's space in column 40 of a 40-column pane, which is exactly that case.
+test_residue_space_eaten_at_the_wrap_column_is_still_detected() {
+  local sim launched line out
+  sim=$(FM_FAKE_ZJ_SUBMIT_FAIL_ON="$FM_COMPOSER_ENDPOINT_SHELL_MARKER" \
+    FM_FAKE_ZJ_SUBMIT_FAIL_COUNT=2 FM_FAKE_ZJ_CLEAR_FAIL=1 \
+    FM_FAKE_ZJ_WIDTH=40 FM_FAKE_ZJ_TRIM_ROWS=1 FM_FAKE_ZJ_PROMPT='captain@ship:~$' \
+    run_zellij_spawn markerboundary)
+
+  launched=$(cat "$sim/launched" 2>/dev/null || echo 0)
+  [ "$launched" != 1 ] \
+    || fail "spawn launched onto residue whose wrap-boundary space the capture had eaten"
+
+  while IFS= read -r line; do
+    case "$line" in
+      *--dangerously-skip-permissions*)
+        fail "the launch text was submitted despite residue split at its own space: $line"
+        ;;
+    esac
+  done < <(committed_lines "$sim")
+
+  out=$(cat "$sim/spawn.out")
+  case "$out" in
+    *"refusing to send the launch command"*) : ;;
+    *) fail "a residue split at its own space must refuse with a named cause, got:"$'\n'"$out" ;;
+  esac
+  pass "residue whose space is eaten at the wrap column is still detected and refuses the launch"
+}
+
 test_marked_prompt_appears_only_immediately_before_the_launch_text
 test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits
 test_marker_send_residue_is_cleared_before_the_launch_text
 test_unclearable_marker_residue_refuses_the_launch
 test_wrapped_marker_residue_is_still_detected_and_refuses_the_launch
+test_residue_space_eaten_at_the_wrap_column_is_still_detected
