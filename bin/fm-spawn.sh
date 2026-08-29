@@ -2218,27 +2218,59 @@ kimi_capture() {
 }
 
 # spawn_marker_residue_cleared: 0 only when a FRESH capture positively shows
-# the pane's current input row no longer carries <residue> - the exact text a
-# failed marker send left uncommitted there. Anything that cannot be read as
-# proof (a failed or empty capture, no non-blank row) returns 1: the caller
-# must refuse rather than paste the launch command onto an unknown line.
-# A leading endpoint-shell marker is stripped through the shared anchor
-# primitive first, so a relaunch whose PROMPT already carries the marker is not
-# mistaken for leftover residue.
+# the pane's input line no longer carries <residue> - the exact text a failed
+# marker send left uncommitted there.
+#
+# A terminal wraps one input line across as many grid rows as it needs, and a
+# capture dumps those rows one per line, so the residue can be split at an
+# arbitrary point and no single row contains it. The check therefore joins a
+# trailing WINDOW of non-blank rows and looks for the residue in the join.
+# The window is sized from the two things that decide how far the residue can
+# spread - its own length and the pane's width - never a fixed guess. Width is
+# not exposed by any adapter, so it is estimated as the longest captured row:
+# a wrapped row is exactly the pane width, and any underestimate only widens
+# the window, which can only turn a "clean" into a "dirty".
+#
+# Every uncertainty resolves toward dirty, because the costs are not
+# symmetric: a false "dirty" refuses the launch with a named cause the
+# operator can see and fix, while a false "clean" pastes the launch command
+# onto stranded text and corrupts it silently. So a failed or empty capture,
+# no non-blank row, an unusable width, or a capture too short to hold the
+# window all return 1.
 spawn_marker_residue_cleared() {  # <target> <residue>
-  local cap row last='' rest
+  local cap residue=$2 row width=0 rows_needed i joined='' trimmed=''
+  local -a nonblank=()
   cap=$(fm_backend_capture "$BACKEND" "$1" "${FM_COMPOSER_CAPTURE_LINES:-20}" "$W" 2>/dev/null) || return 1
   [ -n "$cap" ] || return 1
+  [ -n "$residue" ] || return 1
   while IFS= read -r row; do
-    case "$row" in *[![:space:]]*) last=$row ;; esac
+    case "$row" in
+      *[![:space:]]*)
+        nonblank+=("$row")
+        [ "${#row}" -le "$width" ] || width=${#row}
+        ;;
+    esac
   done <<EOF
 $cap
 EOF
-  [ -n "$last" ] || return 1
-  fm_composer_endpoint_shell_lead_var rest "$last" || rest=$last
-  case "$rest" in
-    *"$2"*) return 1 ;;
-  esac
+  [ "${#nonblank[@]}" -gt 0 ] || return 1
+  [ "$width" -gt 0 ] || return 1
+  rows_needed=$(( (${#residue} + width - 1) / width + 1 ))
+  [ "$rows_needed" -le "${#nonblank[@]}" ] || return 1
+  # Two joins, because a capture may or may not pad short rows out to the pane
+  # width: the raw join is right when it does not pad, and the join of
+  # right-trimmed rows is right when it does. The residue itself ends in a
+  # quote but contains a space, so trimming alone could split it - a match in
+  # EITHER join counts as residue still present.
+  i=$(( ${#nonblank[@]} - rows_needed ))
+  while [ "$i" -lt "${#nonblank[@]}" ]; do
+    row=${nonblank[$i]}
+    joined="$joined$row"
+    trimmed="$trimmed${row%"${row##*[![:space:]]}"}"
+    i=$((i + 1))
+  done
+  case "$joined" in *"$residue"*) return 1 ;; esac
+  case "$trimmed" in *"$residue"*) return 1 ;; esac
   return 0
 }
 

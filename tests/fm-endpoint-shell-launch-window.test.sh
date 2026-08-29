@@ -190,11 +190,15 @@ case "$sub" in
     ;;
   # A capture shows the pane's committed rows plus, when the input line holds
   # uncommitted pasted text, that live row too - which is how residue left by
-  # a failed send is visible to a reader at all.
+  # a failed send is visible to a reader at all. With FM_FAKE_ZJ_WIDTH set the
+  # dump is folded at that width, exactly as a terminal grid wraps a long line
+  # across several rows and dumps them one per line.
   dump-screen)
-    cat "$S/screen"
-    pending=$(cat "$S/pending")
-    [ -z "$pending" ] || printf '%s%s\n' "$(cat "$S/ps1")" "$pending"
+    {
+      cat "$S/screen"
+      pending=$(cat "$S/pending")
+      [ -z "$pending" ] || printf '%s%s\n' "$(cat "$S/ps1")" "$pending"
+    } | if [ -n "${FM_FAKE_ZJ_WIDTH:-}" ]; then fold -w "$FM_FAKE_ZJ_WIDTH"; else cat; fi
     ;;
   *) : ;;
 esac
@@ -247,6 +251,7 @@ run_zellij_spawn() {  # <name> -> echoes sim-state dir
     FM_FAKE_ZJ_SUBMIT_FAIL_ON="${FM_FAKE_ZJ_SUBMIT_FAIL_ON:-}" \
     FM_FAKE_ZJ_SUBMIT_FAIL_COUNT="${FM_FAKE_ZJ_SUBMIT_FAIL_COUNT:-0}" \
     FM_FAKE_ZJ_CLEAR_FAIL="${FM_FAKE_ZJ_CLEAR_FAIL:-0}" \
+    FM_FAKE_ZJ_WIDTH="${FM_FAKE_ZJ_WIDTH:-}" \
     PATH="$fakebin:$PATH" \
     "$SPAWN" "$id" "$proj" --backend zellij --mode no-mistakes --yolo off \
     > "$case_dir/spawn.out" 2>&1 || true
@@ -423,7 +428,42 @@ test_unclearable_marker_residue_refuses_the_launch() {
   pass "an unclearable marker residue refuses the launch with a named cause instead of corrupting it"
 }
 
+# The same unclearable residue, but in a NARROW pane, so the terminal wraps the
+# stranded input line across two grid rows and no single captured row contains
+# the whole marker text. Checking only the bottom row reads that as clean and
+# pastes the launch command onto the residue - the exact silent corruption the
+# rc=2 branch exists to prevent - so the check must reassemble the wrapped line
+# before deciding.
+test_wrapped_marker_residue_is_still_detected_and_refuses_the_launch() {
+  local sim launched line out
+  # The prompt plus the marker line is wider than the pane, so the stranded
+  # input line necessarily occupies two rows.
+  sim=$(FM_FAKE_ZJ_SUBMIT_FAIL_ON="$FM_COMPOSER_ENDPOINT_SHELL_MARKER" \
+    FM_FAKE_ZJ_SUBMIT_FAIL_COUNT=2 FM_FAKE_ZJ_CLEAR_FAIL=1 FM_FAKE_ZJ_WIDTH=40 \
+    run_zellij_spawn markerwrapped)
+
+  launched=$(cat "$sim/launched" 2>/dev/null || echo 0)
+  [ "$launched" != 1 ] \
+    || fail "spawn launched onto a wrapped residue it failed to detect"
+
+  while IFS= read -r line; do
+    case "$line" in
+      *--dangerously-skip-permissions*)
+        fail "the launch text was submitted despite wrapped residue on the input line: $line"
+        ;;
+    esac
+  done < <(committed_lines "$sim")
+
+  out=$(cat "$sim/spawn.out")
+  case "$out" in
+    *"refusing to send the launch command"*) : ;;
+    *) fail "a wrapped residue must refuse with a named cause, got:"$'\n'"$out" ;;
+  esac
+  pass "residue wrapped across two rows of a narrow pane is still detected and refuses the launch"
+}
+
 test_marked_prompt_appears_only_immediately_before_the_launch_text
 test_marker_still_proves_a_dead_endpoint_shell_after_the_agent_exits
 test_marker_send_residue_is_cleared_before_the_launch_text
 test_unclearable_marker_residue_refuses_the_launch
+test_wrapped_marker_residue_is_still_detected_and_refuses_the_launch
