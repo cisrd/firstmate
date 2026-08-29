@@ -154,10 +154,19 @@
 #     by the second review round (2026-08-29):
 #       - It does NOT wait for a cancellation. `recover_custody` is only the
 #         POST-TERMINAL shape. The same stranding happens with nothing aborted
-#         at all: a live pipeline_owned run whose branch_sync.pipeline
-#         .current_head is not reachable from this worktree's HEAD is holding
-#         a gate-repo commit this checkout has never seen. Either condition
-#         alone refuses.
+#         at all: a run that still holds the branch (state=pipeline_owned) or
+#         is still active reports a branch_sync.pipeline.current_head that this
+#         checkout has never seen. Either condition alone refuses.
+#       - That second trigger is a CONTENT question, not an ancestry one. A
+#         pipeline-driven rebase of the crew's own commits onto a newer base
+#         makes the lane head a non-ancestor while carrying nothing new, so
+#         when this worktree has the object the two are compared by patch
+#         identity and a content-equivalent rebase does NOT refuse. When the
+#         object is absent the answer is unknowable here (the daemon's own
+#         `axi sync --check` reports custody, `blocked_pipeline_owned`, not
+#         content, while the pipeline still owns the branch), so it refuses
+#         WITHOUT claiming lost work: the message names the plain-rebase
+#         possibility and gives the wait-and-re-check remedy.
 #       - It FAILS CLOSED. This precondition stands immediately before an
 #         irreversible step (branch delete plus worktree return), so unlike
 #         task_run_is_own_parked_run's fail-open residual there is no "caught
@@ -175,7 +184,18 @@
 #         validate_worktree_teardown_safety above: hard rule 3 never discards
 #         unlanded work without the captain's explicit word, and passing
 #         --force here IS that word for this specific discard. Nothing else
-#         bypasses the refusal - not a query failure, not a retry.
+#         bypasses the refusal - not a query failure, not a retry. That word
+#         is taken seriously rather than silently: --force does not skip the
+#         check, it changes the ACTION taken on it, so the discard is
+#           LOUD    - before any destructive step, stderr names exactly what is
+#                     about to be stranded (branch and pipeline commit), and
+#           TRACED  - one bounded append-only line lands in
+#                     "$STATE/.discarded-pipeline-commits.log", which is not
+#                     keyed to the task id teardown erases, so the commit is
+#                     never lost from EVERY record at once.
+#         Both that message and the plain refusal say outright that --force is
+#         authorization to discard this specific work, not a convenience
+#         bypass, so an operator reading either one sees the distinction.
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -1636,35 +1656,68 @@ conclude_task_no_mistakes_run() {  # <worktree>
 # Two independent triggers, either of which refuses:
 #   - branch_sync.next_action.code=recover_custody: the post-terminal case,
 #     where the daemon itself names `axi sync --recover` as the way back.
-#   - branch_sync.state=pipeline_owned with a branch_sync.pipeline.current_head
-#     that is not reachable from this worktree's HEAD: the pipeline holds a
-#     commit this checkout has never seen. This fires BEFORE any cancellation,
-#     covering the live post-fix-round run whose lane head is a gate-repo
-#     commit - the shape that never reaches recover_custody at all because
-#     nothing aborted it. Unreachable includes unresolvable, so a head this
-#     worktree cannot even name refuses rather than passing.
+#   - a branch_sync.pipeline.current_head carrying commits this worktree has
+#     never seen, while the pipeline still holds the branch or the run is still
+#     active. This fires BEFORE any cancellation, covering the live
+#     post-fix-round run whose lane head is a gate-repo commit - the shape that
+#     never reaches recover_custody at all because nothing aborted it.
+#
+# The second trigger asks a CONTENT question, not a commit-identity one.
+# "pipeline head is not an ancestor of HEAD" is NOT proof of unlanded work:
+# bin/fm-nm-run-lib.sh records that the lane head is routinely a non-ancestor
+# for a reason that carries nothing new (a pipeline-driven rebase of the crew's
+# own commits onto a newer base produces exactly that shape). So when this
+# worktree actually has the object, the commits are compared by patch identity
+# (`git cherry`) and a content-equivalent rebase does NOT refuse.
+#
+# `no-mistakes axi sync --check` is the daemon's own version of that
+# classification, but it cannot serve as the oracle here: while the pipeline
+# owns the branch it answers `blocked_pipeline_owned` - a custody verdict, not
+# a content one - and `axi status`'s branch_sync.safety already carries that
+# same value, so the extra call would add nothing this guard does not have.
+# The unresolvable case therefore falls back to refusing WITHOUT claiming
+# unlanded content: it says so, names the plain-rebase possibility, and gives
+# the wait-and-re-check remedy instead of the recover_custody one.
 #
 # Attribution reuses bin/fm-nm-run-lib.sh's reviewed identity primitives
 # instead of trusting the branch name alone (a reused task slug can hand this
-# checkout a stale foreign run record for the same branch name, and a
-# refusal-only guard with no escape hatch would then wedge permanently):
+# checkout a stale foreign run record for the same branch name):
 # fm_nm_head_matches_worktree against the run head or against the daemon's own
 # branch_sync.local.head reading of this checkout, or the
 # fm_nm_run_is_pipeline_owned_active exemption for the live in-flight case
 # where the pipeline's own head is legitimately not yet a git object here.
+#
+# --force does NOT skip any of this. The query still runs, so the discard is
+# loud and recorded; only the ACTION changes (proceed instead of refuse).
 NM_TEARDOWN_UNRECOVERED_REASON=
+NM_TEARDOWN_UNRECOVERED_BRANCH=
+NM_TEARDOWN_UNRECOVERED_HEAD=
+
+# 0 if pipeline head $2 carries content worktree $1's HEAD does not already
+# have. An unresolvable head, or a comparison git cannot complete, answers 0:
+# this guard stands before an irreversible step, so "cannot tell" is never
+# allowed to read as "nothing to lose".
+pipeline_head_carries_unlanded_content() {  # <worktree> <pipeline-head>
+  local wt=$1 head=$2 out rc=0
+  [ -n "$head" ] || return 1
+  fm_nm_head_resolvable "$wt" "$head" || return 0
+  git -C "$wt" merge-base --is-ancestor "$head" HEAD 2>/dev/null && return 1
+  out=$(git -C "$wt" cherry HEAD "$head" 2>/dev/null) || rc=$?
+  [ "$rc" -eq 0 ] || return 0
+  printf '%s\n' "$out" | grep -q '^+'
+}
+
 worktree_has_unrecovered_pipeline_commits() {  # <worktree>
   local wt=$1 out rc=0 branch run_branch run_head local_head pipeline_head
   NM_TEARDOWN_UNRECOVERED_REASON=
+  NM_TEARDOWN_UNRECOVERED_BRANCH=
+  NM_TEARDOWN_UNRECOVERED_HEAD=
   [ "$KIND" = ship ] || return 1
   [ -d "$wt" ] || return 1
-  # --force is the captain's explicit, deliberate authorization to discard this
-  # worktree, and it is the ONLY bypass: every path below refuses without it,
-  # including the query-failure path.
-  [ "$FORCE" != "--force" ] || return 1
   command -v no-mistakes >/dev/null 2>&1 || return 1
   branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
   [ -n "$branch" ] || return 1
+  NM_TEARDOWN_UNRECOVERED_BRANCH=$branch
 
   out=$(fm_nm_run_checked "$wt" "$NM_TEARDOWN_TIMEOUT" axi status) || rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -1682,19 +1735,51 @@ worktree_has_unrecovered_pipeline_commits() {  # <worktree>
     || fm_nm_run_is_pipeline_owned_active "$out" \
     || return 1
 
+  pipeline_head=$(fm_nm_branch_sync_pipeline_current_head "$out")
+  NM_TEARDOWN_UNRECOVERED_HEAD=$pipeline_head
+
   if [ "$(fm_nm_branch_sync_next_action_code "$out")" = recover_custody ]; then
     NM_TEARDOWN_UNRECOVERED_REASON=recover_custody
     return 0
   fi
-  if [ "$(fm_nm_branch_sync_state "$out")" = pipeline_owned ]; then
-    pipeline_head=$(fm_nm_branch_sync_pipeline_current_head "$out")
-    if [ -n "$pipeline_head" ] \
-       && ! git -C "$wt" merge-base --is-ancestor "$pipeline_head" HEAD 2>/dev/null; then
-      NM_TEARDOWN_UNRECOVERED_REASON=pipeline-ahead
+  # Widened past a strict state=pipeline_owned nesting: a run that is still
+  # ACTIVE has not positively returned ownership either, whatever branch_sync
+  # calls its state. A terminal run whose state is not pipeline_owned and whose
+  # next_action is not recover_custody is the one shape AGENTS.md names as
+  # "ownership already returned and no recovery required", and still passes.
+  if [ -n "$pipeline_head" ] \
+     && { [ "$(fm_nm_branch_sync_state "$out")" = pipeline_owned ] || fm_nm_run_is_active "$out"; }; then
+    if pipeline_head_carries_unlanded_content "$wt" "$pipeline_head"; then
+      if fm_nm_head_resolvable "$wt" "$pipeline_head"; then
+        NM_TEARDOWN_UNRECOVERED_REASON=pipeline-ahead-unlanded
+      else
+        NM_TEARDOWN_UNRECOVERED_REASON=pipeline-ahead-unverifiable
+      fi
       return 0
     fi
   fi
   return 1
+}
+
+# Durable, fleet-wide record of work discarded under --force, following the
+# same bounded append-only convention as bin/fm-push-transition-lib.sh's
+# triage log. Deliberately NOT keyed under "$STATE/$ID." - teardown erases
+# those, and this record has to outlive the task whose commit it names.
+NM_DISCARD_LOG="$STATE/.discarded-pipeline-commits.log"
+NM_DISCARD_LOG_MAX_BYTES=${FM_DISCARD_LOG_MAX_BYTES:-262144}
+case "$NM_DISCARD_LOG_MAX_BYTES" in ''|*[!0-9]*|0) NM_DISCARD_LOG_MAX_BYTES=262144 ;; esac
+record_discarded_pipeline_commits() {  # <reason> <branch> <pipeline-head> <worktree>
+  local sz
+  printf '[%s] task=%s reason=%s branch=%s pipeline_head=%s worktree=%s\n' \
+    "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$ID" "${1:-unknown}" "${2:-unknown}" \
+    "${3:-unknown}" "${4:-unknown}" >> "$NM_DISCARD_LOG" 2>/dev/null || return 0
+  sz=$(wc -c < "$NM_DISCARD_LOG" 2>/dev/null | tr -d '[:space:]')
+  case "$sz" in ''|*[!0-9]*) return 0 ;; esac
+  if [ "$sz" -ge "$NM_DISCARD_LOG_MAX_BYTES" ]; then
+    tail -n 2000 "$NM_DISCARD_LOG" > "$NM_DISCARD_LOG.tmp" 2>/dev/null \
+      && mv -f "$NM_DISCARD_LOG.tmp" "$NM_DISCARD_LOG" 2>/dev/null
+    rm -f "$NM_DISCARD_LOG.tmp" 2>/dev/null || true
+  fi
 }
 
 # Fix 2 (see script header): pids of every process whose CURRENT WORKING
@@ -2824,12 +2909,33 @@ fi
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
   if worktree_has_unrecovered_pipeline_commits "$WT"; then
-    if [ "$NM_TEARDOWN_UNRECOVERED_REASON" = query-failed ]; then
-      echo "REFUSED: cannot ask no-mistakes whether the run for $ID left pipeline-committed work that never reached this worktree ($WT); 'no-mistakes axi status' there did not answer. Removing the worktree now would destroy the only evidence, so teardown stops instead. Retry once it answers, or discard the worktree with explicit authority via --force." >&2
+    nm_discard_what="branch $NM_TEARDOWN_UNRECOVERED_BRANCH${NM_TEARDOWN_UNRECOVERED_HEAD:+, pipeline commit $NM_TEARDOWN_UNRECOVERED_HEAD}"
+    case "$NM_TEARDOWN_UNRECOVERED_REASON" in
+      query-failed)
+        nm_discard_why="cannot ask no-mistakes whether the run for $ID left pipeline-committed work that never reached this worktree ($WT); 'no-mistakes axi status' there did not answer, so what is at stake here is unknown"
+        nm_discard_fix="Retry once it answers." ;;
+      recover_custody)
+        nm_discard_why="no-mistakes run for $ID left pipeline-committed work in the gate that never reached this worktree ($WT)"
+        nm_discard_fix="Run 'no-mistakes axi sync --recover' there to land it first." ;;
+      pipeline-ahead-unlanded)
+        nm_discard_why="the no-mistakes pipeline for $ID holds commits on $NM_TEARDOWN_UNRECOVERED_BRANCH that are not in this worktree ($WT) and whose changes are in no commit this worktree has; the run has not returned the branch yet, so there is nothing to recover yet"
+        nm_discard_fix="Let the run finish (or abort it), then re-check with 'no-mistakes axi status'; follow the branch_sync.next_action it reports." ;;
+      *)
+        nm_discard_why="the no-mistakes pipeline for $ID reports head $NM_TEARDOWN_UNRECOVERED_HEAD on $NM_TEARDOWN_UNRECOVERED_BRANCH, which this worktree ($WT) does not have, so teardown cannot tell whether it carries a fix round that would be lost or is only a rebase of commits this worktree already has; the run has not returned the branch yet, so there is nothing to recover yet"
+        nm_discard_fix="Let the run finish (or abort it), then re-check with 'no-mistakes axi status'; follow the branch_sync.next_action it reports." ;;
+    esac
+    if [ "$FORCE" = "--force" ]; then
+      echo "DISCARDING UNLANDED WORK: $nm_discard_why." >&2
+      echo "Proceeding because --force was passed. Treat --force here as your explicit authorization to discard THIS work ($nm_discard_what) - it is not a convenience bypass, and teardown is about to make it unrecoverable." >&2
+      echo "Recording the discard in $NM_DISCARD_LOG." >&2
+      record_discarded_pipeline_commits "$NM_TEARDOWN_UNRECOVERED_REASON" \
+        "$NM_TEARDOWN_UNRECOVERED_BRANCH" "$NM_TEARDOWN_UNRECOVERED_HEAD" "$WT"
     else
-      echo "REFUSED: no-mistakes run for $ID left pipeline-committed work in the gate that never reached this worktree ($WT); run 'no-mistakes axi sync --recover' there to land it, or discard it with explicit authority via --force, before retrying teardown." >&2
+      echo "REFUSED: $nm_discard_why. Removing the worktree now would make it unrecoverable, so teardown stops instead." >&2
+      echo "$nm_discard_fix" >&2
+      echo "Or, to discard it deliberately, re-run with --force: for this refusal --force is your explicit authorization to throw away THIS work ($nm_discard_what), not a convenience bypass, and the discard is recorded in $NM_DISCARD_LOG." >&2
+      exit 1
     fi
-    exit 1
   fi
   reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
 fi

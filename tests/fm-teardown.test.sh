@@ -2228,7 +2228,51 @@ test_unrecovered_pipeline_commits_are_discarded_under_force() {
     || fail "parked-run-recover-custody-force: --force still hit a refusal"
   assert_present "$case_dir/treehouse.log" \
     "parked-run-recover-custody-force: --force did not reach the worktree return"
-  pass "--force is an explicit, working escape hatch past the unrecovered-pipeline-commits refusal"
+  assert_grep "DISCARDING UNLANDED WORK" "$case_dir/stderr" \
+    "parked-run-recover-custody-force: --force discarded pipeline-committed work silently"
+  assert_grep "fm/task-x1" "$case_dir/stderr" \
+    "parked-run-recover-custody-force: the discard notice did not name the branch being stranded"
+  assert_grep "fix0head" "$case_dir/stderr" \
+    "parked-run-recover-custody-force: the discard notice did not name the pipeline commit being stranded"
+  assert_grep "not a convenience bypass" "$case_dir/stderr" \
+    "parked-run-recover-custody-force: the discard notice did not frame --force as authorization for this specific discard"
+  # The durable record is deliberately NOT keyed under state/<id>., which
+  # teardown erases; it has to outlive the task whose commit it names.
+  assert_absent "$case_dir/state/task-x1.meta" \
+    "parked-run-recover-custody-force: task metadata survived a completed teardown"
+  assert_present "$case_dir/state/.discarded-pipeline-commits.log" \
+    "parked-run-recover-custody-force: no durable record of the discarded pipeline commit survived teardown"
+  assert_grep "task=task-x1" "$case_dir/state/.discarded-pipeline-commits.log" \
+    "parked-run-recover-custody-force: the discard record does not name the task"
+  assert_grep "pipeline_head=fix0head" "$case_dir/state/.discarded-pipeline-commits.log" \
+    "parked-run-recover-custody-force: the discard record does not name the stranded commit"
+  assert_grep "branch=fm/task-x1" "$case_dir/state/.discarded-pipeline-commits.log" \
+    "parked-run-recover-custody-force: the discard record does not name the branch"
+  pass "--force discards unrecovered pipeline commits only loudly and with a durable record that outlives the task"
+}
+
+# Fail-closed still applies under --force: teardown cannot say WHAT it is
+# discarding, so it must at least say that, and record it.
+test_unanswerable_status_query_under_force_is_loud_and_recorded() {
+  local case_dir rc
+  case_dir=$(make_case unrecovered-query-failure-force)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+
+  rc=0
+  FM_FAKE_NM_STATUS_FAILS=1 \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "unrecovered-query-failure-force: --force authorizes the discard and teardown should complete"
+  assert_present "$case_dir/treehouse.log" \
+    "unrecovered-query-failure-force: --force did not reach the worktree return"
+  assert_grep "DISCARDING UNLANDED WORK" "$case_dir/stderr" \
+    "unrecovered-query-failure-force: teardown discarded an unverifiable worktree silently"
+  assert_grep "query-failed" "$case_dir/state/.discarded-pipeline-commits.log" \
+    "unrecovered-query-failure-force: the unverifiable discard was not recorded durably"
+  pass "an unanswerable status query under --force still announces and records what it could not verify"
 }
 
 # The precondition guards an IRREVERSIBLE step, so a query that cannot answer
@@ -2262,13 +2306,14 @@ test_unanswerable_status_query_refuses_teardown() {
 # recover_custody. Fix 1's own abort cannot fire either - the run head does not
 # resolve here, so it is not attributable as a parked run - which is exactly why
 # waiting for recover_custody would strand this commit.
-pipeline_owned_ahead_axi_status_toon() {  # <branch> <local-head> [run-id]
+pipeline_owned_ahead_axi_status_toon() {  # <branch> <local-head> [run-id] [pipeline-head]
+  local pipeline_head=${4:-fix9head}
   cat <<EOF
 run:
   id: "${3:-01RUN}"
   branch: $1
   status: fixing
-  head: fix9head
+  head: $pipeline_head
   pr: ""
 branch_sync:
   state: pipeline_owned
@@ -2280,7 +2325,7 @@ branch_sync:
   pipeline:
     run: "${3:-01RUN}"
     status: fixing
-    current_head: fix9head
+    current_head: $pipeline_head
   safety: blocked_pipeline_owned
   next_action:
     code: continue_active_run
@@ -2304,8 +2349,18 @@ test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort() {
   expect_code 1 "$rc" "pipeline-ahead-live: teardown should refuse while the pipeline holds a commit this worktree has never seen"
   assert_absent "$case_dir/nm-abort.log" \
     "pipeline-ahead-live: the refusal must not depend on a cancellation having happened first"
-  assert_grep "axi sync --recover" "$case_dir/stderr" \
-    "pipeline-ahead-live: teardown did not tell the operator how to land the pipeline-held commit"
+  # The run is STILL ACTIVE and the pipeline still owns the branch, so
+  # axi sync's guarded recovery does not apply yet (AGENTS.md: use it only when
+  # next_action.code is recover_custody). The remedy has to be the one that
+  # actually runs.
+  assert_grep "no-mistakes axi status" "$case_dir/stderr" \
+    "pipeline-ahead-live: teardown did not give the re-check remedy for a still-active run"
+  assert_not_contains "$(cat "$case_dir/stderr")" "axi sync --recover" \
+    "pipeline-ahead-live: teardown offered the recover_custody remedy for a run that has not returned the branch"
+  # This head is not an object here at all, so teardown cannot know whether it
+  # is a fix round or a plain rebase, and must not claim the former.
+  assert_grep "rebase" "$case_dir/stderr" \
+    "pipeline-ahead-live: teardown asserted lost work without acknowledging the plain-rebase possibility"
   assert_absent "$case_dir/treehouse.log" \
     "pipeline-ahead-live: teardown returned the worktree while the pipeline held an unlanded commit"
   assert_present "$case_dir/state/task-x1.meta" \
@@ -2313,22 +2368,88 @@ test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort() {
   pass "a live pipeline-owned run whose commit never reached this worktree refuses teardown, with no cancellation required"
 }
 
+# A pipeline-driven rebase of the crew's OWN commits onto a newer base makes
+# branch_sync.pipeline.current_head a non-ancestor of the worktree HEAD while
+# carrying no content the worktree is missing. Ancestry alone calls that
+# stranded work; patch identity does not. Builds a real rebased copy (same
+# tree, same parent, different commit) so `git cherry` sees an equivalent.
+test_content_equivalent_rebase_does_not_refuse_teardown() {
+  local case_dir rc head rebased tree parent
+  case_dir=$(make_case pipeline-ahead-rebase-equivalent)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  tree=$(git -C "$case_dir/wt" rev-parse 'HEAD^{tree}')
+  parent=$(git -C "$case_dir/wt" rev-parse 'HEAD^')
+  rebased=$(GIT_COMMITTER_DATE="2030-01-01T00:00:00 +0000" \
+    git -C "$case_dir/wt" -c user.email=t@t -c user.name=t \
+    commit-tree "$tree" -p "$parent" -m "shippable work")
+  [ "$rebased" != "$head" ] || fail "pipeline-ahead-rebase: fixture did not produce a distinct rebased commit"
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(pipeline_owned_ahead_axi_status_toon fm/task-x1 "$head" 01RUN "$rebased")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "pipeline-ahead-rebase: a content-equivalent rebase strands nothing and must not refuse teardown"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "pipeline-ahead-rebase: teardown refused a rebase that carries no content the worktree is missing"
+  assert_present "$case_dir/treehouse.log" \
+    "pipeline-ahead-rebase: teardown never reached the worktree return"
+  pass "a pipeline rebase whose commits are patch-equivalent to the worktree's own does not refuse teardown"
+}
+
+# The other side of the same comparison: a pipeline head this worktree DOES
+# have, carrying a change no commit here has. That is proven stranded work, and
+# the message may say so plainly rather than hedging about a rebase.
+test_resolvable_pipeline_commit_with_new_content_refuses_teardown() {
+  local case_dir rc head blob tree gate_commit
+  case_dir=$(make_case pipeline-ahead-real-content)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  blob=$(printf 'gate-only fix round\n' | git -C "$case_dir/wt" hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tgate-fix.txt\n' "$blob" | git -C "$case_dir/wt" mktree)
+  gate_commit=$(git -C "$case_dir/wt" -c user.email=t@t -c user.name=t \
+    commit-tree "$tree" -p "$head" -m "gate-only fix round")
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(pipeline_owned_ahead_axi_status_toon fm/task-x1 "$head" 01RUN "$gate_commit")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "pipeline-ahead-real-content: teardown should refuse when the pipeline holds a change no commit here has"
+  assert_grep "no-mistakes axi status" "$case_dir/stderr" \
+    "pipeline-ahead-real-content: teardown did not give the re-check remedy for a still-active run"
+  assert_not_contains "$(cat "$case_dir/stderr")" "rebase" \
+    "pipeline-ahead-real-content: teardown hedged about a rebase for content it proved is missing"
+  assert_absent "$case_dir/treehouse.log" \
+    "pipeline-ahead-real-content: teardown returned the worktree while the pipeline held a genuinely unlanded change"
+  pass "a resolvable pipeline commit carrying content absent from this worktree refuses teardown without hedging"
+}
+
 # The shared TOON extractors scope by block, and a sed range is inclusive of the
 # line that TERMINATES the block - so the first top-level key AFTER branch_sync
 # must not be read as one of branch_sync's own children. Here branch_sync
 # carries no `state:` of its own and an unrelated top-level `state:
 # pipeline_owned` follows it: leaking that key across the boundary turns this
-# ordinary, already-synced run into a false "the pipeline owns the branch"
-# refusal. No no-mistakes release emits this shape today; it is the same class
-# of future-shape false match next_action.code is anchored against.
+# ordinary run into a false "the pipeline owns the branch" refusal. The run is
+# TERMINAL and needs no recovery - AGENTS.md's "ownership already returned and
+# no recovery required" shape - so branch_sync.state is the only thing that
+# could still trigger the pipeline-head check, which is what isolates the leak.
+# No no-mistakes release emits this shape today; it is the same class of
+# future-shape false match next_action.code is anchored against.
 toplevel_key_after_branch_sync_axi_status_toon() {  # <branch> <head> [run-id]
   cat <<EOF
 run:
   id: "${3:-01RUN}"
   branch: $1
-  status: running
+  status: completed
   head: "$2"
   pr: ""
+outcome: passed
 branch_sync:
   changed: false
   local:
@@ -2337,11 +2458,11 @@ branch_sync:
     clean: true
   pipeline:
     run: "${3:-01RUN}"
-    status: running
+    status: completed
     current_head: fix0head
   next_action:
-    code: continue_active_run
-    command: no-mistakes axi status
+    code: none
+    command: ""
 state: pipeline_owned
 EOF
 }
@@ -2933,7 +3054,10 @@ test_parked_own_run_is_aborted_before_teardown
 test_parked_run_abort_leaves_unrecovered_commits_refuses
 test_unrecovered_pipeline_commits_are_discarded_under_force
 test_unanswerable_status_query_refuses_teardown
+test_unanswerable_status_query_under_force_is_loud_and_recorded
 test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort
+test_content_equivalent_rebase_does_not_refuse_teardown
+test_resolvable_pipeline_commit_with_new_content_refuses_teardown
 test_toplevel_key_after_branch_sync_is_not_read_as_its_child
 test_parked_own_run_refuses_when_abort_is_unconfirmed
 test_mismatched_run_after_abort_refuses_unconfirmed
