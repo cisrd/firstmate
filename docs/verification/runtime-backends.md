@@ -286,8 +286,15 @@ Grok's own tool-approval dialog (a distinct state - the model has proposed a com
   1/3:select  │  Tab:next option  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback
 ```
 
-The fix widens the signature to `Esc:cancel|Ctrl\+c:cancel`, so every active-turn shape above classifies `busy grok-regex` and only the first, genuinely idle shape classifies `idle grok-regex`.
+The fix widens the per-harness signature `FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT` to `Esc:cancel|Ctrl\+c:cancel`, so every active-turn shape above classifies `busy grok-regex` and only the first, genuinely idle shape classifies `idle grok-regex`.
 Pinned by `tests/fm-busy-state.test.sh`'s `test_grok_regex_active_turn_busy`, which fails against the pre-fix single-token regex.
+
+Only that per-harness default was widened.
+The harness-less union `FM_DELIVERY_BUSY_REGEX_DEFAULT` deliberately does NOT gain `Esc:cancel`.
+`fm_tmux_submit_core` (`bin/fm-tmux-lib.sh`) reads the pane's busy state with no harness argument, so widening the union would also change `fm-send`'s delivery verdict for a grok pane that is genuinely mid-turn when a steer is typed: a structurally proven-pending composer would convert from the safe `pending` (exit 3, unconfirmed) to `empty` (reported delivered).
+That pending+busy conversion is verified only against opencode 1.18.4's known behavior of accepting and queueing a mid-turn Enter, and this capture establishes only what grok RENDERS, not that grok queues a mid-turn Enter rather than silently dropping it.
+A silently lost steer or watcher doorbell to a busy grok worker is worse than the misclassification this task fixes, so the delivery plane is left unchanged.
+Task fm-grok-queued-enter-verify tracks live-verifying grok's mid-turn Enter handling.
 
 This capture is scoped to the busy/idle worker-state signature only.
 It does not refresh the separate, already-known staleness of grok 1.0.5's `empty`-composer shape classification noted above (`fm_composer_classify_screen`, used for away-mode injection and spawn readiness, not for busy-state supervision) - that remains owed and out of scope for this task.

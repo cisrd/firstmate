@@ -320,7 +320,21 @@ fm_composer_strip_ghost() {
 # part of that union for the same reason the others are: without it a cursor
 # submit could never be acknowledged, because cursor parks its terminal cursor
 # outside its composer and the composer verdict is therefore always `unknown`.
-FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Esc:cancel|Ctrl\+c:cancel|ctrl\+c to stop'
+# Grok's `Esc:cancel` is DELIBERATELY absent from this union even though it is
+# in FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT below (task
+# fm-grok-idle-misclassification). fm_tmux_submit_core (bin/fm-tmux-lib.sh)
+# calls fm_pane_busy_state/fm_pane_is_busy with NO harness argument, so adding
+# it here would also change fm-send's delivery verdict for a grok pane that is
+# genuinely mid-turn when a steer is typed: a structurally proven-pending
+# composer would convert from the safe `pending` (exit 3, unconfirmed) to
+# `empty` (reported delivered). That pending+busy -> empty queued-Enter rule is
+# verified only against opencode 1.18.4's known behavior of accepting and
+# queueing a mid-turn Enter; nothing establishes that grok queues one rather
+# than silently dropping it, and a silently lost steer or watcher doorbell to a
+# busy grok worker is worse than the misclassification this task fixes. Task
+# fm-grok-queued-enter-verify tracks live-verifying grok's mid-turn Enter; do
+# not add `Esc:cancel` here until that lands.
+FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
 FM_DELIVERY_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
 FM_DELIVERY_OPENCODE_BUSY_REGEX_DEFAULT='esc interrupt'
