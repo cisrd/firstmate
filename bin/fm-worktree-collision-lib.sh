@@ -4,7 +4,7 @@
 # Usage: . bin/fm-worktree-collision-lib.sh
 #
 # Requires bin/fm-backend.sh (fm_meta_get, fm_backend_of_meta,
-# fm_backend_target_of_meta, fm_backend_agent_state) and bin/fm-tangle-lib.sh
+# fm_backend_target_of_meta, fm_backend_agent_alive) and bin/fm-tangle-lib.sh
 # (fm_default_branch) sourced first by the caller. This file is sourced by
 # scripts and has no side effects on source.
 #
@@ -68,9 +68,12 @@ fm_worktree_collision_path_state() {  # <worktree-path>
 
 # fm_worktree_collision_claimant_process classifies ONE claimant's agent
 # process from its own recorded backend endpoint alone - no git reads, so a
-# claimant is never credited or blamed for the shared path's content:
-#   alive   - fm_backend_agent_state reports the recorded backend/target alive.
-#             A hazard: the record still owns the path.
+# claimant is never credited or blamed for the shared path's content. The
+# alive/dead/unknown mapping itself has one owner, fm_backend_agent_alive; this
+# adds only the guard for a record with no usable target, and treats an
+# unreadable endpoint the same way that helper's own callers do:
+#   alive   - the recorded backend/target is reported alive. A hazard: the
+#             record still owns the path.
 #   unknown - the process state is ambiguous, unreadable, or unverified (or the
 #             record has no usable target). Cannot be proven finished, so it is
 #             treated as a hazard rather than guessed away - unless the shared
@@ -79,19 +82,11 @@ fm_worktree_collision_path_state() {  # <worktree-path>
 #             never a hazard; whatever is left at the path is the path's fact,
 #             reported by fm_worktree_collision_path_state instead.
 fm_worktree_collision_claimant_process() {  # <meta-file>
-  local meta=$1 backend target state
-  backend=$(fm_backend_of_meta "$meta")
+  local meta=$1 target
   target=$(fm_backend_target_of_meta "$meta")
-  if [ -n "$target" ]; then
-    state=$(fm_backend_agent_state "$backend" "$target")
-  else
-    state=unverified
-  fi
-  case "$state" in
-    alive) printf 'alive' ;;
-    dead|missing) printf 'dead' ;;
-    *) printf 'unknown' ;;
-  esac
+  [ -n "$target" ] || { printf 'unknown'; return 0; }
+  fm_backend_agent_alive "$(fm_backend_of_meta "$meta")" "$target" 2>/dev/null \
+    || printf 'unknown'
 }
 
 # One human-readable fragment per claimant process state, used in the printed
