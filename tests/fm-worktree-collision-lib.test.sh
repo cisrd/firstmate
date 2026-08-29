@@ -156,7 +156,18 @@ test_claimant_process_classification() {
   [ "$got" = dead ] \
     || fail "a missing agent process should classify as dead even when the shared worktree is dirty, got '$got'"
 
-  pass "fm_worktree_collision_claimant_process: alive, unknown, and dead verdicts from the process alone"
+  # A corrupt record naming a backend firstmate does not know is unreadable,
+  # not finished - and bootstrap's own output is captured with stderr merged
+  # (bin/fm-session-start.sh), so the backend's refusal must not leak into the
+  # digest as an unprefixed line no diagnostic skill can route.
+  meta="$TMP_ROOT/bogus-backend.meta"
+  fm_write_meta "$meta" "window=livesess:alive" "backend=bogus" "worktree=$wt" "harness=claude" "kind=ship"
+  got=$(PATH="$fakebin:$PATH" fm_worktree_collision_claimant_process "$meta" 2>"$TMP_ROOT/bogus-backend.err")
+  [ "$got" = unknown ] || fail "an unknown backend should classify as unknown, got '$got'"
+  [ ! -s "$TMP_ROOT/bogus-backend.err" ] \
+    || fail "an unknown backend must not leak diagnostics onto stderr, got:"$'\n'"$(cat "$TMP_ROOT/bogus-backend.err")"
+
+  pass "fm_worktree_collision_claimant_process: alive, unknown, and dead verdicts from the process alone, quietly"
 }
 
 # --- fm_worktree_collision_lines: grouping and live/stale classification ----
