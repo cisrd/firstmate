@@ -10,9 +10,11 @@
 #
 # The guarantees under test:
 #   - fm_worktree_collision_path_state judges the SHARED PATH once from git
-#     alone, and separates the two things one failed probe used to conflate:
-#     `missing` proves nothing is there, `uninspectable` proves only that the
-#     path could not be read, so it keeps the do-not-discard force.
+#     alone, and separates the things one failed probe used to conflate:
+#     `missing` proves nothing is there, while `uninspectable` and
+#     `unverifiable` prove only that the path, or its working-tree state, could
+#     not be read, so both keep the do-not-discard force. No failed probe ever
+#     ends at `landed`.
 #   - fm_worktree_collision_claimant_process judges ONE claimant from its own
 #     recorded backend endpoint alone and passes the backend's own verdict
 #     through, so the printed detail never blames a backend that answered.
@@ -157,6 +159,25 @@ test_path_state_classification() {
   echo dirty > "$wt/scratch.txt"
   got=$(fm_worktree_collision_path_state "$wt")
   [ "$got" = unlanded ] || fail "a dirty worktree should classify as unlanded, got '$got'"
+
+  # A worktree git can resolve but whose working-tree probe fails: the copy
+  # holds an uncommitted file and HEAD is reachable from main, so every other
+  # signal points at `landed` while the one probe that could see the work
+  # exited non-zero with empty output. Reading that silence as "clean" is the
+  # strongest possible claim from a probe that read nothing.
+  wt="$TMP_ROOT/unverifiable-wt"
+  make_worktree "$wt"
+  echo uncommitted > "$wt/uncommitted.txt"
+  printf 'garbage' > "$wt/.git/index"
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" != landed ] \
+    || fail "a worktree whose status probe failed must never read as landed, got '$got'"
+  [ "$got" = unverifiable ] \
+    || fail "a worktree git resolved but could not read should classify as unverifiable, got '$got'"
+  [ -n "$(fm_worktree_collision_path_caveat "$got")" ] \
+    || fail "an unverifiable shared path must carry a caveat, got an empty one"
+  assert_contains "$(fm_worktree_collision_path_caveat "$got")" "do not discard" \
+    "an unverifiable shared path must keep the do-not-discard warning"
 
   wt="$TMP_ROOT/unmerged-wt"
   make_worktree "$wt"
@@ -411,6 +432,36 @@ test_collision_lines_uninspectable_path_keeps_do_not_discard() {
   pass "fm_worktree_collision_lines: an uninspectable shared path is never reported as empty"
 }
 
+# The emitted line for the same defect one level up: a shared copy holding an
+# uncommitted file whose .git/index git cannot read. Everything except the
+# failed probe says `landed`, and a landed path prints no caveat at all - which
+# would tell the reader the shared copy holds nothing to lose.
+test_collision_lines_unreadable_worktree_state_keeps_do_not_discard() {
+  local state fakebin wt out
+
+  state="$TMP_ROOT/unverifiable-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/unverifiable-tmux")
+
+  wt="$TMP_ROOT/wt-unverifiable"
+  make_worktree "$wt"
+  echo "work only the index knew about" > "$wt/uncommitted.txt"
+  printf 'garbage' > "$wt/.git/index"
+  fm_write_meta "$state/fm-v-a.meta" "window=deadsess:win" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-v-b.meta" "window=livesess:alive" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-v-a (process gone), fm-v-b (process alive) - shared path is a git worktree whose working-tree state could not be read, so whether work would be lost cannot be verified, do not discard" \
+    "a shared worktree whose working-tree state could not be read must name that cause and keep the do-not-discard warning"
+  assert_not_contains "$out" "no longer exists" \
+    "a path that is still on disk must never be reported as gone"
+  assert_not_contains "$out" "not an inspectable git worktree" \
+    "a path git did resolve must not be described as one it could not resolve"
+
+  pass "fm_worktree_collision_lines: a failed working-tree probe never prints as a path with nothing to lose"
+}
+
 # A recorded worktree path may contain any character a directory name can hold.
 # A backslash used to be eaten by awk's own escape processing before the path
 # was compared, so no record matched, and the line printed with nothing at all
@@ -591,6 +642,7 @@ test_collision_lines_live_claimants_wip_stays_path_level
 test_collision_lines_all_dead_unlanded_keeps_caveat
 test_collision_lines_gone_path_is_always_reported
 test_collision_lines_uninspectable_path_keeps_do_not_discard
+test_collision_lines_unreadable_worktree_state_keeps_do_not_discard
 test_collision_lines_path_with_backslash_names_every_claimant
 test_collision_lines_record_removed_mid_scan_is_dropped
 test_collision_lines_skips_remote_records

@@ -46,17 +46,24 @@
 #                   work cannot be verified, so this uses the same
 #                   --show-toplevel probe bin/fm-teardown.sh's own
 #                   inspectable_git_worktree refuses on.
+#   unverifiable  - git resolved a work tree there, but the working-tree probe
+#                   itself failed (a truncated or unreadable .git/index, a copy
+#                   an agent was killed in mid-git-operation). It printed no
+#                   changes because it read none, which is not the same fact as
+#                   a clean tree, so this never reads as landed.
 #   unlanded      - the path has uncommitted changes, or its HEAD is not proven
 #                   reachable from the project's default branch. Discarding
 #                   this copy could lose real work, whichever claimant made it.
 #   landed        - the worktree is clean and its HEAD is reachable from the
 #                   project's default branch. Nothing at the path is at risk.
-# Only `landed` proves the path is safe to reclaim, so every other verdict
-# carries a caveat, and every verdict except `missing` carries a do-not-discard
-# clause - `missing` is the one case where the probe itself proves there is
-# nothing at the path to discard.
+# No failed probe may end at `landed`: a probe that could not read the path
+# yields uninspectable or unverifiable, and a probe that could not resolve the
+# default branch yields unlanded. Only `landed` proves the path is safe to
+# reclaim, so every other verdict carries a caveat, and every verdict except
+# `missing` carries a do-not-discard clause - `missing` is the one case where
+# the probe itself proves there is nothing at the path to discard.
 fm_worktree_collision_path_state() {  # <worktree-path>
-  local path=$1 default top
+  local path=$1 default top status_out
   if [ -z "$path" ] || { [ ! -e "$path" ] && [ ! -L "$path" ]; }; then
     printf 'missing'
     return 0
@@ -66,7 +73,11 @@ fm_worktree_collision_path_state() {  # <worktree-path>
     printf 'uninspectable'
     return 0
   fi
-  if [ -n "$(git -C "$path" status --porcelain 2>/dev/null)" ]; then
+  if ! status_out=$(git -C "$path" status --porcelain 2>/dev/null); then
+    printf 'unverifiable'
+    return 0
+  fi
+  if [ -n "$status_out" ]; then
     printf 'unlanded'
     return 0
   fi
@@ -94,6 +105,9 @@ fm_worktree_collision_path_caveat() {  # <path-state>
     unlanded) printf ' - shared path still has unlanded work, do not discard' ;;
     uninspectable)
       printf ' - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard'
+      ;;
+    unverifiable)
+      printf ' - shared path is a git worktree whose working-tree state could not be read, so whether work would be lost cannot be verified, do not discard'
       ;;
     missing) printf ' - shared worktree no longer exists at that path' ;;
   esac
