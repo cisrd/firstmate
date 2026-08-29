@@ -45,9 +45,11 @@
 #                          the only one whose caveat carries no do-not-discard
 #                          clause.
 #   unlanded             - a probe answered, and its answer was that work is at
-#                          risk: the worktree has uncommitted changes, or the
-#                          ancestry check ran and said HEAD is not reachable
-#                          from the project's default branch.
+#                          risk: the worktree holds uncommitted changes that
+#                          are the task's own (see fm_worktree_collision_task_dirty
+#                          for who decides that), or the ancestry check ran and
+#                          said HEAD is not reachable from the project's
+#                          default branch.
 #   landed               - the worktree is clean and its HEAD was checked and
 #                          found reachable from the project's default branch.
 #                          Nothing at the path is at risk.
@@ -98,7 +100,7 @@ fm_worktree_collision_path_state() {  # <worktree-path>
     printf 'unverifiable:worktree-state'
     return 0
   fi
-  if [ -n "$status_out" ]; then
+  if [ -n "$(fm_worktree_collision_task_dirty "$status_out")" ]; then
     printf 'unlanded'
     return 0
   fi
@@ -124,6 +126,35 @@ fm_worktree_collision_path_state() {  # <worktree-path>
   printf 'unverifiable:default-branch'
 }
 
+# The grouping key for one recorded worktree= path: its physically resolved
+# form when the path can be reached, and the recorded string itself otherwise.
+# Two records can spell one pooled copy differently - bin/fm-spawn.sh's own
+# worktree-vs-pane comparison documents backends that report a physically
+# resolved cwd beside ones that report the shell's logical, symlink-preserving
+# path - and grouping on the raw strings would never see those as one path.
+# This applies the same cd-and-pwd-P-with-fallback rule bin/fm-spawn.sh's
+# real_path_or_raw uses for exactly that question.
+fm_worktree_collision_group_key() {  # <recorded-path>
+  local path=$1 real
+  if real=$(cd "$path" 2>/dev/null && pwd -P); then
+    printf '%s' "$real"
+  else
+    printf '%s' "$path"
+  fi
+}
+
+# Which porcelain lines count as the TASK's work at a worktree is not this
+# file's call: bin/fm-teardown.sh's validate_worktree_teardown_safety owns that
+# definition, because it is the code that actually discards a copy, and it
+# filters firstmate's own spawn-written scaffolding (bin/fm-spawn.sh writes
+# .claude/settings.local.json into every claude task worktree) plus the harness
+# turn-end markers out of the same probe. This applies that filter unchanged,
+# so a shared copy holding only firstmate's own wiring is never reported as
+# holding the task's work - the two readings of one probe cannot disagree.
+fm_worktree_collision_task_dirty() {  # <porcelain-output>
+  printf '%s\n' "$1" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' || true
+}
+
 # True only when a path's absence was OBSERVED rather than refused: walk up to
 # the nearest ancestor that can be stat'ed and require it to be a searchable
 # directory. A chmod-000 ancestor makes `[ ! -e ]` true for a worktree that is
@@ -142,21 +173,24 @@ fm_worktree_collision_absence_observed() {  # <path>
 
 # One caveat per path state, appended to the printed line whatever its kind -
 # the risk at a shared path does not depend on how many processes are hazards.
-# Every `unverifiable:<cause>` verdict shares one sentence, built here once:
-# the cause names which probe could not answer, and the same do-not-discard
-# clause every non-landed verdict carries closes it.
+# Every verdict that is not one of the three conclusions shares one sentence,
+# built here once: the cause names which probe could not answer, and the same
+# do-not-discard clause every non-landed verdict carries closes it. An
+# unrecognised verdict takes that same branch with a generic cause, so a
+# verdict added without a caveat can only ever read as unverified - never as
+# the empty, safe-to-reclaim caveat `landed` earns.
 fm_worktree_collision_path_caveat() {  # <path-state>
   local cause
   case "$1" in
     landed) ;;
     unlanded) printf ' - shared path still has unlanded work, do not discard' ;;
     missing) printf ' - shared worktree no longer exists at that path' ;;
-    unverifiable:*)
-      case "${1#unverifiable:}" in
-        not-a-worktree) cause='is not an inspectable git worktree' ;;
-        worktree-state) cause='is a git worktree whose working-tree state could not be read' ;;
-        default-branch) cause="is a git worktree whose HEAD could not be checked against the project's default branch" ;;
-        path-unreadable) cause='could not be examined because an ancestor directory is not searchable' ;;
+    *)
+      case "$1" in
+        unverifiable:not-a-worktree) cause='is not an inspectable git worktree' ;;
+        unverifiable:worktree-state) cause='is a git worktree whose working-tree state could not be read' ;;
+        unverifiable:default-branch) cause="is a git worktree whose HEAD could not be checked against the project's default branch" ;;
+        unverifiable:path-unreadable) cause='could not be examined because an ancestor directory is not searchable' ;;
         *) cause='could not be examined' ;;
       esac
       printf ' - shared path %s, so whether work would be lost cannot be verified, do not discard' "$cause"
@@ -228,9 +262,16 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state> [backend]
 # and its own process probe is dropped rather than reported as an unverifiable
 # hazard: a path left with fewer than two surviving records is no longer a
 # collision and prints nothing.
+# Records are grouped by fm_worktree_collision_group_key, not by the recorded
+# string, so two spellings of one pooled copy still collide; the line prints
+# the recorded worktree= of the first surviving claimant, which is the spelling
+# a reader will find in a meta. The internal id-to-key transport puts the id
+# first and treats everything past the first tab as the key, so a tab anywhere
+# in a recorded path cannot silently split a group (a newline cannot occur:
+# fm_meta_get reads one line).
 # Portable: no associative arrays, so this runs on bash 3.2 (macOS) too.
 fm_worktree_collision_lines() {  # <state-dir>
-  local state=$1 meta id path pairs dup_paths p ids_for_path
+  local state=$1 meta id path pairs dup_keys key ids_for_key shown_path
   local proc_state desc claimant_line claimant_count live_count kind path_state caveat
   [ -d "$state" ] || return 0
   pairs=$(
@@ -240,24 +281,26 @@ fm_worktree_collision_lines() {  # <state-dir>
       path=$(fm_meta_get "$meta" worktree)
       [ -n "$path" ] || continue
       [ -z "$(fm_meta_get "$meta" remote_host)" ] || continue
-      printf '%s\t%s\n' "$path" "$id"
+      printf '%s\t%s\n' "$id" "$(fm_worktree_collision_group_key "$path")"
     done
   )
   [ -n "$pairs" ] || return 0
-  dup_paths=$(printf '%s\n' "$pairs" | cut -f1 | sort | uniq -d)
-  [ -n "$dup_paths" ] || return 0
-  while IFS= read -r p; do
-    [ -n "$p" ] || continue
-    ids_for_path=$(printf '%s\n' "$pairs" | fm_collision_p="$p" awk -F'\t' '$1 == ENVIRON["fm_collision_p"] {print $2}' | sort)
-    path_state=$(fm_worktree_collision_path_state "$p")
-    caveat=$(fm_worktree_collision_path_caveat "$path_state")
+  dup_keys=$(printf '%s\n' "$pairs" | cut -f2- | sort | uniq -d)
+  [ -n "$dup_keys" ] || return 0
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    ids_for_key=$(printf '%s\n' "$pairs" \
+      | fm_collision_key="$key" awk 'substr($0, index($0, "\t") + 1) == ENVIRON["fm_collision_key"] { print substr($0, 1, index($0, "\t") - 1) }' \
+      | sort)
     live_count=0
     claimant_count=0
     claimant_line=
+    shown_path=
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       [ -f "$state/$id.meta" ] || continue
       claimant_count=$((claimant_count + 1))
+      [ -n "$shown_path" ] || shown_path=$(fm_meta_get "$state/$id.meta" worktree)
       proc_state=$(fm_worktree_collision_claimant_process "$state/$id.meta")
       case "$proc_state" in
         dead|missing) ;;
@@ -266,16 +309,19 @@ fm_worktree_collision_lines() {  # <state-dir>
       desc=$(fm_worktree_collision_claimant_desc "$proc_state" "$(fm_backend_of_meta "$state/$id.meta")")
       claimant_line="${claimant_line:+$claimant_line, }$id ($desc)"
     done <<EOM
-$ids_for_path
+$ids_for_key
 EOM
     [ "$claimant_count" -ge 2 ] || continue
+    [ -n "$shown_path" ] || shown_path=$key
+    path_state=$(fm_worktree_collision_path_state "$shown_path")
+    caveat=$(fm_worktree_collision_path_caveat "$path_state")
     if [ "$live_count" -ge 2 ]; then
       kind=live
     else
       kind=stale
     fi
-    printf 'WORKTREE_COLLISION: %s %s claimed by %s%s\n' "$kind" "$p" "$claimant_line" "$caveat"
+    printf 'WORKTREE_COLLISION: %s %s claimed by %s%s\n' "$kind" "$shown_path" "$claimant_line" "$caveat"
   done <<EOM
-$dup_paths
+$dup_keys
 EOM
 }

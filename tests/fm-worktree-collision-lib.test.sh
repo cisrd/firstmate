@@ -41,9 +41,13 @@
 #   - A path claimed by exactly one record never produces a line, and neither
 #     does a path whose second record is torn down mid-scan - the collision has
 #     resolved itself, so the vanished record is dropped rather than named.
-#   - Grouping is by the recorded path byte-for-byte, so a path containing a
-#     backslash still names every claimant instead of printing a claimant-less
-#     line.
+#   - Grouping is by the physically resolved path, so two spellings of one
+#     pooled copy still collide, and the transport survives any character a
+#     recorded path can hold - a backslash never empties the claimant list, a
+#     tab never drops the line.
+#   - `unlanded` means the task's OWN work: firstmate's spawn-written
+#     scaffolding is filtered exactly as bin/fm-teardown.sh filters it before
+#     deciding whether a copy is safe to discard.
 #   - bin/fm-bootstrap.sh surfaces the same line and stays silent on a clean
 #     home, matching every other detect-only bootstrap check's contract.
 set -u
@@ -188,6 +192,30 @@ test_path_state_classification() {
   [ "$got" = unlanded ] \
     || fail "a clean worktree whose HEAD is not reachable from the default branch should classify as unlanded, got '$got'"
 
+  # Firstmate's own spawn-written scaffolding is not the task's work:
+  # bin/fm-teardown.sh's validate_worktree_teardown_safety filters exactly
+  # these entries out of the identical probe before deciding whether a copy is
+  # safe to discard, and it is the code that actually discards. A copy whose
+  # only porcelain lines are firstmate's wiring holds nothing to lose.
+  wt="$TMP_ROOT/scaffolding-only-wt"
+  make_worktree "$wt"
+  mkdir -p "$wt/.claude"
+  echo '{}' > "$wt/.claude/settings.json"
+  echo '{}' > "$wt/.claude/settings.local.json"
+  : > "$wt/.fm-grok-turnend"
+  [ -n "$(git -C "$wt" status --porcelain)" ] \
+    || fail "the scaffolding fixture must leave git status non-empty, or it proves nothing"
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" = landed ] \
+    || fail "a copy holding only firstmate's own scaffolding must read exactly as teardown reads it, got '$got'"
+
+  # One real file beside the same scaffolding is the task's work, and must
+  # still be reported.
+  echo "the task's own work" > "$wt/work.txt"
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" = unlanded ] \
+    || fail "a copy holding the task's own uncommitted file is unlanded, got '$got'"
+
   # A project whose default branch is neither main nor master, wired with
   # `git init` + `git remote add` rather than `git clone`, so nothing ever
   # wrote refs/remotes/origin/HEAD. The copy is clean and may be sitting
@@ -228,6 +256,29 @@ test_path_state_classification() {
   fi
 
   pass "fm_worktree_collision_path_state: only an observed absence reads missing, and no unanswerable probe claims a fact"
+}
+
+# The caveat function is the last thing between a verdict and the reader. A
+# verdict it does not recognise must not fall through to the empty caveat,
+# which is byte-for-byte the `landed` output and the strongest safe-to-reclaim
+# claim the check can make.
+test_path_caveat_defaults_to_unverified() {
+  local got
+
+  got=$(fm_worktree_collision_path_caveat "some-verdict-added-later")
+  [ -n "$got" ] \
+    || fail "an unrecognised path verdict must not print the empty, safe-to-reclaim caveat"
+  [ "$got" != "$(fm_worktree_collision_path_caveat landed)" ] \
+    || fail "an unrecognised path verdict must not read exactly like a landed path"
+  assert_contains "$got" "do not discard" \
+    "an unrecognised path verdict must default to the do-not-discard warning"
+  assert_contains "$got" "cannot be verified" \
+    "an unrecognised path verdict must say the state could not be verified"
+
+  [ -z "$(fm_worktree_collision_path_caveat landed)" ] \
+    || fail "a landed path is the one verdict that earns an empty caveat"
+
+  pass "fm_worktree_collision_path_caveat: an unknown verdict fails safe, not reassuring"
 }
 
 test_claimant_process_classification() {
@@ -529,6 +580,46 @@ test_collision_lines_unresolvable_default_branch_names_the_missing_check() {
   pass "fm_worktree_collision_lines: an ancestry check that could not run never invents unlanded work"
 }
 
+# Two records can spell one pooled copy differently - one backend reports the
+# physically resolved cwd, another the shell's logical symlink-preserving path
+# - and grouping on the raw strings would let a real double registration go
+# entirely unreported, which is the one thing this check exists to prevent.
+test_collision_lines_groups_symlinked_spellings_of_one_copy() {
+  local state fakebin phys link out
+
+  state="$TMP_ROOT/symlink-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/symlink-tmux")
+
+  phys="$TMP_ROOT/pool-physical"
+  mkdir -p "$phys"
+  make_worktree "$phys/wt-3"
+  ln -s "$phys" "$TMP_ROOT/pool-link"
+  link="$TMP_ROOT/pool-link"
+
+  fm_write_meta "$state/fm-phys.meta" "window=livesess:alive" "worktree=$phys/wt-3" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-sym.meta" "window=livesess:ambig" "worktree=$link/wt-3" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: live " \
+    "two spellings of one physical worktree must still be reported as one collision"
+  assert_contains "$out" "fm-phys (process alive)" \
+    "the collision line must name the record that spelled the path physically"
+  assert_contains "$out" "fm-sym (process state unknown (backend=tmux reported ambiguous))" \
+    "the collision line must name the record that spelled the path through the symlink"
+  [ "$(printf '%s\n' "$out" | grep -c '^WORKTREE_COLLISION:')" = 1 ] \
+    || fail "one physical worktree must produce exactly one collision line, got:"$'\n'"$out"
+
+  # The printed path is a spelling a reader will actually find in a meta.
+  case "$out" in
+    *"$phys/wt-3"*|*"$link/wt-3"*) : ;;
+    *) fail "the collision line must print a recorded spelling of the shared path, got:"$'\n'"$out" ;;
+  esac
+
+  pass "fm_worktree_collision_lines: one physical copy spelled two ways is one collision"
+}
+
 # A recorded worktree path may contain any character a directory name can hold.
 # A backslash used to be eaten by awk's own escape processing before the path
 # was compared, so no record matched, and the line printed with nothing at all
@@ -557,6 +648,35 @@ test_collision_lines_path_with_backslash_names_every_claimant() {
     "a collision line must never print with no claimant at all"
 
   pass "fm_worktree_collision_lines: a path with a backslash still names every claimant"
+}
+
+# The internal id-to-path transport is tab-delimited, so a tab inside a
+# recorded path used to split the grouping key: no record matched its own path,
+# the claimant set came back empty, and the whole collision line vanished
+# silently - indistinguishable from a home with no collision at all.
+test_collision_lines_path_with_tab_is_still_reported() {
+  local state fakebin wt out
+  local leaf
+  leaf=$(printf 'wt-tab\there')
+
+  state="$TMP_ROOT/tab-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/tab-tmux")
+
+  wt="$TMP_ROOT/$leaf"
+  make_worktree "$wt"
+  echo dirty > "$wt/scratch.txt"
+  fm_write_meta "$state/fm-tab-a.meta" "window=livesess:alive" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-tab-b.meta" "window=livesess:ambig" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  [ -n "$out" ] \
+    || fail "a genuine collision on a path containing a tab must never vanish silently"
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-tab-a (process alive), fm-tab-b (process state unknown (backend=tmux reported ambiguous)) - shared path still has unlanded work, do not discard" \
+    "a worktree path containing a tab must still group its records and name every claimant"
+
+  pass "fm_worktree_collision_lines: a path with a tab is reported, never silently dropped"
 }
 
 # The scan is a snapshot taken without a fleet lock, so bin/fm-teardown.sh can
@@ -617,6 +737,34 @@ test_collision_lines_record_removed_mid_scan_is_dropped() {
 # Remote secondmate records name a home on another machine: that path is unique
 # only when host-qualified, so it can never collide with a local worktree and
 # neither the local git probe nor the local backend probe can judge it.
+# The emitted line for the same divergence: a shared copy whose only content is
+# firstmate's own wiring must not be described as holding the task's work,
+# because bin/fm-teardown.sh - the code that would discard it - reads the
+# identical probe and calls that copy clean.
+test_collision_lines_scaffolding_only_path_is_not_called_unlanded() {
+  local state fakebin wt out
+
+  state="$TMP_ROOT/scaffolding-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/scaffolding-tmux")
+
+  wt="$TMP_ROOT/wt-scaffolding"
+  make_worktree "$wt"
+  mkdir -p "$wt/.claude"
+  echo '{}' > "$wt/.claude/settings.json"
+  fm_write_meta "$state/fm-s-a.meta" "window=deadsess:win" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-s-b.meta" "window=livesess:alive" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-s-a (process gone), fm-s-b (process alive)" \
+    "the collision itself must still be reported"
+  assert_not_contains "$out" "still has unlanded work" \
+    "a copy holding only firstmate's own scaffolding must not be reported as holding the task's work"
+
+  pass "fm_worktree_collision_lines: firstmate's own scaffolding is never reported as the task's work"
+}
+
 test_collision_lines_skips_remote_records() {
   local state fakebin wt out
 
@@ -703,6 +851,7 @@ test_bootstrap_surfaces_collision_line() {
 }
 
 test_path_state_classification
+test_path_caveat_defaults_to_unverified
 test_claimant_process_classification
 test_collision_lines_grouping
 test_collision_lines_live_claimants_wip_stays_path_level
@@ -712,6 +861,9 @@ test_collision_lines_uninspectable_path_keeps_do_not_discard
 test_collision_lines_unreadable_worktree_state_keeps_do_not_discard
 test_collision_lines_unresolvable_default_branch_names_the_missing_check
 test_collision_lines_path_with_backslash_names_every_claimant
+test_collision_lines_path_with_tab_is_still_reported
+test_collision_lines_groups_symlinked_spellings_of_one_copy
+test_collision_lines_scaffolding_only_path_is_not_called_unlanded
 test_collision_lines_record_removed_mid_scan_is_dropped
 test_collision_lines_skips_remote_records
 test_collision_lines_silent_on_clean_home
