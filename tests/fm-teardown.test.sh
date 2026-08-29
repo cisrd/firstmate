@@ -116,6 +116,15 @@ SH
   # `command -v no-mistakes` would fall through to whatever real binary
   # happens to be on the test runner's own PATH. Tests exercising the run-abort
   # path override FM_FAKE_AXI_STATUS/FM_FAKE_NM_ABORT_LOG before run_teardown.
+  #
+  # A bare `axi status` (no --run) reads as "aborted" once ANY abort line was
+  # logged, not just an exact `--run <this-id>` match: the real CLI's bare
+  # status always reports whatever run is currently active-or-most-recent for
+  # the checked-out branch, so once that run is aborted a later bare call
+  # keeps reflecting it - verified live 2026-08-29. This is what lets
+  # worktree_has_unrecovered_pipeline_commits's precondition (bin/fm-teardown.sh)
+  # see the same still-unrecovered state on a second, unrelated teardown
+  # invocation that never re-discovers or re-passes the run id.
   cat > "$fakebin/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 case "${1:-}" in
@@ -126,9 +135,15 @@ case "${1:-}" in
         shift
         run_id=""
         if [ "${1:-}" = --run ]; then run_id=${2:-}; fi
-        if [ -n "${FM_FAKE_NM_ABORT_LOG:-}" ] \
-           && grep -Fxq "abort --run $run_id" "$FM_FAKE_NM_ABORT_LOG" 2>/dev/null \
-           && [ "${FM_FAKE_NM_ABORT_NOOP:-0}" != 1 ]; then
+        aborted=0
+        if [ -n "${FM_FAKE_NM_ABORT_LOG:-}" ]; then
+          if [ -n "$run_id" ]; then
+            grep -Fxq "abort --run $run_id" "$FM_FAKE_NM_ABORT_LOG" 2>/dev/null && aborted=1
+          else
+            grep -Eq '^abort --run ' "$FM_FAKE_NM_ABORT_LOG" 2>/dev/null && aborted=1
+          fi
+        fi
+        if [ "$aborted" = 1 ] && [ "${FM_FAKE_NM_ABORT_NOOP:-0}" != 1 ]; then
           if [ "${FM_FAKE_NM_NOT_FOUND_AFTER_ABORT:-0}" = 1 ]; then
             printf 'error: "run \\"%s\\" not found"\n' "$run_id" >&2
             exit 1
@@ -2116,29 +2131,80 @@ branch_sync:
 EOF
 }
 
+# The reviewer's exact reproduction (2026-08-29): an abort-tail-branch version
+# of this guard only protects the FIRST teardown attempt, because its own
+# successful abort sets `outcome`, and a retry - the real path a supervisor
+# takes right after this exact refusal - no longer reads as "parked" and
+# skips the check entirely. Drives teardown twice in a row against the same
+# case and asserts the SECOND call refuses identically, with the worktree and
+# task metadata still present after both.
 test_parked_run_abort_leaves_unrecovered_commits_refuses() {
-  local case_dir rc head
+  local case_dir rc1 rc2 head
   case_dir=$(make_case parked-run-recover-custody)
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
-  local rc=0
+  rc1=0
   FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
   FM_FAKE_AXI_STATUS_AFTER_ABORT="$(recover_custody_axi_status_toon fm/task-x1 "$head")" \
   FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
-    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+    run_teardown "$case_dir" > "$case_dir/stdout.1" 2> "$case_dir/stderr.1" || rc1=$?
 
-  expect_code 1 "$rc" "parked-run-recover-custody: teardown should refuse rather than strand pipeline-committed work"
+  expect_code 1 "$rc1" "parked-run-recover-custody: first teardown attempt should refuse rather than strand pipeline-committed work"
   assert_grep "abort --run 01RUN" "$case_dir/nm-abort.log" \
-    "parked-run-recover-custody: teardown did not abort the run before checking for unrecovered work"
-  assert_grep "axi sync --recover" "$case_dir/stderr" \
-    "parked-run-recover-custody: teardown did not tell the operator how to land the preserved commit"
+    "parked-run-recover-custody: first attempt did not abort the run before checking for unrecovered work"
+  assert_grep "axi sync --recover" "$case_dir/stderr.1" \
+    "parked-run-recover-custody: first attempt did not tell the operator how to land the preserved commit"
   assert_present "$case_dir/wt" \
-    "parked-run-recover-custody: teardown removed the worktree while pipeline-committed work was still unrecovered"
+    "parked-run-recover-custody: first attempt removed the worktree while pipeline-committed work was still unrecovered"
+
+  # Retry exactly as a supervisor would after that refusal. The run is now
+  # terminal (outcome=cancelled from the first attempt's own abort), so
+  # task_status_is_own_parked_run no longer reads it as parked - this is the
+  # bypass the reviewer found, and the precondition must catch it anyway.
+  rc2=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(recover_custody_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" > "$case_dir/stdout.2" 2> "$case_dir/stderr.2" || rc2=$?
+
+  expect_code 1 "$rc2" "parked-run-recover-custody: SECOND teardown attempt should refuse identically, not silently destroy the worktree"
+  assert_grep "axi sync --recover" "$case_dir/stderr.2" \
+    "parked-run-recover-custody: second attempt did not tell the operator how to land the preserved commit"
+  assert_present "$case_dir/wt" \
+    "parked-run-recover-custody: second attempt removed the worktree while pipeline-committed work was still unrecovered"
   assert_present "$case_dir/state/task-x1.meta" \
-    "parked-run-recover-custody: teardown removed task metadata while pipeline-committed work was still unrecovered"
-  pass "teardown refuses to remove a worktree when the aborted run left commits only in the gate"
+    "parked-run-recover-custody: second attempt removed task metadata while pipeline-committed work was still unrecovered"
+  [ "$(git -C "$case_dir/wt" rev-parse HEAD)" = "$head" ] \
+    || fail "parked-run-recover-custody: worktree HEAD moved even though teardown refused both times"
+  pass "teardown refuses identically on a second attempt, so unrecovered pipeline commits are never silently stranded"
+}
+
+# --force skips validate_worktree_teardown_safety (the uncommitted/unpushed
+# checks) but must NOT skip this precondition: unrecovered pipeline commits
+# are unlanded work, and hard rule 3 never discards unlanded work without the
+# captain's explicit word for that specific discard - --force alone is a
+# different, broader escape hatch than that, so it must not double as this one.
+test_parked_run_abort_leaves_unrecovered_commits_refuses_under_force() {
+  local case_dir rc head
+  case_dir=$(make_case parked-run-recover-custody-force)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(parked_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_AXI_STATUS_AFTER_ABORT="$(recover_custody_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "parked-run-recover-custody-force: --force should still refuse rather than discard unrecovered pipeline commits"
+  assert_grep "axi sync --recover" "$case_dir/stderr" \
+    "parked-run-recover-custody-force: --force path did not tell the operator how to land the preserved commit"
+  assert_present "$case_dir/wt" \
+    "parked-run-recover-custody-force: --force removed the worktree while pipeline-committed work was still unrecovered"
+  pass "--force does not bypass the unrecovered-pipeline-commits refusal"
 }
 
 test_mismatched_run_after_abort_refuses_unconfirmed() {
@@ -2705,6 +2771,7 @@ test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
 test_parked_own_run_is_aborted_before_teardown
 test_parked_run_abort_leaves_unrecovered_commits_refuses
+test_parked_run_abort_leaves_unrecovered_commits_refuses_under_force
 test_parked_own_run_refuses_when_abort_is_unconfirmed
 test_mismatched_run_after_abort_refuses_unconfirmed
 test_empty_status_after_abort_refuses_unconfirmed

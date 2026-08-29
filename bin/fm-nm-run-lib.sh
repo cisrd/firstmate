@@ -86,33 +86,60 @@ fm_nm_head_resolvable() {  # <worktree> <head>
   git -C "$1" rev-parse --verify --quiet "$2^{commit}" >/dev/null 2>&1
 }
 
+# Text of top-level TOON block $2 (e.g. branch_sync) in captured `axi status`
+# output $1: every line from the block's own header through the next
+# top-level (zero-indent) key, header dropped and the block's own
+# indentation stripped so its direct children read as top-level - letting a
+# caller re-scope into one of THOSE children by calling this again on the
+# result (fm_nm_branch_sync_next_action_code does exactly that for
+# branch_sync's next_action: child, below).
+fm_nm_toon_block() {  # <toon-output> <block-key>
+  printf '%s\n' "$1" | sed -n "
+    /^[[:space:]]*$2:[[:space:]]*\$/,/^[^[:space:]][^:]*:/{
+      /^[[:space:]]*$2:[[:space:]]*\$/d
+      s/^  //
+      p
+    }"
+}
+
+# First scalar value of key $2 anywhere in already-scoped TOON block text $1
+# (typically fm_nm_toon_block's output). Safe only when no nested sub-block
+# still present in that scope reuses the same key ahead of the one intended;
+# each caller below names that invariant for its own key.
+fm_nm_toon_field() {  # <block-text> <field-key>
+  local s
+  s=$(printf '%s\n' "$1" \
+    | sed -n "s/^[[:space:]]*$2:[[:space:]]*\(.*\)/\1/p" \
+    | head -1)
+  fm_nm_strip_quotes "$s"
+}
+
 # branch_sync.state from captured `axi status` TOON $1: the scalar directly
 # under the top-level `branch_sync:` block. The first `state:` inside the
 # block is the direct child (the nested local/pipeline/target/remote
 # sub-blocks carry no `state:` key). Empty when the block is absent: no run
 # on the current branch, another branch's run, or a CLI without branch sync.
 fm_nm_branch_sync_state() {  # <toon-output>
-  local s
-  s=$(printf '%s\n' "$1" \
-    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}state:[[:space:]]*\(.*\)/\1/p' \
-    | head -1)
-  fm_nm_strip_quotes "$s"
+  fm_nm_toon_field "$(fm_nm_toon_block "$1" branch_sync)" state
 }
 
-# branch_sync.next_action.code from captured `axi status` TOON $1: same
-# first-match-in-block technique as fm_nm_branch_sync_state, since no other
-# branch_sync sub-block (local/pipeline/target/remote) carries a `code:` key.
+# branch_sync.next_action.code from captured `axi status` TOON $1.
+# `code:` is NOT unique to next_action within branch_sync in general the way
+# `state:` is unique to fm_nm_branch_sync_state's search above - a future
+# no-mistakes release could add another code-bearing branch_sync sub-block
+# ordered before next_action, which would silently mismatch a `state:`-style
+# any-depth search. So this scopes twice instead: first to the branch_sync
+# block, then to its next_action: child specifically, and only then looks for
+# code: - anchored to the one sub-block that actually carries it today.
 # `recover_custody` means the run left pipeline-committed work that never
 # reached this worktree's branch (a fix round the daemon committed in its own
 # gate-repo clone before the run went terminal) - `no-mistakes axi sync
 # --recover` is the only way to land it. fm-teardown.sh's Fix 1 uses this to
 # refuse discarding that work instead of orphaning it under a removed worktree.
 fm_nm_branch_sync_next_action_code() {  # <toon-output>
-  local s
-  s=$(printf '%s\n' "$1" \
-    | sed -n '/^[[:space:]]*branch_sync:[[:space:]]*$/,/^[^[:space:]][^:]*:/s/^[[:space:]]\{1,\}code:[[:space:]]*\(.*\)/\1/p' \
-    | head -1)
-  fm_nm_strip_quotes "$s"
+  local branch_sync
+  branch_sync=$(fm_nm_toon_block "$1" branch_sync)
+  fm_nm_toon_field "$(fm_nm_toon_block "$branch_sync" next_action)" code
 }
 
 # 0 if the run in captured `axi status` TOON $1 is still in flight: no

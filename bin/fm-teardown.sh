@@ -132,16 +132,30 @@
 #     gate with `--action fix` and was removed before answering the resulting
 #     fix-review gate) commits that round in the daemon's own gate-repo clone,
 #     never in this worktree - reproduced live 2026-08-29: aborting such a run
-#     leaves `axi status --run <id>`'s branch_sync.next_action.code set to
+#     leaves `axi status`'s branch_sync.next_action.code set to
 #     `recover_custody`, meaning the commit exists only in the gate and this
 #     worktree's own git log never advanced past the pre-fix head. Removing the
 #     worktree at that point is unlanded-work loss no `git status` check here
 #     ever sees, because the work was never in this worktree to begin with.
-#     conclude_task_no_mistakes_run therefore refuses when abort's confirming
-#     `axi status` still reports `recover_custody`, the same fail-closed shape
-#     as the still-parked refusal below, so the operator runs `no-mistakes axi
-#     sync --recover` to land the commit (or discards it with explicit
-#     authority) before worktree removal can proceed.
+#     worktree_has_unrecovered_pipeline_commits (below) is a SEPARATE, always-
+#     evaluated precondition guarding exactly this - not a tail branch of the
+#     abort above, and deliberately not gated by task_run_is_own_parked_run's
+#     parked-only outcome filter: a first review round (2026-08-29) caught that
+#     an abort-tail-branch version only protects the FIRST teardown attempt,
+#     because its own successful abort sets `outcome`, so a retry - the actual
+#     path a supervisor takes after this exact refusal - no longer reads as
+#     "parked", skips the check entirely, and destroys the worktree anyway.
+#     Re-reading `axi status` fresh on every invocation, with no memory of a
+#     prior attempt, makes the refusal idempotent by construction: attempt 2,
+#     3, or 10 sees the same unrecovered `recover_custody` state and refuses
+#     identically until the operator actually runs `no-mistakes axi sync
+#     --recover` (landing it, so the worktree's own `git status` now sees it
+#     as ordinary uncommitted-then-committed history) or discards it with
+#     explicit authority. Like the still-parked refusal above, `--force` does
+#     NOT bypass this - unrecovered pipeline commits are unlanded work, and
+#     hard rule 3 never discards that without the captain's explicit word for
+#     that specific discard; the only route past it is the same one available
+#     without `--force` at all (recover it, or resolve it outside teardown).
 #   Fix 2 - reap leaked descendant processes. A backgrounded/disowned process
 #     started under the worktree (or its per-task tasktmp) does not receive the
 #     SIGHUP/SIGTERM that closing the backend pane sends to its own foreground
@@ -1557,7 +1571,7 @@ task_status_is_run_not_found() {  # <status-error> <run-id>
 # worktree (scouts and secondmates never do, mirroring bin/fm-crew-state.sh);
 # a run not attributed to this exact branch+head is left completely alone.
 conclude_task_no_mistakes_run() {  # <worktree>
-  local wt=$1 out run_id next_action
+  local wt=$1 out run_id
   [ "$KIND" = ship ] || return 0
   [ -d "$wt" ] || return 0
   command -v no-mistakes >/dev/null 2>&1 || return 0
@@ -1568,19 +1582,40 @@ conclude_task_no_mistakes_run() {  # <worktree>
   # live-state condition; fully closing the resume race needs upstream compare-and-cancel.
   fm_nm_run_checked "$wt" "$NM_TEARDOWN_TIMEOUT" axi abort --run "$run_id" >/dev/null 2>&1 || true
   if out=$(fm_nm_run_bounded "$wt" "$NM_TEARDOWN_TIMEOUT" axi status --run "$run_id" 2>&1); then
-    if task_status_is_terminal_run "$out" "$run_id"; then
-      next_action=$(fm_nm_branch_sync_next_action_code "$out")
-      if [ "$next_action" = recover_custody ]; then
-        echo "REFUSED: no-mistakes run for $ID left pipeline-committed work in the gate that never reached this worktree ($wt); run 'no-mistakes axi sync --recover' there to land it, or discard it with explicit authority, before retrying teardown." >&2
-        return 1
-      fi
-      return 0
-    fi
+    task_status_is_terminal_run "$out" "$run_id" && return 0
   elif task_status_is_run_not_found "$out" "$run_id"; then
     return 0
   fi
   echo "REFUSED: no-mistakes run for $ID is still parked after axi abort; confirm it stopped (no-mistakes axi status) or abort it manually (no-mistakes axi abort --run <id>) before retrying teardown." >&2
   return 1
+}
+
+# Independent precondition (see header "Fix 1" for the full rationale): does
+# axi status, read fresh from worktree $1 for whatever run it currently
+# reports on this checked-out branch, show unrecovered pipeline-committed work
+# (branch_sync.next_action.code=recover_custody)? Deliberately separate from
+# conclude_task_no_mistakes_run above and from task_run_is_own_parked_run's
+# parked-only outcome filter - re-evaluated from scratch on every call with no
+# memory of a prior teardown attempt, so a retry after conclude_task_no_mistakes_run's
+# own abort (which sets outcome, so the run no longer "looks parked") still
+# sees the same unrecovered state and refuses identically. Fail-open on a
+# query failure, the same accepted residual task_run_is_own_parked_run already
+# takes above: making no-mistakes availability a hard prerequisite would block
+# every ship-task teardown whenever the daemon has a hiccup, and a real
+# unrecovered-commits case is caught again on the very next retry once it
+# answers.
+worktree_has_unrecovered_pipeline_commits() {  # <worktree>
+  local wt=$1 out branch run_branch
+  [ "$KIND" = ship ] || return 1
+  [ -d "$wt" ] || return 1
+  command -v no-mistakes >/dev/null 2>&1 || return 1
+  branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
+  [ -n "$branch" ] || return 1
+  out=$(fm_nm_run "$wt" "$NM_TEARDOWN_TIMEOUT" axi status)
+  [ -n "$out" ] || return 1
+  run_branch=$(fm_nm_strip_quotes "$(fm_nm_field "$out" branch)")
+  [ -n "$run_branch" ] && [ "$run_branch" = "$branch" ] || return 1
+  [ "$(fm_nm_branch_sync_next_action_code "$out")" = recover_custody ]
 }
 
 # Fix 2 (see script header): pids of every process whose CURRENT WORKING
@@ -2698,6 +2733,27 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
     fi
   fi
 fi
+
+
+# Every landed/discard-work refusal above has now passed (or --force skipped
+# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
+# --force, and before ANY destructive step below - a still-parked run or a
+# leaked process can own live work in this exact worktree. Not for
+# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
+# dedicated process-event and firstmate-home removal machinery further below,
+# not by task-worktree cleanup.
+if [ "$KIND" != secondmate ]; then
+  conclude_task_no_mistakes_run "$WT"
+  if worktree_has_unrecovered_pipeline_commits "$WT"; then
+    echo "REFUSED: no-mistakes run for $ID left pipeline-committed work in the gate that never reached this worktree ($WT); run 'no-mistakes axi sync --recover' there to land it, or discard it with explicit authority, before retrying teardown." >&2
+    exit 1
+  fi
+  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
+fi
+
+# Fix 3 (see script header): sweep remote job workers abandoned by an already
+# pruned code root. Best effort - a sweep failure never blocks this teardown.
+"$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
 
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
