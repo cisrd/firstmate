@@ -35,7 +35,12 @@
 #     being passed over in silence.
 #   - Only LOCAL records are grouped: a record carrying remote_host= names a
 #     path on another machine, so it can never collide with a local worktree.
-#   - A path claimed by exactly one record never produces a line.
+#   - A path claimed by exactly one record never produces a line, and neither
+#     does a path whose second record is torn down mid-scan - the collision has
+#     resolved itself, so the vanished record is dropped rather than named.
+#   - Grouping is by the recorded path byte-for-byte, so a path containing a
+#     backslash still names every claimant instead of printing a claimant-less
+#     line.
 #   - bin/fm-bootstrap.sh surfaces the same line and stays silent on a clean
 #     home, matching every other detect-only bootstrap check's contract.
 set -u
@@ -120,6 +125,28 @@ test_path_state_classification() {
   [ "$got" = uninspectable ] \
     || fail "a path that exists but is not a readable git worktree should classify as uninspectable, got '$got'"
 
+  # Present but not a work tree at all: a plain file, a bare repository, and a
+  # dangling symlink each leave `-d`/exit-status probes free to fall back on a
+  # reassuring verdict. None of them proves the recorded copy is gone, so none
+  # of them may read `missing`.
+  wt="$TMP_ROOT/file-at-path"
+  printf 'not a worktree\n' > "$wt"
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" = uninspectable ] \
+    || fail "a plain file left at the recorded path is not proof the copy is gone, got '$got'"
+
+  wt="$TMP_ROOT/bare-repo"
+  git init -q --bare "$wt"
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" = uninspectable ] \
+    || fail "a bare repository has no work tree to inspect, exactly as bin/fm-teardown.sh treats it, got '$got'"
+
+  wt="$TMP_ROOT/dangling-link"
+  ln -s "$TMP_ROOT/never-existed" "$wt"
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" = uninspectable ] \
+    || fail "a dangling symlink at the recorded path is still an entry that could not be inspected, got '$got'"
+
   wt="$TMP_ROOT/landed-wt"
   make_worktree "$wt"
   got=$(fm_worktree_collision_path_state "$wt")
@@ -139,7 +166,7 @@ test_path_state_classification() {
   [ "$got" = unlanded ] \
     || fail "a clean worktree whose HEAD is not reachable from the default branch should classify as unlanded, got '$got'"
 
-  pass "fm_worktree_collision_path_state: missing, uninspectable, landed, and unlanded verdicts from the path alone"
+  pass "fm_worktree_collision_path_state: only an empty path reads missing; anything uninspectable keeps its warning"
 }
 
 test_claimant_process_classification() {
@@ -367,7 +394,106 @@ test_collision_lines_uninspectable_path_keeps_do_not_discard() {
   assert_not_contains "$out" "no longer exists" \
     "a path that is still on disk must never be reported as gone"
 
+  # The same guarantee for a pool slot that is present but has no work tree at
+  # all - the case bin/fm-teardown.sh's own --show-toplevel probe refuses on.
+  wt="$TMP_ROOT/wt-bare-shared"
+  git init -q --bare "$wt"
+  fm_write_meta "$state/fm-u-a.meta" "window=deadsess:win" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-u-b.meta" "window=deadsess:win" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: stale $wt claimed by fm-u-a (process gone), fm-u-b (process gone) - shared path is not an inspectable git worktree, so whether work would be lost cannot be verified, do not discard" \
+    "a shared path with no inspectable work tree must keep the do-not-discard warning"
+  assert_not_contains "$out" "no longer exists" \
+    "a path git could not inspect must never be reported as gone"
+
   pass "fm_worktree_collision_lines: an uninspectable shared path is never reported as empty"
+}
+
+# A recorded worktree path may contain any character a directory name can hold.
+# A backslash used to be eaten by awk's own escape processing before the path
+# was compared, so no record matched, and the line printed with nothing at all
+# after "claimed by" - a collision naming no claimant.
+test_collision_lines_path_with_backslash_names_every_claimant() {
+  local state fakebin wt out
+  local leaf='wt-back\tslash'
+
+  state="$TMP_ROOT/backslash-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/backslash-tmux")
+
+  wt="$TMP_ROOT/$leaf"
+  make_worktree "$wt"
+  echo dirty > "$wt/scratch.txt"
+  fm_write_meta "$state/fm-bs-a.meta" "window=livesess:alive" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-bs-b.meta" "window=livesess:ambig" "worktree=$wt" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-bs-a (process alive), fm-bs-b (process state unknown (backend=tmux reported ambiguous)) - shared path still has unlanded work, do not discard" \
+    "a worktree path containing a backslash must still group its records and name every claimant"
+  assert_not_contains "$out" "claimed by -" \
+    "a collision line must never print with no claimant at all"
+  assert_not_contains "$out" "claimed by $wt" \
+    "a collision line must never print with no claimant at all"
+
+  pass "fm_worktree_collision_lines: a path with a backslash still names every claimant"
+}
+
+# The scan is a snapshot taken without a fleet lock, so bin/fm-teardown.sh can
+# remove state/<id>.meta between the snapshot and that record's process probe.
+# The vanished record must be dropped, never reported as an unverifiable hazard
+# pointing the reader at a record that no longer exists - and a path left with
+# one surviving claimant is no longer a collision at all.
+test_collision_lines_record_removed_mid_scan_is_dropped() {
+  local state fakebin wt out
+  local vanish_target=
+
+  state="$TMP_ROOT/vanish-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/vanish-tmux")
+
+  wt="$TMP_ROOT/wt-vanish"
+  make_worktree "$wt"
+  echo dirty > "$wt/scratch.txt"
+
+  # Drop the record from disk as the scan finishes reading it, which is exactly
+  # where a concurrent teardown lands: present for the snapshot, gone for the
+  # probe.
+  eval "$(declare -f fm_meta_get | sed '1s/^fm_meta_get/fm_meta_get_orig/')"
+  fm_meta_get() {
+    fm_meta_get_orig "$@"
+    if [ -n "$vanish_target" ] && [ "$2" = remote_host ] && [ "$1" = "$vanish_target" ]; then
+      rm -f "$1"
+    fi
+  }
+  vanish_target="$state/fm-torn-down.meta"
+
+  fm_write_meta "$state/fm-live-a.meta" "window=livesess:alive" "worktree=$wt" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-live-b.meta" "window=livesess:alive" "worktree=$wt" "harness=codex" "kind=ship"
+  fm_write_meta "$vanish_target" "window=livesess:alive" "worktree=$wt" "harness=claude" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-live-a (process alive), fm-live-b (process alive) - shared path still has unlanded work, do not discard" \
+    "the surviving claimants of a still-real collision must still be reported"
+  assert_not_contains "$out" "fm-torn-down" \
+    "a record removed during the scan must never be named as a claimant"
+
+  # Only one record survives the teardown, so the collision has resolved itself.
+  rm -f "$state/fm-live-b.meta"
+  fm_write_meta "$vanish_target" "window=livesess:alive" "worktree=$wt" "harness=claude" "kind=ship"
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  unset -f fm_meta_get
+  eval "$(declare -f fm_meta_get_orig | sed '1s/^fm_meta_get_orig/fm_meta_get/')"
+  unset -f fm_meta_get_orig
+
+  [ -z "$out" ] \
+    || fail "a path left with one surviving record is no longer a collision, got:"$'\n'"$out"
+
+  pass "fm_worktree_collision_lines: a record torn down mid-scan is dropped, not reported as a phantom hazard"
 }
 
 # Remote secondmate records name a home on another machine: that path is unique
@@ -465,6 +591,8 @@ test_collision_lines_live_claimants_wip_stays_path_level
 test_collision_lines_all_dead_unlanded_keeps_caveat
 test_collision_lines_gone_path_is_always_reported
 test_collision_lines_uninspectable_path_keeps_do_not_discard
+test_collision_lines_path_with_backslash_names_every_claimant
+test_collision_lines_record_removed_mid_scan_is_dropped
 test_collision_lines_skips_remote_records
 test_collision_lines_silent_on_clean_home
 test_bootstrap_surfaces_collision_line
