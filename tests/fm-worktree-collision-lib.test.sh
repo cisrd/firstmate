@@ -24,10 +24,10 @@
 #     caveat, so a leftover record is never cleaned up blind - including when
 #     every claimant's process is gone, where the caveat is the only thing
 #     keeping the hazard from going silent.
-#   - Path state modulates only whether a collision is reported, never the
-#     kind: over a path that no longer exists an unreadable process state
-#     stops manufacturing a collision, while a confirmed-alive claimant is
-#     still reported there.
+#   - Path state never decides the kind and never withholds a line: every
+#     colliding path prints exactly one line, an unverifiable process stays a
+#     hazard even over a path that no longer exists, and that vanished path is
+#     stated as its own caveat instead of being passed over in silence.
 #   - Only LOCAL records are grouped: a record carrying remote_host= names a
 #     path on another machine, so it can never collide with a local worktree.
 #   - A path claimed by exactly one record never produces a line.
@@ -204,10 +204,10 @@ test_collision_lines_grouping() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt_live claimed by fm-live-a (process alive), fm-live-b (process state unknown)" \
-    "two hazardous processes on one worktree should be reported as a live collision naming both verdicts"
-  assert_not_contains "$out" "$wt_live claimed by fm-live-a (process alive), fm-live-b (process state unknown) -" \
-    "a live collision needs no path-level caveat - a hazardous claimant is already the whole story"
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt_live claimed by fm-live-a (process alive), fm-live-b (process state unknown (backend=tmux not verifiable))" \
+    "two hazardous processes on one worktree should be reported as a live collision naming both verdicts and the unverifiable backend"
+  assert_not_contains "$out" "not verifiable)) -" \
+    "a live collision over a path that still exists needs no path-level caveat"
 
   assert_contains "$out" "WORKTREE_COLLISION: stale $wt_stale claimed by fm-new-active (process alive), fm-old-finished (process gone)" \
     "a finished task's leftover record alongside one live task should read stale and name each process verdict"
@@ -287,10 +287,11 @@ test_collision_lines_all_dead_unlanded_keeps_caveat() {
   pass "fm_worktree_collision_lines: unlanded work is never silent even when no process is a hazard"
 }
 
-# A path that no longer exists cannot be contended over, so an unreadable
-# process state must not invent a collision there - but a confirmed-alive agent
-# whose worktree is unaccounted for is exactly the anomaly worth surfacing.
-test_collision_lines_gone_path_suppression_is_asymmetric() {
+# A path that no longer exists is still a path two records both claim, so it is
+# never dropped from the output: the vanished path becomes its own caveat, and
+# an unverifiable process stays a hazard there exactly as it would anywhere
+# else - the detector says what it cannot verify rather than staying silent.
+test_collision_lines_gone_path_is_always_reported() {
   local state fakebin gone_path out
 
   state="$TMP_ROOT/gone-state"
@@ -302,15 +303,24 @@ test_collision_lines_gone_path_suppression_is_asymmetric() {
   fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:ambig" "worktree=$gone_path" "harness=codex" "kind=ship"
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  [ -z "$out" ] \
-    || fail "two unreadable process states over an already-torn-down worktree must not manufacture a collision, got:"$'\n'"$out"
+  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux not verifiable)), fm-ambig-b (process state unknown (backend=tmux not verifiable)) - shared worktree no longer exists at that path" \
+    "two unverifiable claimants of a torn-down worktree must still be reported, naming the backend that could not answer and the vanished path"
 
+  # A confirmed-alive claimant over the same vanished path: still reported, and
+  # the alive claimant is named as the hazard it is.
   fm_write_meta "$state/fm-ambig-b.meta" "window=livesess:alive" "worktree=$gone_path" "harness=codex" "kind=ship"
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: stale $gone_path claimed by fm-ambig-a (process state unknown), fm-ambig-b (process alive)" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $gone_path claimed by fm-ambig-a (process state unknown (backend=tmux not verifiable)), fm-ambig-b (process alive) - shared worktree no longer exists at that path" \
     "a confirmed-alive claimant of a worktree that no longer exists must still be reported"
 
-  pass "fm_worktree_collision_lines: a gone path silences unreadable claimants but never a live one"
+  # One hazard only (alive plus a finished record) reads stale, and the gone
+  # caveat is a path fact, so it rides that kind too.
+  fm_write_meta "$state/fm-ambig-a.meta" "window=deadsess:win" "worktree=$gone_path" "harness=claude" "kind=ship"
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+  assert_contains "$out" "WORKTREE_COLLISION: stale $gone_path claimed by fm-ambig-a (process gone), fm-ambig-b (process alive) - shared worktree no longer exists at that path" \
+    "a live claimant beside a finished record over a vanished path reads stale and still carries the gone caveat"
+
+  pass "fm_worktree_collision_lines: a vanished path is reported with its own caveat, never silenced"
 }
 
 # Remote secondmate records name a home on another machine: that path is unique
@@ -338,7 +348,7 @@ test_collision_lines_skips_remote_records() {
   fm_write_meta "$state/fm-local-y.meta" "window=livesess:ambig" "worktree=$wt" "harness=codex" "kind=ship"
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
-  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-local-x (process alive), fm-local-y (process state unknown)" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $wt claimed by fm-local-x (process alive), fm-local-y (process state unknown (backend=tmux not verifiable))" \
     "the local pair sharing that same path must still be reported"
   assert_not_contains "$out" "fm-remote-a" \
     "a remote record must never be named as a claimant of a local worktree"
@@ -406,7 +416,7 @@ test_claimant_process_classification
 test_collision_lines_grouping
 test_collision_lines_live_claimants_wip_stays_path_level
 test_collision_lines_all_dead_unlanded_keeps_caveat
-test_collision_lines_gone_path_suppression_is_asymmetric
+test_collision_lines_gone_path_is_always_reported
 test_collision_lines_skips_remote_records
 test_collision_lines_silent_on_clean_home
 test_bootstrap_surfaces_collision_line

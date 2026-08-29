@@ -32,9 +32,10 @@
 #          does, so the rest are finished tasks' leftover records rather than a
 #          real collision. Unlanded shared work never makes a collision `live`
 #          - a `stale` line says so once, for the path rather than for any one
-#          claimant, so the hazard is still never silent. This check only
-#          detects and never repairs, because an automatic fix could discard
-#          unlanded work.
+#          claimant, so the hazard is still never silent; a path that no longer
+#          exists carries its own caveat on either kind. No colliding path is
+#          ever dropped from the output. This check only detects and never
+#          repairs, because an automatic fix could discard unlanded work.
 #          When a RUNNING local secondmate worktree is fast-forwarded to
 #          firstmate's own current default-branch commit, that update is a
 #          purely local fast-forward and never an origin fetch. Remote routes
