@@ -986,6 +986,20 @@ busy_progress_counters_only() {  # <tail40>
   printf '%s' "$counters" | tr '\n' ' '
 }
 
+# WHICH agent currently occupies this window: the spawn record's mtime, which
+# both a fresh spawn and a relaunch rewrite, and the semantic busy record's
+# generation, which is re-minted per incarnation. A window's name - and so every
+# per-window marker keyed by it - outlives teardown, respawn and relaunch of the
+# same task id, while what a harness renders does not, so the evidence below
+# names the incarnation that earned it and is never inherited by its successor.
+busy_progress_incarnation() {  # <task>
+  local meta gen
+  meta=$(stat_mtime "$STATE/$task.meta" || true)
+  gen=$(sed -n 's/.*[[:space:]]gen=\([^[:space:]][^[:space:]]*\).*/\1/p' \
+    "$STATE/$task.busy-state" 2>/dev/null | tail -1)
+  printf 'meta=%s gen=%s' "${meta:-none}" "${gen:-none}"
+}
+
 # The busy-pane progress report: the one path that can see a worker frozen
 # INSIDE a turn. Runs on every poll of a busy pane, next to - never instead of -
 # busy_turn_bound_check, whose completed-turn bound stays exactly as it was.
@@ -1017,9 +1031,13 @@ busy_progress_counters_only() {  # <tail40>
 # like one - which static content can never do and a real meter does within the
 # first seconds of generation. Until then the pane is treated exactly like a
 # counter-free harness. The evidence is per window and kept for the task's life,
-# so a worker that froze after its first tokens is still covered.
+# so a worker that froze after its first tokens is still covered - but only for
+# THAT life: it is stamped with the incarnation that earned it, because the
+# window survives teardown, respawn and relaunch while the agent behind it does
+# not, and a replacement (a different harness, or one that renders no counters
+# at all) has proved nothing about its own numbers yet.
 busy_progress_check() {  # <window> <task> <tail40> <window-key>
-  local win=$1 task=$2 tail40=$3 key=$4 fpf sincef cfpf movedf fp prev cfp prevc since age reason
+  local win=$1 task=$2 tail40=$3 key=$4 fpf sincef cfpf movedf fp prev cfp prevc since age reason incarnation
   [ -n "$task" ] || return 0
   fpf="$STATE/.progress-fp-$key"
   sincef="$STATE/.progress-since-$key"
@@ -1033,6 +1051,12 @@ busy_progress_check() {  # <window> <task> <tail40> <window-key>
     clear_progress_tracking "$key"
     return 0
   fi
+  incarnation=$(busy_progress_incarnation "$task")
+  if [ -e "$movedf" ] && [ "$(cat "$movedf" 2>/dev/null || true)" != "$incarnation" ]; then
+    rm -f "$movedf"
+    clear_progress_tracking "$key"
+    triage_log "busy progress evidence retired with the incarnation that earned it (this window holds a different agent now, which has proved nothing about its own numbers): $win"
+  fi
   fp=$(busy_progress_fingerprint "$task" "$tail40")
   prev=$(cat "$fpf" 2>/dev/null || true)
   cfp=$(busy_progress_counters_only "$tail40")
@@ -1041,7 +1065,7 @@ busy_progress_check() {  # <window> <task> <tail40> <window-key>
   # seen to change. Recorded before the gate below, so the very poll that proves
   # the numbers move is also the one that arms the measure.
   if [ -n "$cfp" ] && [ -n "$prevc" ] && [ "$cfp" != "$prevc" ] && [ ! -e "$movedf" ]; then
-    : > "$movedf"
+    printf '%s' "$incarnation" > "$movedf"
     triage_log "busy progress now measurable (this worker's rendered counters were observed changing): $win"
   fi
   if [ -n "$cfp" ]; then

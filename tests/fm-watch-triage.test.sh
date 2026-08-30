@@ -3508,12 +3508,25 @@ test_busy_no_progress_default_is_1500s() {
   key=$(printf '%s' "$window" | tr ':/.' '___')
   touch "$state/busy-default-prog.turn-ended"
   prime_turnend_seen "$state/busy-default-prog.turn-ended"
-  printf 'counters=1 act:turn=%s act:status=%s act:busy=1 tok:n=2481 ' \
-    "$(file_mtime "$state/busy-default-prog.turn-ended")" "$(seen_sig "$state/busy-default-prog.status")" \
-    > "$state/.progress-fp-$key"
-  # This worker generated earlier, so its meter is already proven real.
-  printf 'tok:n=2481 ' > "$state/.progress-counters-$key"
-  : > "$state/.progress-moved-$key"
+  # This worker generated earlier, so its meter is proven real - earned here the
+  # way production earns it, by watching the count advance between two readings,
+  # which is also what stamps the evidence with this incarnation. The reading and
+  # the timer this cycle records are what the two measuring phases then run on.
+  printf 'tok:n=2344 ' > "$state/.progress-counters-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "the shipped-default arming cycle unexpectedly surfaced: $(cat "$out")"
+  fi
+  [ -e "$state/.progress-moved-$key" ] \
+    || { reap "$pid"; fail "the arming cycle did not prove this window renders a real meter"; }
+  [ -s "$state/.progress-fp-$key" ] \
+    || { reap "$pid"; fail "the arming cycle recorded no progress reading"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional shipped-default arming stop"
+  : > "$out"
 
   # 22 minutes frozen: a long legitimate call, and the default must ride it out.
   echo $(( $(date +%s) - 1320 )) > "$state/.progress-since-$key"
@@ -3683,6 +3696,74 @@ test_arming_evidence_outlives_an_idle_poll() {
   pass "a window proven to render a real meter stays trusted across an idle poll, so a freeze at the start of the next turn is still reported"
 }
 
+# Review finding, 2026-08-30: a window outlives the agent inside it. Its name is
+# derived from the task id, so every per-window marker keyed by it survives
+# teardown and respawn of that id, and survives `fm-control.sh <id> relaunch`,
+# which keeps the id and the window while replacing the runtime. The arming
+# evidence is a claim about ONE agent's rendered numbers, so a successor must
+# never inherit it: most verified harnesses render no meter this can read, and a
+# replacement running the short fuse on the harness-neutral fields alone would
+# be reported as "busy but no progress" while sitting healthily on one long
+# call - a false report about a pane whose progress was never measured at all.
+test_replaced_incarnation_starts_unarmed() {
+  local dir state fakebin out capture_file window key sig pid
+  dir=$(make_case progress-relaunch-unarms); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-progress-relaunch"
+  busy_footer 61 2481 > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/progress-relaunch.meta"
+  record_pi_busy "$state" progress-relaunch
+  printf 'working: generating\n' > "$state/progress-relaunch.status"
+  sig=$(seen_sig "$state/progress-relaunch.status"); printf '%s' "$sig" > "$state/.seen-progress-relaunch_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch "$state/progress-relaunch.turn-ended"
+  prime_turnend_seen "$state/progress-relaunch.turn-ended"
+
+  # The agent that is here now generates, and that arms the measure for IT.
+  printf 'tok:n=2344 ' > "$state/.progress-counters-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_BUSY_NO_PROGRESS_SECS=999999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "the arming cycle unexpectedly surfaced: $(cat "$out")"
+  fi
+  [ -e "$state/.progress-moved-$key" ] \
+    || { reap "$pid"; fail "a count that advanced between two readings did not arm the measure"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional arming stop"
+
+  # A different agent takes the same window: the spawn record is rewritten and
+  # the busy record re-armed, which is what both a respawn of the id and a
+  # relaunch onto another runtime do. This one renders no counter at all, so
+  # nothing about ITS progress can ever be measured.
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/progress-relaunch.meta"
+  record_pi_busy "$state" progress-relaunch
+  printf 'Working (6s - esc to interrupt)\n' > "$capture_file"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_BUSY_NO_PROGRESS_SECS=1 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  for _ in 1 2 3; do
+    if ! wait_poll_cycle "$state" "$pid"; then
+      reap "$pid"; fail "a counter-free replacement inherited its predecessor's arming evidence and was reported as frozen: $(cat "$out")"
+    fi
+  done
+  [ ! -s "$out" ] || { reap "$pid"; fail "a replacement agent produced a progress wake off evidence it never earned: $(cat "$out")"; }
+  [ ! -e "$state/.progress-moved-$key" ] \
+    || { reap "$pid"; fail "the retired incarnation's arming evidence was left armed for its successor"; }
+  [ ! -e "$state/.progress-since-$key" ] \
+    || { reap "$pid"; fail "a frozen-window timer ran against a replacement whose progress cannot be measured"; }
+  grep -F 'busy progress evidence retired with the incarnation that earned it' "$state/.watch-triage.log" >/dev/null \
+    || { reap "$pid"; fail "nothing recorded why the arming evidence was dropped: $(cat "$state/.watch-triage.log" 2>/dev/null)"; }
+  grep -F 'busy progress unmeasurable' "$state/.watch-triage.log" >/dev/null \
+    || { reap "$pid"; fail "the replacement was not recorded as an admitted blind spot: $(cat "$state/.watch-triage.log" 2>/dev/null)"; }
+  reap "$pid"
+  pass "arming evidence is retired with the incarnation that earned it, so a replacement agent starts unarmed instead of inheriting a meter it never rendered"
+}
+
 # An operator-supplied fuse that is zero, negative, or not a number must not
 # reach the comparison: zero would report an unchanged busy pane on every poll,
 # and a non-numeric value would make the test error out and disable the report
@@ -3700,11 +3781,26 @@ test_invalid_no_progress_fuse_falls_back_to_the_default() {
     key=$(printf '%s' "$window" | tr ':/.' '___')
     touch "$state/busy-badfuse.turn-ended"
     prime_turnend_seen "$state/busy-badfuse.turn-ended"
+    # Arm the measure the way production does, by watching the count advance
+    # between two readings, so the evidence carries this incarnation's stamp.
+    printf 'tok:n=2344 ' > "$state/.progress-counters-$key"
+    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+      FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 \
+      FM_BUSY_NO_PROGRESS_SECS="$bad" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+    pid=$!
+    if ! wait_poll_cycle "$state" "$pid"; then
+      reap "$pid"; fail "an invalid fuse value ($bad) reported on the very poll that armed the measure: $(cat "$out")"
+    fi
+    [ -e "$state/.progress-moved-$key" ] \
+      || { reap "$pid"; fail "the arming cycle did not prove this window renders a real meter ($bad)"; }
+    reap "$pid"
+    ack_stopped_cycle "$state" || fail "could not acknowledge the intentional invalid-fuse arming stop ($bad)"
+    : > "$out"
+
     # An armed measure, frozen for 22 minutes: under the shipped 1500s default
     # this stays quiet, under a zero or negative fuse it would report at once,
     # and under a broken comparison nothing would ever report.
-    printf 'tok:n=2481 ' > "$state/.progress-counters-$key"
-    : > "$state/.progress-moved-$key"
     echo $(( $(date +%s) - 1320 )) > "$state/.progress-since-$key"
 
     PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
@@ -4647,6 +4743,7 @@ test_counterless_harness_is_admitted_not_guessed
 test_busy_no_progress_default_is_1500s
 test_static_counter_shaped_content_never_arms_the_measure
 test_arming_evidence_outlives_an_idle_poll
+test_replaced_incarnation_starts_unarmed
 test_invalid_no_progress_fuse_falls_back_to_the_default
 test_busy_declared_pause_is_rechecked_not_wedge_escalated
 test_afk_busy_declared_pause_hands_off_plain_stale
