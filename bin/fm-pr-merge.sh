@@ -29,7 +29,9 @@
 # The exception is a caller who already passed a forge-decides method with
 # --auto to a merge command that returned success, in which case it reports
 # instead that the accepted request has not entered the queue and the queue
-# state has to be re-checked.
+# state has to be re-checked. Because the retry does not vary with the queue's
+# method, that exception cannot either: it is decided once, and holds for every
+# rules outcome that would otherwise name the retry.
 # No method is selected for the caller in any case. A rules response that names
 # no queue rule, one that could not be read, rules that disagree, and a method
 # this script does not recognise are four distinct outcomes and are reported
@@ -655,8 +657,19 @@ github_queue_retry_command() {
   printf '%s %s %s -- --auto --no-method' "$0" "$ID" "$URL"
 }
 
+# Whether the merge command already accepted the exact flags a queue-governed
+# base takes, which makes naming that retry an echo of the command the caller
+# just ran. The retry never varies with the queue's configured method, so this
+# cannot vary with it either: it is decided once for every status that names a
+# retry rather than inside one of them.
+github_queue_retry_already_used() {
+  github_merge_command_succeeded \
+    && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
+    && github_caller_method_is_forge_decides
+}
+
 github_report_queue_rules() {
-  local queue_method methods_display
+  local queue_method methods_display situation
   github_read_queue_method
   case "$FM_PR_GITHUB_QUEUE_STATUS" in
     single)
@@ -665,32 +678,37 @@ github_report_queue_rules() {
         SQUASH) queue_method=squash ;;
         REBASE) queue_method=rebase ;;
       esac
-      if github_merge_command_succeeded \
-        && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
-        && github_caller_method_is_forge_decides; then
-        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --no-method, which leaves the queue'"'"'s own %s method to apply): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
-          "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
-      else
-        printf 'error: base branch %s requires the merge queue, which sets the merge method (%s) itself and refuses an explicit strategy; retry with: %s\n' \
-          "$FM_PR_GITHUB_BASE" "$queue_method" "$(github_queue_retry_command)" >&2
-      fi
+      printf -v situation \
+        'base branch %s requires the merge queue, which sets the merge method (%s) itself and refuses an explicit strategy' \
+        "$FM_PR_GITHUB_BASE" "$queue_method"
       ;;
     conflicting)
-      printf 'error: base branch %s has conflicting merge queue methods (%s), so which one it would apply is ambiguous; the merge queue applies its own without being told, so retry with: %s\n' \
-        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }" \
-        "$(github_queue_retry_command)" >&2
+      printf -v situation \
+        'base branch %s has conflicting merge queue methods (%s), so which one it would apply is ambiguous; the merge queue applies its own without being told' \
+        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }"
       ;;
     unrecognised)
       methods_display=${FM_PR_GITHUB_QUEUE_METHODS//,/, }
       [ -n "$methods_display" ] || methods_display='<none reported>'
-      printf 'error: base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises; the merge queue applies its own without being told, so retry with: %s\n' \
-        "$FM_PR_GITHUB_BASE" "$methods_display" "$(github_queue_retry_command)" >&2
+      printf -v situation \
+        'base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises; the merge queue applies its own without being told' \
+        "$FM_PR_GITHUB_BASE" "$methods_display"
       ;;
     unreadable)
       printf 'error: the branch rules for base branch %s could not be read, so a merge queue requirement can be neither confirmed nor ruled out here\n' \
         "${FM_PR_GITHUB_BASE:-<unknown>}" >&2
+      return 0
+      ;;
+    *)
+      return 0
       ;;
   esac
+  if github_queue_retry_already_used; then
+    printf 'error: %s; this run refuses even though the request for %s was accepted with the exact flags that base requires (--auto --no-method): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
+      "$situation" "$URL" >&2
+  else
+    printf 'error: %s; retry with: %s\n' "$situation" "$(github_queue_retry_command)" >&2
+  fi
 }
 
 github_report_unmerged_outcome() {
