@@ -1,0 +1,108 @@
+Queue-governed merge path, operator transcript
+==============================================
+bin/fm-pr-merge.sh run against stubbed forge CLIs that behave like a real
+GitHub repository whose base branch "main" is governed by a merge queue:
+  * `gh-axi pr merge` with --squash/--merge/--rebase fails with GitHub's own
+    refusal, "The merge strategy for main is set by the merge queue";
+  * `gh-axi pr merge` with no strategy is accepted and (with --auto) enqueues;
+  * `gh api .../rules/branches/main` returns the branch's merge_queue rule;
+  * `gh api graphql` returns the pull request's live state/merged/isInMergeQueue.
+Supervision-watcher banner lines ("WATCHER DOWN", unrelated to this change) are
+filtered out of this transcript; nothing else is edited.
+Harness: /tmp/fmq/transcript.sh (throwaway, outside the worktree).
+
+==================================================================
+1. Merging a PR whose base branch is governed by a GitHub merge queue
+   (no method flags -> the tool's historical --squash default)
+==================================================================
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/3335
+armed: state/task-x1.check.sh
+failed to merge pull request: The merge strategy for main is set by the merge queue
+error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+error: base branch main requires the merge queue, which sets the merge method (merge) itself and refuses an explicit strategy; retry with: bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/3335 -- --auto --no-method
+[exit 1]
+
+--- what reached the forge CLI ---
+gh-axi pr merge 3335 --repo example/repo --squash
+
+==================================================================
+2. Running the retry the refusal above printed, on the same PR
+==================================================================
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/3335 -- --auto --no-method
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/3335 is queued (state=OPEN, merged=false, isInMergeQueue=true)
+[exit 0]
+
+--- what reached the forge CLI (no strategy flag) ---
+gh-axi pr merge 3335 --repo example/repo --auto
+--- merge poll left armed, still waiting for a MERGED state ---
+state/task-x1.check.sh
+state/task-x1.meta
+state/task-x1.pr-poll
+state/task-x1.pr-poll-registration
+
+==================================================================
+3. Same retry, but required checks keep the PR out of the queue
+   (the guidance must not hand back the command just run)
+==================================================================
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/3335 -- --auto --no-method
+armed: state/task-x1.check.sh
+error: the merge command's own output follows, quoted; it is the forge CLI's report, not this script's verdict:
+error: > Pull request #3335 will be added to the merge queue when all requirements are met
+error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+error: auto-merge was requested and armed for https://github.com/example/repo/pull/3335, but nothing is merged or in the merge queue yet, so this run refuses instead of reporting an unproved merge
+error: base branch main requires the merge queue, which sets the merge method (merge) itself and refuses an explicit strategy; --auto --no-method is the only thing that base takes and this run already used it, so no different retry exists to name: the outcome reported above for https://github.com/example/repo/pull/3335 is the blocking cause, and re-check the pull request's merge queue state before running the same command again
+[exit 1]
+
+==================================================================
+3b. Same, with branch rules that disagree about the queue method
+==================================================================
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/3335 -- --auto --no-method
+armed: state/task-x1.check.sh
+error: the merge command's own output follows, quoted; it is the forge CLI's report, not this script's verdict:
+error: > Pull request #3335 will be added to the merge queue when all requirements are met
+error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+error: auto-merge was requested and armed for https://github.com/example/repo/pull/3335, but nothing is merged or in the merge queue yet, so this run refuses instead of reporting an unproved merge
+error: base branch main has conflicting merge queue methods (MERGE, SQUASH), so which one it would apply is ambiguous; the merge queue applies its own without being told; --auto --no-method is the only thing that base takes and this run already used it, so no different retry exists to name: the outcome reported above for https://github.com/example/repo/pull/3335 is the blocking cause, and re-check the pull request's merge queue state before running the same command again
+[exit 1]
+
+==================================================================
+3c. Same, with a queue method this tool does not recognise
+==================================================================
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/3335 -- --auto --no-method
+armed: state/task-x1.check.sh
+error: the merge command's own output follows, quoted; it is the forge CLI's report, not this script's verdict:
+error: > Pull request #3335 will be added to the merge queue when all requirements are met
+error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+error: auto-merge was requested and armed for https://github.com/example/repo/pull/3335, but nothing is merged or in the merge queue yet, so this run refuses instead of reporting an unproved merge
+error: base branch main requires the merge queue, but its configured merge method (FASTFORWARD) is not one this script recognises; the merge queue applies its own without being told; --auto --no-method is the only thing that base takes and this run already used it, so no different retry exists to name: the outcome reported above for https://github.com/example/repo/pull/3335 is the blocking cause, and re-check the pull request's merge queue state before running the same command again
+[exit 1]
+
+==================================================================
+4. Asking the forge to choose AND naming a strategy: refused up front
+==================================================================
+$ bin/fm-pr-merge.sh task-x1 https://github.com/example/repo/pull/3335 -- --no-method --squash
+error: extra merge arguments must not combine a forge-decides method (--no-method) with an explicit merge strategy (--squash)
+[exit 1]
+
+--- the forge CLI was never called ---
+(gh-axi.log is empty)
+
+==================================================================
+5. The same forge-decides token on GitLab, which has no such flag
+==================================================================
+$ bin/fm-pr-merge.sh task-x1 https://gitlab.com/example/repo/-/merge_requests/7 -- --no-method
+error: extra merge arguments must not ask GitLab to choose the merge method, which it already does
+[exit 1]
+
+--- glab was never called ---
+(glab.log is empty)
+
+==================================================================
+6. The armed merge poll from step 2, over the queued PR's lifetime
+   (queue membership is not a landing; only MERGED wakes the poll)
+==================================================================
+$ PR is OPEN (sitting in the merge queue)
+poll output: []
+$ the merge queue lands it, PR is MERGED
+poll output: [merged]
