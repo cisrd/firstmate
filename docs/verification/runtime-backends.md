@@ -303,7 +303,7 @@ It does not refresh the separate, already-known staleness of grok 1.0.5's `empty
 
 ### Ctrl+C interrupt, re-verified on grok 1.0.5
 
-The Interrupt fact for grok (`.agents/skills/harness-adapters/references/harness/grok.md`, `bin/fm-control-lib.sh:109-110`) was verified on grok 0.2.73 and had not been re-verified since.
+The Interrupt fact for grok (`.agents/skills/harness-adapters/references/harness/grok.md`, `bin/fm-control-lib.sh:109-121`) was verified on grok 0.2.73 and had not been re-verified since.
 The busy-footer capture above raised a live doubt: the approval dialog's footer advertises `Ctrl+c:cancel`, and a footer string is advertising, not proof of a key's actual behavior - the exact trap the busy-footer fix itself was written to avoid for `Esc:cancel`.
 So the same session re-verified Ctrl+C directly rather than carry that same kind of unproven claim forward.
 
@@ -317,7 +317,7 @@ Observed, checked directly against OS process state rather than trusting Grok's 
 - The composer footer returned to the genuinely idle shape (`Shift+Tab:mode | Ctrl+x:shortcuts`) within 1 second and accepted new input immediately.
 
 Conclusion: `Ctrl+C` cancels the turn AND kills the underlying command on grok 1.0.5, matching the 0.2.73 behavior this fact was originally verified against.
-The `Interrupt` row and the `bin/fm-control-lib.sh:109-110` comment are updated to cite this record instead of carrying forward an unverified claim.
+The `Interrupt` row and the `bin/fm-control-lib.sh:109-121` comment are updated to cite this record instead of carrying forward an unverified claim.
 This re-verification was hand-driven too (the same private tmux session, `tmux send-keys` plus manual `kill -0` and `tmux capture-pane` polling) with no scripted `live-harness-optin` refresh guard, so it cannot self-refresh on a future Grok upgrade the way this file's guarded checks do.
 
 ## Steering-inbox doorbell
