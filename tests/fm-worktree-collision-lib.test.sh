@@ -16,6 +16,9 @@
 #     verdict that names which probe failed and keeps the do-not-discard force.
 #     A failed probe never reaches `landed` or `missing` (falsely reassuring)
 #     and never claims `unlanded` work it did not see (falsely alarming).
+#     `landed` is earned only against the PUBLISHED default branch: work
+#     merged into a local default branch that was pushed nowhere is not
+#     proven safe to reclaim, so it never drops the do-not-discard caveat.
 #   - fm_worktree_collision_claimant_process judges ONE claimant from its own
 #     recorded backend endpoint alone and passes the backend's own verdict
 #     through, so the printed detail never blames a backend that answered.
@@ -45,6 +48,9 @@
 #     pooled copy still collide, and the transport survives any character a
 #     recorded path or a resolved key can hold - a backslash never empties the
 #     claimant list, a tab never drops the line, a newline never truncates one.
+#     The key encoding is injective, so a copy whose name holds a real newline
+#     and a different copy whose name holds a literal backslash-n never merge
+#     into one line naming records that claim neither.
 #   - The line separates what grouping proved from what each record says: the
 #     path after the kind is the resolved copy the claimants share, and every
 #     claimant names the worktree= its own record actually contains, so no one
@@ -118,26 +124,28 @@ shown_path() {  # <recorded-path>
   ( cd "$1" 2>/dev/null && pwd -P ) || printf '%s\n' "$1"
 }
 
-# Mirrors fm_worktree_collision_line_safe: a string with no newline is
-# unchanged, one with a newline gets its backslashes doubled first and its
-# newlines turned into literal `\n`, so a test can predict the escaped form of
-# a resolved path without depending on the library's own implementation.
+# Mirrors fm_worktree_collision_line_safe: every backslash is doubled first -
+# unconditionally, which is what keeps the encoding injective - and every
+# newline then becomes the two literal characters `\n`, so a test can predict
+# the escaped form of a resolved path without depending on the library's own
+# implementation.
 line_safe() {  # <string>
   local s=$1
-  case "$s" in
-    *$'\n'*)
-      s=${s//\\/\\\\}
-      printf '%s' "${s//$'\n'/\\n}"
-      ;;
-    *) printf '%s' "$s" ;;
-  esac
+  s=${s//\\/\\\\}
+  printf '%s' "${s//$'\n'/\\n}"
 }
 
-# A clean repo on `main` with one commit, ready to be a task's worktree.
+# A clean repo on `main` with one commit, ready to be a task's worktree. Its
+# default branch is PUBLISHED - a pooled copy comes from a clone, and
+# fm_worktree_collision_path_state only reads `landed` off origin/<default> -
+# so the tracking ref and origin/HEAD are written directly rather than fetched,
+# keeping every fixture here entirely offline.
 make_worktree() {  # <dir>
   local dir=$1
   git init -q -b main "$dir"
   git -C "$dir" commit -q --allow-empty -m init
+  git -C "$dir" update-ref refs/remotes/origin/main HEAD
+  git -C "$dir" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
 }
 
 # --- unit level: the two independent classifiers ------------------------------
@@ -292,6 +300,57 @@ test_path_state_classification() {
   fi
 
   pass "fm_worktree_collision_path_state: only an observed absence reads missing, and no unanswerable probe claims a fact"
+}
+
+# The regression `landed`'s published-ref requirement exists for: a branch
+# merged into the LOCAL default branch and pushed nowhere. Every local signal
+# says the work is safely in main, but the commits exist on no remote -
+# bin/fm-teardown.sh's validate_worktree_teardown_safety refuses to discard
+# exactly this copy ("work not on any remote and not landed"). Reading it as
+# `landed` prints the empty caveat, which is byte-for-byte the strongest
+# safe-to-reclaim claim this check can make, over the only copy of the work.
+test_path_state_local_only_merge_is_not_landed() {
+  local wt got
+
+  wt="$TMP_ROOT/local-merge-wt"
+  git init -q -b main "$wt"
+  git -C "$wt" commit -q --allow-empty -m init
+  git -C "$wt" checkout -q -b feature
+  git -C "$wt" commit -q --allow-empty -m "work merged locally, pushed nowhere"
+  git -C "$wt" checkout -q main
+  git -C "$wt" merge -q --ff-only feature
+  git -C "$wt" checkout -q feature
+
+  [ -z "$(git -C "$wt" status --porcelain)" ] \
+    || fail "the local-merge fixture must be clean, or it proves nothing"
+  git -C "$wt" merge-base --is-ancestor HEAD main \
+    || fail "the local-merge fixture must be reachable from the local default branch"
+  git -C "$wt" rev-parse --verify -q origin/main >/dev/null \
+    && fail "the local-merge fixture must have no published default branch"
+
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" != landed ] \
+    || fail "work merged only into an unpublished local default branch must never read as landed, got '$got'"
+  [ "$got" = unverifiable:unpublished-default ] \
+    || fail "a HEAD reachable only from a local default branch should name that cause, got '$got'"
+  [ -n "$(fm_worktree_collision_path_caveat "$got")" ] \
+    || fail "a copy whose work is on no remote must carry a caveat, got an empty one"
+  assert_contains "$(fm_worktree_collision_path_caveat "$got")" "do not discard" \
+    "a copy whose work is on no remote must keep the do-not-discard warning"
+  assert_not_contains "$(fm_worktree_collision_path_caveat "$got")" "still has unlanded work" \
+    "an ancestry check that only a local ref could answer must not claim work it did not see"
+
+  # The same copy once its default branch IS published: the ancestry check now
+  # has a ref proving the commits are not only local, so `landed` is earned and
+  # the caveat is empty.
+  git -C "$wt" update-ref refs/remotes/origin/main main
+  got=$(fm_worktree_collision_path_state "$wt")
+  [ "$got" = landed ] \
+    || fail "a HEAD reachable from the published default branch is landed, got '$got'"
+  [ -z "$(fm_worktree_collision_path_caveat "$got")" ] \
+    || fail "a landed shared path must print no caveat, got '$(fm_worktree_collision_path_caveat "$got")'"
+
+  pass "fm_worktree_collision_path_state: only a published default branch earns landed"
 }
 
 # The caveat function is the last thing between a verdict and the reader. A
@@ -676,7 +735,7 @@ test_collision_lines_path_with_backslash_names_every_claimant() {
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live $(shown_path "$wt") claimed by fm-bs-a (process alive, recorded $wt), fm-bs-b (process state unknown (backend=tmux reported ambiguous), recorded $wt) - shared path still has unlanded work, do not discard" \
+  assert_contains "$out" "WORKTREE_COLLISION: live $(line_safe "$(shown_path "$wt")") claimed by fm-bs-a (process alive, recorded $wt), fm-bs-b (process state unknown (backend=tmux reported ambiguous), recorded $wt) - shared path still has unlanded work, do not discard" \
     "a worktree path containing a backslash must still group its records and name every claimant"
   assert_not_contains "$out" "claimed by -" \
     "a collision line must never print with no claimant at all"
@@ -764,6 +823,57 @@ test_collision_lines_groups_differently_spelled_newline_path() {
     "the second valid spelling must be named with its own recorded spelling"
 
   pass "fm_worktree_collision_lines: two different spellings of one newline-holding copy still group into one collision"
+}
+
+# The group key is an ENCODING, so it has to be injective: two different
+# physical copies may never encode to one key. Doubling backslashes only for
+# strings that already hold a newline breaks that - a copy whose real name
+# holds a newline and a copy whose real name literally contains backslash-then-n
+# both encode to the same key, merge into ONE line, and name four records of
+# which half claim a copy that line does not describe. That is the false
+# positive this whole check exists to avoid producing.
+test_collision_lines_newline_and_literal_backslash_n_stay_distinct() {
+  local state fakebin pool real_nl literal_nl nl_link out line_nl line_bs
+
+  state="$TMP_ROOT/injective-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/injective-tmux")
+
+  pool="$TMP_ROOT/injective-pool"
+  mkdir -p "$pool"
+  real_nl="$pool/a"$'\n'"b"
+  literal_nl="$pool/a\\nb"
+  make_worktree "$real_nl"
+  make_worktree "$literal_nl"
+  # Both records reach the newline-holding copy through a newline-free
+  # spelling, so this pins the KEY, not the transport the newline tests cover.
+  nl_link="$pool/link-to-newline-copy"
+  ln -s "$real_nl" "$nl_link"
+
+  fm_write_meta "$state/fm-nl-a.meta" "window=livesess:alive" "worktree=$nl_link" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-nl-b.meta" "window=livesess:alive" "worktree=$nl_link" "harness=codex" "kind=ship"
+  fm_write_meta "$state/fm-bs-x.meta" "window=livesess:alive" "worktree=$literal_nl" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-bs-y.meta" "window=livesess:alive" "worktree=$literal_nl" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  [ "$(printf '%s\n' "$out" | grep -c '^WORKTREE_COLLISION:')" = 2 ] \
+    || fail "two different physical copies must produce two collision lines, got:"$'\n'"$out"
+
+  line_nl=$(printf '%s\n' "$out" | grep -F 'fm-nl-a' || true)
+  line_bs=$(printf '%s\n' "$out" | grep -F 'fm-bs-x' || true)
+
+  assert_contains "$line_nl" "WORKTREE_COLLISION: live $(line_safe "$real_nl") claimed by fm-nl-a (process alive, recorded $nl_link), fm-nl-b (process alive, recorded $nl_link)" \
+    "the newline-holding copy must print its own escaped path and only its own claimants"
+  assert_not_contains "$line_nl" "fm-bs-" \
+    "a record claiming the literal backslash-n copy must never be named on the newline copy's line"
+
+  assert_contains "$line_bs" "WORKTREE_COLLISION: live $(line_safe "$literal_nl") claimed by fm-bs-x (process alive, recorded $literal_nl), fm-bs-y (process alive, recorded $literal_nl)" \
+    "the copy whose name literally contains backslash-n must print its own escaped path and only its own claimants"
+  assert_not_contains "$line_bs" "fm-nl-" \
+    "a record claiming the newline copy must never be named on the literal backslash-n copy's line"
+
+  pass "fm_worktree_collision_lines: a real newline and a literal backslash-n path never merge into one collision"
 }
 
 # The internal id-to-path transport is tab-delimited, so a tab inside a
@@ -967,6 +1077,7 @@ test_bootstrap_surfaces_collision_line() {
 }
 
 test_path_state_classification
+test_path_state_local_only_merge_is_not_landed
 test_path_caveat_defaults_to_unverified
 test_claimant_process_classification
 test_collision_lines_grouping
@@ -980,6 +1091,7 @@ test_collision_lines_path_with_backslash_names_every_claimant
 test_collision_lines_path_with_tab_is_still_reported
 test_collision_lines_newline_in_resolved_path_is_still_reported
 test_collision_lines_groups_differently_spelled_newline_path
+test_collision_lines_newline_and_literal_backslash_n_stay_distinct
 test_collision_lines_groups_symlinked_spellings_of_one_copy
 test_collision_lines_scaffolding_only_path_is_not_called_unlanded
 test_collision_lines_record_removed_mid_scan_is_dropped

@@ -51,8 +51,16 @@
 #                          said HEAD is not reachable from the project's
 #                          default branch.
 #   landed               - the worktree is clean and its HEAD was checked and
-#                          found reachable from the project's default branch.
-#                          Nothing at the path is at risk.
+#                          found reachable from the PUBLISHED default branch,
+#                          origin/<default>. Nothing at the path is at risk.
+#                          Ancestry from the LOCAL default branch alone never
+#                          reaches this verdict: a branch merged into a local
+#                          `main` that was pushed nowhere is exactly the copy
+#                          bin/fm-teardown.sh's validate_worktree_teardown_safety
+#                          refuses to discard ("work not on any remote and not
+#                          landed"), so calling it landed - and printing the
+#                          empty, safe-to-reclaim caveat - would be the
+#                          falsely reassuring claim this file forbids.
 #   unverifiable:<cause> - a probe could not answer at all, so the path is
 #                          NEITHER landed nor unlanded, and the emitted caveat
 #                          says so while naming <cause>. This is the one shared
@@ -73,6 +81,12 @@
 #                              main/master to resolve a default branch, no ref
 #                              for the resolved name, or a shallow or grafted
 #                              history that made merge-base error out.
+#                            unpublished-default - the ancestry check ran and
+#                              the only ref that could answer it was the LOCAL
+#                              default branch: HEAD is reachable from it, while
+#                              origin/<default> either does not exist or could
+#                              not answer. The commits are on no remote, so
+#                              nothing here proves the copy is safe to reclaim.
 #                            path-unreadable - the path could not be stat'ed
 #                              because an ancestor directory is not searchable,
 #                              so its absence was refused rather than observed.
@@ -85,7 +99,7 @@
 # falsely alarming one). Safety does not change either way - every verdict
 # except `missing` carries the same do-not-discard clause.
 fm_worktree_collision_path_state() {  # <worktree-path>
-  local path=$1 default top status_out ref rc answered=0
+  local path=$1 default top status_out ref rc answered=0 local_only=0
   if [ -z "$path" ]; then
     printf 'unverifiable:no-path'
     return 0
@@ -113,21 +127,30 @@ fm_worktree_collision_path_state() {  # <worktree-path>
   fi
   default=$(fm_default_branch "$path" 2>/dev/null || true)
   if [ -n "$default" ]; then
-    for ref in "$default" "origin/$default"; do
+    for ref in "origin/$default" "$default"; do
       git -C "$path" rev-parse --verify -q "$ref" >/dev/null 2>&1 || continue
       if git -C "$path" merge-base --is-ancestor HEAD "$ref" 2>/dev/null; then
-        printf 'landed'
-        return 0
+        case "$ref" in
+          origin/*)
+            printf 'landed'
+            return 0
+            ;;
+          *) local_only=1 ;;
+        esac
       else
         rc=$?
-      fi
-      if [ "$rc" = 1 ]; then
-        answered=1
+        if [ "$rc" = 1 ]; then
+          answered=1
+        fi
       fi
     done
   fi
   if [ "$answered" = 1 ]; then
     printf 'unlanded'
+    return 0
+  fi
+  if [ "$local_only" = 1 ]; then
+    printf 'unverifiable:unpublished-default'
     return 0
   fi
   printf 'unverifiable:default-branch'
@@ -153,28 +176,40 @@ fm_worktree_collision_path_state() {  # <worktree-path>
 # recorded string, because then there is no canonical form to escape. Either
 # way the key stays newline-free, which is what the line-based transport in
 # fm_worktree_collision_lines depends on.
+# The rule itself lives in fm_worktree_collision_key_of_resolved, which takes a
+# resolution that already happened, so the scan in fm_worktree_collision_lines
+# - which needs the resolved path for the printed line anyway - derives the key
+# from that one resolution instead of running a second identical `cd`+`pwd -P`.
+# One resolution cannot disagree with itself if the filesystem changes mid-scan.
+fm_worktree_collision_key_of_resolved() {  # <recorded-path> <resolved-path-or-empty>
+  if [ -n "$2" ]; then
+    fm_worktree_collision_line_safe "$2"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 fm_worktree_collision_group_key() {  # <recorded-path>
   local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P) && [ -n "$real" ]; then
-    fm_worktree_collision_line_safe "$real"
-  else
-    printf '%s' "$path"
-  fi
+  real=$(cd "$path" 2>/dev/null && pwd -P) || real=
+  fm_worktree_collision_key_of_resolved "$path" "$real"
 }
 
 # Backslash-then-newline escaping so a machine-generated path that happens to
 # hold a newline can still travel through a one-line transport or print on one
-# line: every backslash is doubled first so the newline escape it introduces
-# can never be confused with one already present, then every newline becomes
-# the two literal characters `\n`. A string with no newline passes through
-# completely unchanged - existing paths that merely contain a backslash (never
-# escaped) keep printing exactly as recorded.
+# line: every backslash is doubled first - always, whether or not the string
+# holds a newline - so the newline escape it introduces can never be confused
+# with one already present, then every newline becomes the two literal
+# characters `\n`. The doubling is unconditional because this encoding is used
+# as a GROUP KEY, and a rule applied only to newline-holding strings is not
+# injective across strings: a path holding a real newline and a different path
+# whose own name literally contains backslash-then-n would encode to one key,
+# group two unrelated physical copies into one line, and name records that
+# claim neither of the copies the other describes. The cost is that an ordinary
+# path containing a backslash prints with that backslash doubled, which is an
+# escaped rendering of a real path rather than a wrong one.
 fm_worktree_collision_line_safe() {  # <string>
   local s=$1
-  if [ "${s%%$'\n'*}" = "$s" ]; then
-    printf '%s' "$s"
-    return 0
-  fi
   s=${s//\\/\\\\}
   printf '%s' "${s//$'\n'/\\n}"
 }
@@ -226,6 +261,7 @@ fm_worktree_collision_path_caveat() {  # <path-state>
         unverifiable:not-a-worktree) cause='is not an inspectable git worktree' ;;
         unverifiable:worktree-state) cause='is a git worktree whose working-tree state could not be read' ;;
         unverifiable:default-branch) cause="is a git worktree whose HEAD could not be checked against the project's default branch" ;;
+        unverifiable:unpublished-default) cause='is a git worktree whose HEAD was found only on a local default branch that is not published to origin' ;;
         unverifiable:path-unreadable) cause='could not be examined because an ancestor directory is not searchable' ;;
         unverifiable:no-path) cause='was not provided, so no probe could look at anything' ;;
         *) cause='could not be examined' ;;
@@ -319,7 +355,7 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state> [backend]
 # it can reach the key).
 # Portable: no associative arrays, so this runs on bash 3.2 (macOS) too.
 fm_worktree_collision_lines() {  # <state-dir>
-  local state=$1 meta id path pairs dup_keys key ids_for_key recorded shown_path
+  local state=$1 meta id path pairs dup_keys key ids_for_key recorded real shown_path
   local proc_state desc claimant_line claimant_count live_count kind path_state caveat
   [ -d "$state" ] || return 0
   pairs=$(
@@ -349,11 +385,9 @@ fm_worktree_collision_lines() {  # <state-dir>
       [ -f "$state/$id.meta" ] || continue
       recorded=$(fm_meta_get "$state/$id.meta" worktree)
       [ -n "$recorded" ] || continue
-      [ "$(fm_worktree_collision_group_key "$recorded")" = "$key" ] || continue
-      if [ -z "$shown_path" ]; then
-        shown_path=$(cd "$recorded" 2>/dev/null && pwd -P) || shown_path=$recorded
-        [ -n "$shown_path" ] || shown_path=$recorded
-      fi
+      real=$(cd "$recorded" 2>/dev/null && pwd -P) || real=
+      [ "$(fm_worktree_collision_key_of_resolved "$recorded" "$real")" = "$key" ] || continue
+      [ -n "$shown_path" ] || shown_path=${real:-$recorded}
       claimant_count=$((claimant_count + 1))
       proc_state=$(fm_worktree_collision_claimant_process "$state/$id.meta")
       case "$proc_state" in
