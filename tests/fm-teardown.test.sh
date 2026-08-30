@@ -799,7 +799,6 @@ test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
   local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
   pr_head=$(commit_tree_from_wt_head "$case_dir" "$local_head" "no-mistakes auto-fix")
   land_on_origin_main "$case_dir" feature.txt hello
-<<<<<<< HEAD
   add_gh_pr_merged_for_head "$case_dir" "$pr_head"
   seed_backlog_in_flight "$case_dir"
   # No append_pr_meta_* call: state/task-x1.meta has no pr= or pr_head= line.
