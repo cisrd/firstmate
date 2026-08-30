@@ -9,8 +9,9 @@
 # release drops its token meter, renames it into a shape the library does not
 # match, or replaces it with a number that never rises, the report does not fail
 # loudly - it goes quiet for that harness and falls back to the hour-long
-# completed-turn bound, which is exactly the gap the report was built to close. A stubbed pane cannot see that happen: it can only
-# confirm the fixture already written into the stub. Only a real harness can.
+# completed-turn bound, which is exactly the gap the report was built to close.
+# A stubbed pane cannot see that happen: it can only confirm the fixture already
+# written into the stub. Only a real harness can.
 #
 # The portable counterpart, tests/fm-progress-lib.test.sh, pins the library's
 # logic in CI everywhere. This guard answers the other half of the question and
@@ -128,20 +129,33 @@ for harness in claude codex opencode pi pi-signed grok kimi cursor muse; do
   # never rise - a context-left percentage that only falls, or transcript text
   # that merely differs - is permanently unarmable, so stopping at the first
   # reading would report coverage this repo does not have.
+  #
+  # The pair tested is the one the watcher tests: CONSECUTIVE readings, its
+  # stored previous counters against the current poll's. fm_progress_advanced
+  # only compares a kind present in BOTH readings, so a footer that gains its
+  # token meter after its context meter would never satisfy a fixed baseline;
+  # the first readable sample is kept only as an ADDITIONAL chance, for a kind
+  # that renders intermittently and so is missing from one neighbour.
   found=
   shaped=
   first=
+  prev_reading=
   sample=
   for _ in $(seq 1 40); do
     sample=$("$REAL_TMUX" -L "$SOCKET" capture-pane -p -t "$target" 2>/dev/null || true)
     if reading=$(fm_progress_counters "$sample"); then
       reading=$(printf '%s' "$reading" | tr '\n' ' ')
       [ -n "$shaped" ] || shaped=$reading
+      if [ -n "$prev_reading" ] && fm_progress_advanced "$prev_reading" "$reading"; then
+        found="$prev_reading -> $reading"
+        break
+      fi
       if [ -n "$first" ] && fm_progress_advanced "$first" "$reading"; then
         found="$first -> $reading"
         break
       fi
       [ -n "$first" ] || first=$reading
+      prev_reading=$reading
     fi
     sleep 1
   done

@@ -73,10 +73,17 @@
 #                          takes no action of any kind. It is skipped entirely
 #                          for a declared external wait, a verified captain-held
 #                          transfer, an away-mode home (the daemon owns triage
-#                          there), and any harness that renders no counters at
-#                          all - the last of those is reported in the triage log
-#                          rather than guessed at, and keeps BUSY_TURN_MAX_SECS
-#                          as its only backstop.
+#                          there), a task whose authoritative no-mistakes
+#                          run-step is still working (it legitimately waits on
+#                          its upstream review or CI with nothing moving in its
+#                          own pane), a task whose own worktree was written
+#                          during the frozen window, and any pane whose rendered
+#                          numbers have never been SEEN TO RISE - which covers
+#                          every harness that renders no counters at all and
+#                          every pane whose counter-shaped text was never
+#                          observed advancing. That last one is reported in the
+#                          triage log rather than guessed at, and keeps
+#                          BUSY_TURN_MAX_SECS as its only backstop.
 #   stale: <window> (unread firstmate instruction: ...)
 #                          the steering-inbox ladder spent its delivery-attempt
 #                          budget on an idle pane without an acknowledgement
