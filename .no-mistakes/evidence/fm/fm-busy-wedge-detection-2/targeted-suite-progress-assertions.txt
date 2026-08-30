@@ -1,0 +1,10 @@
+ok - counter-shaped displayed content that changes without rising is not advance
+ok - a busy worker whose progress counters have frozen is reported, with its own wording, while its clock still ticks
+ok - a busy worker whose counters keep moving is never reported, however long it runs
+ok - a pane with no busy indicator keeps the unchanged ordinary stale path and never enters the progress measure
+ok - a worker that declared its own external wait is never reported through the progress measure
+ok - an authoritative run-step waiting on upstream checks is exempt from the busy-progress report
+ok - a worker whose tool renders no counters is recorded as unmeasurable, never reported on a guessed reading
+ok - the shipped no-progress fuse is 1500s (22 minutes stays quiet, 26 minutes reports)
+ok - counter-shaped text that never changes never arms the measure, so displayed content cannot report a healthy worker
+ok - counter-shaped text that changes without rising never arms the measure, so a worker it was never able to measure is never reported

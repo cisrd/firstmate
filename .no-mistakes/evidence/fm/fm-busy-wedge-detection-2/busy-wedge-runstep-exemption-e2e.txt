@@ -1,0 +1,40 @@
+
+##### CASE: busy-runstep-waiting-on-ci
+--- what the operator's tmux pane shows (harness footer, token meter) ---
+Pollinating... (61s - 2344 tokens - esc to interrupt)
+--- authoritative no-mistakes state for this crew (bin/fm-crew-state.sh) ---
+state: working · source: run-step · monitoring upstream CI
+--- the meter was seen to rise (2344 -> 2481 tokens), so this pane's progress is measurable ---
+armed: /tmp/fm-busy-wedge-evidence.Z1a82V/busy-runstep-waiting-on-ci/state/.progress-moved-ship_fm-busy-runstep-waiting-on-ci exists
+--- 30 minutes later the pane still says busy and the token meter has not moved ---
+Pollinating... (900s - 2481 tokens - esc to interrupt)
+--- what fm-watch.sh printed to the operator ---
+(nothing: the watcher absorbed this poll and kept watching)
+--- the captain's wake queue (bin/fm-wake-drain.sh) ---
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 0 --recovery-generation 989721.1788120934.BJtPCS
+--- watcher triage log ---
+[2026-08-30T22:15:25+0200] busy progress unmeasurable (no rendered number here has been seen to rise, so nothing proves this pane has a real progress meter; the completed-turn bound remains its only backstop): ship:fm-busy-runstep-waiting-on-ci
+[2026-08-30T22:15:26+0200] busy progress now measurable (this worker's rendered counters were observed advancing): ship:fm-busy-runstep-waiting-on-ci
+[2026-08-30T22:15:31+0200] absorbed busy no-progress (authoritative no-mistakes run-step is still working): ship:fm-busy-runstep-waiting-on-ci
+
+##### CASE: busy-wedged-no-authority
+--- what the operator's tmux pane shows (harness footer, token meter) ---
+Pollinating... (61s - 2344 tokens - esc to interrupt)
+--- authoritative no-mistakes state for this crew (bin/fm-crew-state.sh) ---
+state: unknown · source: none · no authoritative signal
+--- the meter was seen to rise (2344 -> 2481 tokens), so this pane's progress is measurable ---
+armed: /tmp/fm-busy-wedge-evidence.Z1a82V/busy-wedged-no-authority/state/.progress-moved-ship_fm-busy-wedged-no-authority exists
+--- 30 minutes later the pane still says busy and the token meter has not moved ---
+Pollinating... (900s - 2481 tokens - esc to interrupt)
+--- what fm-watch.sh printed to the operator ---
+stale: ship:fm-busy-wedged-no-authority (busy but no progress for 1801s: its tool still reports work in flight while every progress counter it renders has stayed unchanged that whole time - inspect it before acting; reported only, nothing was interrupted, signalled or restarted)
+--- the captain's wake queue (bin/fm-wake-drain.sh) ---
+1788120941	1	stale	ship:fm-busy-wedged-no-authority	stale: ship:fm-busy-wedged-no-authority (busy but no progress for 1801s: its tool still reports work in flight while every progress counter it renders has stayed unchanged that whole time - inspect it before acting; reported only, nothing was interrupted, signalled or restarted)
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 995940.1788120941.2VYv4p
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+--- watcher triage log ---
+[2026-08-30T22:15:36+0200] busy progress unmeasurable (no rendered number here has been seen to rise, so nothing proves this pane has a real progress meter; the completed-turn bound remains its only backstop): ship:fm-busy-wedged-no-authority
+[2026-08-30T22:15:37+0200] busy progress now measurable (this worker's rendered counters were observed advancing): ship:fm-busy-wedged-no-authority
+[2026-08-30T22:15:41+0200] surfaced busy no-progress (1801s of unchanged counters): ship:fm-busy-wedged-no-authority
+
+##### END
