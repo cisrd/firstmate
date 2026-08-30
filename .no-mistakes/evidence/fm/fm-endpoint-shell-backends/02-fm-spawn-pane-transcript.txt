@@ -1,0 +1,69 @@
+Real bin/fm-spawn.sh driven against a simulated zellij pane (the launch-window
+suite's pane simulator: PS1, input buffer, rendered rows, snapshot per redraw).
+Nothing below reads spawn's source - these are the pane's own screens.
+
+### 1. Lines the simulated pane shell actually ran, in order
+         1	treehouse get
+         2	printf '%s\n' '__FM_ZELLIJ_CWD_BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'
+         3	printf '%s\n' '__FM_ZELLIJ_CWD_BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'
+         4	export GOTMPDIR=/tmp/fm-evidence-z1/gotmp
+         5	export TRACEPARENT=00-3ee0bb2d411c07df3e4d903df8108bae-499fadfc8694404f-01
+         6	PS1='[fm-endpoint-shell] '
+         7	env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions "$('/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M19BZY8B32FGGTDVNWYYP3FW/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-endpoint-shell-launch-window.ypeLBK/evidence/home/data/evidence-z1/brief.md')"
+
+### 2. Final pane screen at the end of the spawn (agent running)
+    captain@ship:~$ treehouse get
+    captain@ship:~$ 
+    captain@ship:~$ printf '%s\n' '__FM_ZELLIJ_CWD_BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'
+    __FM_ZELLIJ_CWD_BEGIN__
+    /tmp/fm-endpoint-shell-launch-window.ypeLBK/evidence/wt
+    __FM_ZELLIJ_CWD_END__
+    captain@ship:~$ 
+    captain@ship:~$ printf '%s\n' '__FM_ZELLIJ_CWD_BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'
+    __FM_ZELLIJ_CWD_BEGIN__
+    /tmp/fm-endpoint-shell-launch-window.ypeLBK/evidence/wt
+    __FM_ZELLIJ_CWD_END__
+    captain@ship:~$ 
+    captain@ship:~$ export GOTMPDIR=/tmp/fm-evidence-z1/gotmp
+    captain@ship:~$ 
+    captain@ship:~$ export TRACEPARENT=00-3ee0bb2d411c07df3e4d903df8108bae-499fadfc8694404f-01
+    captain@ship:~$ 
+    captain@ship:~$ PS1='[fm-endpoint-shell] '
+    [fm-endpoint-shell] 
+    [fm-endpoint-shell] env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions "$('/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M19BZY8B32FGGTDVNWYYP3FW/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-endpoint-shell-launch-window.ypeLBK/evidence/home/data/evidence-z1/brief.md')"
+
+### 3. Every pane screen during the spawn, classified by the real fm_busy_classify
+    screen 1  after event 'echo treehouse get'                                    -> unknown missing
+    screen 2  after event 'prompt'                                                -> unknown missing
+    screen 3  after event 'echo printf '%s\n' '__FM_ZELLIJ_CWD_BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'' -> unknown missing
+    screen 4  after event 'output'                                                -> unknown missing
+    screen 5  after event 'prompt'                                                -> unknown missing
+    screen 6  after event 'echo printf '%s\n' '__FM_ZELLIJ_CWD_BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'' -> unknown missing
+    screen 7  after event 'output'                                                -> unknown missing
+    screen 8  after event 'prompt'                                                -> unknown missing
+    screen 9  after event 'echo export GOTMPDIR=/tmp/fm-evidence-z1/gotmp'        -> unknown missing
+    screen 10 after event 'prompt'                                                -> unknown missing
+    screen 11 after event 'echo export TRACEPARENT=00-3ee0bb2d411c07df3e4d903df8108bae-499fadfc8694404f-01' -> unknown missing
+    screen 12 after event 'prompt'                                                -> unknown missing
+    screen 13 after event 'echo PS1='[fm-endpoint-shell] ''                       -> unknown missing
+    screen 14 after event 'prompt'                                                -> dead endpoint-shell
+    screen 15 after event 'echo env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions "$('/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M19BZY8B32FGGTDVNWYYP3FW/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-endpoint-shell-launch-window.ypeLBK/evidence/home/data/evidence-z1/brief.md')"' -> unknown missing
+
+### 4. The agent later exits; that same shell redraws its prompt
+    captain@ship:~$ PS1='[fm-endpoint-shell] '
+    [fm-endpoint-shell] 
+    [fm-endpoint-shell] env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions "$('/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M19BZY8B32FGGTDVNWYYP3FW/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-endpoint-shell-launch-window.ypeLBK/evidence/home/data/evidence-z1/brief.md')"
+    [fm-endpoint-shell] 
+    fm_busy_classify -> dead endpoint-shell
+
+### 5. Operator-visible refusal when a two-phase backend strands the marker on the input line
+    error: the endpoint-shell marker was pasted into fm-evidencerefuse-z1 but could not be submitted or 
+    cleared, and the pane's input line cannot be confirmed clean; refusing to send the launch command 
+    on top of that residue
+    launch command sent? NO - refused before pasting onto the residue
+
+Reading of section 3: the ONLY screen that classifies dead endpoint-shell during
+a healthy spawn is screen 14, the single redraw between the marker line and the
+launch line - the two adjacent sends. That is the documented, accepted residual
+race. No bare marked prompt survives across the GOTMPDIR export, the TRACEPARENT
+export, the meta-lock wait, or the settle sleeps.

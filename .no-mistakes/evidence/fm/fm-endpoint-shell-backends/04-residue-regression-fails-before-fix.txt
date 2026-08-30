@@ -1,0 +1,20 @@
+Regression validity for commit ecc1f05 (whitespace-normalized residue match).
+The head test tests/fm-endpoint-shell-launch-window.test.sh ::
+test_residue_wrapped_across_three_rows_is_still_detected was run unchanged against
+the PRE-FIX code (a007080, the exact-match-through-joins version) and against head.
+
+===== PRE-FIX (a007080) =====
+$ bash tests/fm-endpoint-shell-launch-window.test.sh   # that case only
+    not ok - spawn launched onto residue wrapped across three rows with its space eaten
+    exit=1
+
+===== HEAD (ea1528a) =====
+$ bin/fm-test-run.sh tests/fm-endpoint-shell-launch-window.test.sh
+    ok - the bare marked prompt appears only immediately before the launch text, never lingering across another pre-launch send (15 screens)
+    ok - the marker still proves a dead endpoint shell once the agent exits
+    ok - a marker send that leaves residue is cleared before the launch text, never pasted over
+    ok - an unclearable marker residue refuses the launch with a named cause instead of corrupting it
+    ok - residue wrapped across two rows of a narrow pane is still detected and refuses the launch
+    ok - residue whose space is eaten at the wrap column is still detected and refuses the launch
+    ok - residue wrapped across three rows with its space eaten is still detected and refuses the launch
+    ok - a marker send that fails on a single-call backend leaves the marker absent and still launches the agent

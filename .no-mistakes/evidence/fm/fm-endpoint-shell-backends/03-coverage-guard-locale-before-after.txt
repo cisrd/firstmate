@@ -1,0 +1,18 @@
+Required CI job `bin/fm-test-run.sh --check-coverage` under a locale whose
+collation differs from C (en_US.UTF-8). Commit ea1528a pins its comm merges to C.
+
+===== BEFORE (base debe4bfa) =====
+$ LC_ALL=en_US.UTF-8 bin/fm-test-run.sh --check-coverage
+    comm: file 2 is not in sorted order
+    comm: input is not in sorted order
+    exit=1
+    -> the guard reported nothing at all about lane coverage; a red required job
+       decided by the runner image's locale.
+
+===== AFTER (branch head ea1528a) =====
+$ LC_ALL=en_US.UTF-8 bin/fm-test-run.sh --check-coverage
+    FM_TEST_COVERAGE ok total=172 parallel=24 serial=136 serial_shards=4 herdr=12
+    exit=0
+
+(The AFTER total=172 includes the branch's new tests/fm-endpoint-shell-launch-window.test.sh,
+ so the new suite is proven to be registered in a CI lane.)

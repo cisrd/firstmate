@@ -1,0 +1,26 @@
+fm-crew-state.sh: what an operator sees for a herdr endpoint whose agent exited
+base debe4bfa  ->  head ea1528a
+
+Task feat-demo: herdr endpoint, no no-mistakes run, no busy record.
+The agent process has exited; the pane is back at its own shell prompt.
+
+===== BEFORE (base debe4bf) - agent exited, marked shell =====
+$ herdr pane read default:w1:p5      # what the operator would see in the pane
+    all quiet
+    [fm-endpoint-shell] 
+$ fm-crew-state.sh feat-demo
+    state: unknown · source: pane · harness state unavailable (unknown missing)
+
+===== AFTER  (branch head) - agent exited, marked shell =====
+$ herdr pane read default:w1:p5      # what the operator would see in the pane
+    all quiet
+    [fm-endpoint-shell] 
+$ fm-crew-state.sh feat-demo
+    state: unknown · source: pane · agent exited, endpoint is a bare firstmate shell
+
+===== AFTER  (branch head) - CONTROL: an unmarked bare shell firstmate never wrote to =====
+$ herdr pane read default:w1:p5      # what the operator would see in the pane
+    all quiet
+    > 
+$ fm-crew-state.sh feat-demo
+    state: unknown · source: pane · harness state unavailable (unknown missing)
