@@ -1853,15 +1853,15 @@ NM_DISCARD_LOG="$STATE/.discarded-pipeline-commits.log"
 NM_DISCARD_LOG_LOCK="$STATE/.discarded-pipeline-commits.lock"
 NM_DISCARD_LOG_MAX_BYTES=${FM_DISCARD_LOG_MAX_BYTES:-262144}
 case "$NM_DISCARD_LOG_MAX_BYTES" in ''|*[!0-9]*|0) NM_DISCARD_LOG_MAX_BYTES=262144 ;; esac
-# Does $STATE still accept new entries? fm_lock_acquire_wait cannot answer
-# that: it spins until fm_lock_try_acquire succeeds and never returns non-zero,
-# and fm_lock_try_acquire itself cannot fail cleanly when the directory refuses
-# new entries - mktemp for the owner dir fails, so it falls through to the
-# stale-owner steal and recurses on "$lockdir.steal", ".steal.steal", ... So the
-# same mktemp the lock would do is attempted here first, and its own error text
-# is what names the concrete cause. Without this, a $STATE that went read-only
-# or filled up AFTER teardown started (the control lock proves it was writable
-# at startup) turns the refusal below into a hang that holds
+# Does $STATE still accept new entries? Neither lock helper can answer that.
+# fm_lock_acquire_wait spins until fm_lock_try_acquire succeeds and never
+# returns non-zero, and fm_lock_try_acquire reports only "not acquired" - it
+# cannot distinguish a contended lock, which waiting resolves, from a directory
+# that refuses new entries, which waiting never resolves. So the same mktemp
+# the lock would do is attempted here first, and its own error text is what
+# names the concrete cause. Without this, a $STATE that went read-only or
+# filled up AFTER teardown started (the control lock proves it was writable at
+# startup) turns the refusal below into an endless retry loop holding
 # "$STATE/.control-$ID.lock" until the process is killed, wedging every later
 # lifecycle action for the task.
 NM_DISCARD_LOG_WRITE_ERROR=
@@ -1881,8 +1881,12 @@ nm_discard_log_dir_accepts_writes() {
 record_discarded_pipeline_commits() {  # <reason> <branch> <pipeline-head> <worktree>
   local sz rc=0
   # Re-probed on every pass, not once before the wait: the directory can go
-  # unwritable while this loop is parked behind another task's forced discard,
-  # and entering fm_lock_try_acquire after that is the unbounded-recursion case.
+  # unwritable at any point after a probe has already passed - while this loop
+  # is parked behind another task's forced discard, or inside the window
+  # between the probe and the acquire on this very pass. fm_lock_try_acquire
+  # then just reports "not acquired", indistinguishable from contention, so
+  # without a re-probe the loop would spin here forever holding the control
+  # lock. Re-probing turns the very next pass into the named refusal below.
   until nm_discard_log_dir_accepts_writes && fm_lock_try_acquire "$NM_DISCARD_LOG_LOCK"; do
     if [ -n "$NM_DISCARD_LOG_WRITE_ERROR" ]; then
       echo "Cannot take the discard-log lock $NM_DISCARD_LOG_LOCK: $NM_DISCARD_LOG_WRITE_ERROR" >&2
