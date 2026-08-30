@@ -209,11 +209,17 @@
 #                     "$STATE/.discarded-pipeline-commits.log", which is not
 #                     keyed to the task id teardown erases, so the commit is
 #                     never lost from EVERY record at once. That record is a
-#                     PRECONDITION, not telemetry: if the append fails (full,
-#                     read-only, unwritable $STATE) --force refuses too rather
-#                     than destroying work nothing afterwards can account for,
-#                     and says it was the record write that failed and not the
-#                     axi status check, so the operator fixes the right thing.
+#                     PRECONDITION, not telemetry: if that line cannot be
+#                     written (full, read-only, unwritable $STATE) --force
+#                     refuses too rather than destroying work nothing
+#                     afterwards can account for, and the refusal names which
+#                     checks actually failed - the record write alone when the
+#                     axi status check had completed, or both of them when the
+#                     stakes could not be verified either - so the operator
+#                     fixes the right thing. An unwritable $STATE refuses
+#                     promptly with the concrete cause instead of blocking on
+#                     the log's own lock (see record_discarded_pipeline_commits
+#                     for why the lock itself cannot report that).
 #         Both that message and the plain refusal say outright that --force is
 #         authorization to discard this specific work, not a convenience
 #         bypass, so an operator reading either one sees the distinction.
