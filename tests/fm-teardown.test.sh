@@ -2417,6 +2417,77 @@ test_unrecordable_discard_under_force_refuses() {
   pass "--force refuses when the durable discard record cannot be written, rather than destroying untraceable work"
 }
 
+# A second ship worktree/branch/meta in the SAME case, so its forced teardown
+# shares the one fleet-wide $STATE/.discarded-pipeline-commits.log with every
+# other task built this way - the exact sharing the rotation race needs two
+# DIFFERENT tasks' teardowns to reach it concurrently.
+add_extra_ship_task() {  # <case_dir> <suffix>
+  local case_dir=$1 suffix=$2 branch wt
+  branch="fm/task-$suffix"
+  wt="$case_dir/wt-$suffix"
+  git -C "$case_dir/project" worktree add -q -b "$branch" "$wt" main
+  git -C "$case_dir/project" update-ref "refs/remotes/no-mistakes/$branch" main
+  fm_write_meta "$case_dir/state/task-$suffix.meta" \
+    "window=firstmate:fm-task-$suffix" \
+    "endpoint_task_id=task-$suffix" \
+    "worktree=$wt" \
+    "project=$case_dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes"
+}
+
+# Greptile-flagged race (2026-08-30): record_discarded_pipeline_commits's size
+# rotation reads the whole log then replaces it wholesale (tail | mv) - a
+# read-modify-write, not an append. Nothing shared across DIFFERENT tasks'
+# teardowns serialized that against a concurrent append (each teardown only
+# takes its own per-task META_LOCK/CONTROL_LOCK), so one task's rotation could
+# read the log before another task's own already-successful append landed,
+# then overwrite the file with that stale snapshot - silently dropping a
+# record the append had already reported as durably written. Reproduced by
+# forcing rotation on nearly every append (a tiny FM_DISCARD_LOG_MAX_BYTES)
+# across many concurrently torn-down tasks sharing one state dir, then
+# checking every task's record survived.
+test_concurrent_forced_discards_do_not_lose_records() {
+  local case_dir n i suffix branch wt head pids pid failures survivors
+  n=20
+  case_dir=$(make_case concurrent-discard-race)
+  for i in $(seq 1 "$n"); do
+    add_extra_ship_task "$case_dir" "c$i"
+  done
+
+  failures="$case_dir/failures"
+  : > "$failures"
+  pids=
+  for i in $(seq 1 "$n"); do
+    suffix="c$i"
+    branch="fm/task-$suffix"
+    wt="$case_dir/wt-$suffix"
+    head=$(git -C "$wt" rev-parse HEAD)
+    (
+      FM_ROOT_OVERRIDE="$ROOT" \
+      FM_STATE_OVERRIDE="$case_dir/state" \
+      FM_CONFIG_OVERRIDE="$case_dir/config" \
+      PATH="$case_dir/fakebin:$PATH" \
+      FM_DISCARD_LOG_MAX_BYTES=80 \
+      FM_FAKE_AXI_STATUS="$(recover_custody_axi_status_toon "$branch" "$head" "run-$suffix")" \
+        "$TEARDOWN" "task-$suffix" --force > "$case_dir/stdout-$suffix" 2> "$case_dir/stderr-$suffix" \
+        || printf 'task-%s exited %s\n' "$suffix" "$?" >> "$failures"
+    ) &
+    pids="$pids $!"
+  done
+  for pid in $pids; do
+    wait "$pid" 2>/dev/null || true
+  done
+
+  [ ! -s "$failures" ] || fail "concurrent-discard-race: a forced teardown failed unexpectedly: $(cat "$failures")"
+  assert_present "$case_dir/state/.discarded-pipeline-commits.log" \
+    "concurrent-discard-race: no discard log survived at all"
+  survivors=$(grep -oE 'task=task-c[0-9]+' "$case_dir/state/.discarded-pipeline-commits.log" | sort -u | wc -l | tr -d ' ')
+  [ "$survivors" -eq "$n" ] \
+    || fail "concurrent-discard-race: expected all $n concurrently discarded tasks' records to survive rotation, only $survivors did"
+  pass "concurrent forced discards across different tasks never lose an already-recorded discard to a racing rotation"
+}
+
 # The precondition guards an IRREVERSIBLE step, so a query that cannot answer
 # must NOT read as "nothing to preserve": the invocation that fail-opens is the
 # one that destroys the evidence, and there is no later retry to catch it.
@@ -3265,6 +3336,7 @@ test_ungated_branch_tears_down_despite_unanswerable_query
 test_gated_branch_still_refuses_on_unanswerable_query
 test_missing_bounded_execution_tool_is_named_in_the_refusal
 test_unrecordable_discard_under_force_refuses
+test_concurrent_forced_discards_do_not_lose_records
 test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort
 test_terminal_pipeline_owned_run_gets_reachable_remedy_not_wait
 test_content_equivalent_rebase_does_not_refuse_teardown

@@ -1826,26 +1826,48 @@ worktree_has_unrecovered_pipeline_commits() {  # <worktree>
 # NOT its best-effort contract: that log is supervision telemetry a lost line
 # costs nothing, while this one is the only surviving trace of destroyed work.
 # So the append is REQUIRED - a failure returns non-zero and the caller stops
-# before destroying anything. Only the size rotation stays best-effort, since
-# failing to trim cannot lose the line just written. Deliberately NOT keyed
-# under "$STATE/$ID." - teardown erases those, and this record has to outlive
-# the task whose commit it names.
+# before destroying anything. Deliberately NOT keyed under "$STATE/$ID." -
+# teardown erases those, and this record has to outlive the task whose commit
+# it names.
+#
+# The rotation is NOT best-effort with respect to OTHER tasks' appends: it
+# reads the whole file then replaces it wholesale (tail | mv), which is a
+# read-modify-write, not an append. Two different tasks' forced teardowns can
+# call this concurrently - there is no other lock shared across tasks that
+# would serialize them - and an append that already returned success can still
+# be wiped out: task A appends, sees the size threshold crossed, and starts
+# tail-then-mv; task B appends its own line to the live file in the gap
+# between A's tail read and A's mv; A's mv then replaces the file with its
+# stale pre-B snapshot, silently discarding B's already-acknowledged record.
+# That defeats the one property this log exists for - a --force discard must
+# leave a surviving trace - so the whole append-plus-rotate section is one
+# critical section under a fleet-wide lock, not just individually atomic
+# pieces.
 NM_DISCARD_LOG="$STATE/.discarded-pipeline-commits.log"
+NM_DISCARD_LOG_LOCK="$STATE/.discarded-pipeline-commits.lock"
 NM_DISCARD_LOG_MAX_BYTES=${FM_DISCARD_LOG_MAX_BYTES:-262144}
 case "$NM_DISCARD_LOG_MAX_BYTES" in ''|*[!0-9]*|0) NM_DISCARD_LOG_MAX_BYTES=262144 ;; esac
 record_discarded_pipeline_commits() {  # <reason> <branch> <pipeline-head> <worktree>
-  local sz
+  local sz rc=0
+  fm_lock_acquire_wait "$NM_DISCARD_LOG_LOCK" || return 1
   printf '[%s] task=%s reason=%s branch=%s pipeline_head=%s worktree=%s\n' \
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$ID" "${1:-unknown}" "${2:-unknown}" \
-    "${3:-unknown}" "${4:-unknown}" >> "$NM_DISCARD_LOG" || return 1
-  sz=$(wc -c < "$NM_DISCARD_LOG" 2>/dev/null | tr -d '[:space:]')
-  case "$sz" in ''|*[!0-9]*) return 0 ;; esac
-  if [ "$sz" -ge "$NM_DISCARD_LOG_MAX_BYTES" ]; then
-    tail -n 2000 "$NM_DISCARD_LOG" > "$NM_DISCARD_LOG.tmp" 2>/dev/null \
-      && mv -f "$NM_DISCARD_LOG.tmp" "$NM_DISCARD_LOG" 2>/dev/null
-    rm -f "$NM_DISCARD_LOG.tmp" 2>/dev/null || true
+    "${3:-unknown}" "${4:-unknown}" >> "$NM_DISCARD_LOG" || rc=1
+  if [ "$rc" -eq 0 ]; then
+    sz=$(wc -c < "$NM_DISCARD_LOG" 2>/dev/null | tr -d '[:space:]')
+    case "$sz" in
+      ''|*[!0-9]*) : ;;
+      *)
+        if [ "$sz" -ge "$NM_DISCARD_LOG_MAX_BYTES" ]; then
+          tail -n 2000 "$NM_DISCARD_LOG" > "$NM_DISCARD_LOG.tmp" 2>/dev/null \
+            && mv -f "$NM_DISCARD_LOG.tmp" "$NM_DISCARD_LOG" 2>/dev/null
+          rm -f "$NM_DISCARD_LOG.tmp" 2>/dev/null || true
+        fi
+        ;;
+    esac
   fi
-  return 0
+  fm_lock_release "$NM_DISCARD_LOG_LOCK"
+  return "$rc"
 }
 
 # Fix 2 (see script header): pids of every process whose CURRENT WORKING
