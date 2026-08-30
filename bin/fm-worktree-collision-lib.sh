@@ -112,7 +112,9 @@ fm_worktree_collision_path_state() {  # <worktree-path>
     printf 'missing'
     return 0
   fi
-  top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)
+  top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null && printf X)
+  top=${top%X}
+  top=${top%$'\n'}
   if [ -z "$top" ] || [ ! -d "$top" ]; then
     printf 'unverifiable:not-a-worktree'
     return 0
@@ -181,6 +183,24 @@ fm_worktree_collision_path_state() {  # <worktree-path>
 # - which needs the resolved path for the printed line anyway - derives the key
 # from that one resolution instead of running a second identical `cd`+`pwd -P`.
 # One resolution cannot disagree with itself if the filesystem changes mid-scan.
+#
+# fm_worktree_collision_resolve_path is the ONE place that resolution happens,
+# and it answers through the caller's own fm_worktree_collision_real variable
+# rather than stdout, because command substitution strips EVERY trailing
+# newline while `pwd -P` adds one of its own: a copy at /pool/wt<LF> would come
+# back as /pool/wt, a different path that normally does not exist at all, and
+# the scan would then key on it, print it, and classify it - reaching the
+# `missing` verdict, the one caveat with no do-not-discard clause, over a copy
+# still holding the task's work. The X sentinel keeps every trailing newline
+# the path itself has and drops only the one `pwd -P` appended. An empty answer
+# means the resolution genuinely failed and there is no canonical form to use.
+fm_worktree_collision_resolve_path() {  # <recorded-path> -> fm_worktree_collision_real
+  fm_worktree_collision_real=$(cd "$1" 2>/dev/null && pwd -P && printf X) \
+    || fm_worktree_collision_real=
+  fm_worktree_collision_real=${fm_worktree_collision_real%X}
+  fm_worktree_collision_real=${fm_worktree_collision_real%$'\n'}
+}
+
 fm_worktree_collision_key_of_resolved() {  # <recorded-path> <resolved-path-or-empty>
   if [ -n "$2" ]; then
     fm_worktree_collision_line_safe "$2"
@@ -190,9 +210,9 @@ fm_worktree_collision_key_of_resolved() {  # <recorded-path> <resolved-path-or-e
 }
 
 fm_worktree_collision_group_key() {  # <recorded-path>
-  local path=$1 real
-  real=$(cd "$path" 2>/dev/null && pwd -P) || real=
-  fm_worktree_collision_key_of_resolved "$path" "$real"
+  local path=$1 fm_worktree_collision_real
+  fm_worktree_collision_resolve_path "$path"
+  fm_worktree_collision_key_of_resolved "$path" "$fm_worktree_collision_real"
 }
 
 # Backslash-then-newline escaping so a machine-generated path that happens to
@@ -261,7 +281,7 @@ fm_worktree_collision_path_caveat() {  # <path-state>
         unverifiable:not-a-worktree) cause='is not an inspectable git worktree' ;;
         unverifiable:worktree-state) cause='is a git worktree whose working-tree state could not be read' ;;
         unverifiable:default-branch) cause="is a git worktree whose HEAD could not be checked against the project's default branch" ;;
-        unverifiable:unpublished-default) cause='is a git worktree whose HEAD was found only on a local default branch that is not published to origin' ;;
+        unverifiable:unpublished-default) cause='is a git worktree whose HEAD was found reachable only from a local default branch, because the published origin/<default> either does not exist or could not answer' ;;
         unverifiable:path-unreadable) cause='could not be examined because an ancestor directory is not searchable' ;;
         unverifiable:no-path) cause='was not provided, so no probe could look at anything' ;;
         *) cause='could not be examined' ;;
@@ -355,7 +375,8 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state> [backend]
 # it can reach the key).
 # Portable: no associative arrays, so this runs on bash 3.2 (macOS) too.
 fm_worktree_collision_lines() {  # <state-dir>
-  local state=$1 meta id path pairs dup_keys key ids_for_key recorded real shown_path
+  local state=$1 meta id path pairs dup_keys key ids_for_key recorded shown_path
+  local fm_worktree_collision_real
   local proc_state desc claimant_line claimant_count live_count kind path_state caveat
   [ -d "$state" ] || return 0
   pairs=$(
@@ -385,9 +406,9 @@ fm_worktree_collision_lines() {  # <state-dir>
       [ -f "$state/$id.meta" ] || continue
       recorded=$(fm_meta_get "$state/$id.meta" worktree)
       [ -n "$recorded" ] || continue
-      real=$(cd "$recorded" 2>/dev/null && pwd -P) || real=
-      [ "$(fm_worktree_collision_key_of_resolved "$recorded" "$real")" = "$key" ] || continue
-      [ -n "$shown_path" ] || shown_path=${real:-$recorded}
+      fm_worktree_collision_resolve_path "$recorded"
+      [ "$(fm_worktree_collision_key_of_resolved "$recorded" "$fm_worktree_collision_real")" = "$key" ] || continue
+      [ -n "$shown_path" ] || shown_path=${fm_worktree_collision_real:-$recorded}
       claimant_count=$((claimant_count + 1))
       proc_state=$(fm_worktree_collision_claimant_process "$state/$id.meta")
       case "$proc_state" in

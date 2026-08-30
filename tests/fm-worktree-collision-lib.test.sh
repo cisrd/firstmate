@@ -50,7 +50,9 @@
 #     claimant list, a tab never drops the line, a newline never truncates one.
 #     The key encoding is injective, so a copy whose name holds a real newline
 #     and a different copy whose name holds a literal backslash-n never merge
-#     into one line naming records that claim neither.
+#     into one line naming records that claim neither, and a copy whose name
+#     ends in a newline is named as itself rather than resolved away to a
+#     shorter path that is not there.
 #   - The line separates what grouping proved from what each record says: the
 #     path after the kind is the resolved copy the claimants share, and every
 #     claimant names the worktree= its own record actually contains, so no one
@@ -825,6 +827,47 @@ test_collision_lines_groups_differently_spelled_newline_path() {
   pass "fm_worktree_collision_lines: two different spellings of one newline-holding copy still group into one collision"
 }
 
+# Resolving a recorded path through a command substitution silently drops the
+# path's OWN trailing newline, so a pooled copy at <pool>/wt<LF> resolves to
+# <pool>/wt - a different path, which normally does not exist. The scan then
+# keys, prints, and classifies that other path, and the copy still holding the
+# task's work is reported with `shared worktree no longer exists at that path`:
+# the single caveat that carries no do-not-discard clause. Both records here
+# spell the copy through a newline-free symlink, so this pins the RESOLUTION
+# step alone.
+test_collision_lines_trailing_newline_path_names_the_real_copy() {
+  local state fakebin pool wt link out
+
+  state="$TMP_ROOT/trailing-nl-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/trailing-nl-tmux")
+
+  pool="$TMP_ROOT/trailing-nl-pool"
+  mkdir -p "$pool"
+  wt="$pool/wt"$'\n'
+  make_worktree "$wt"
+  echo dirty > "$wt/scratch.txt"
+  link="$pool/link"
+  ln -s "$wt" "$link"
+
+  [ ! -e "$pool/wt" ] \
+    || fail "the fixture must leave nothing at the truncated path, or it proves nothing"
+
+  fm_write_meta "$state/fm-tn-a.meta" "window=livesess:alive" "worktree=$link" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-tn-b.meta" "window=livesess:ambig" "worktree=$link" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+
+  [ "$(printf '%s\n' "$out" | grep -c '^WORKTREE_COLLISION:')" = 1 ] \
+    || fail "one shared copy must produce exactly one collision line, got:"$'\n'"$out"
+  assert_not_contains "$out" "no longer exists" \
+    "a copy still on disk must never be reported as gone because its name ends in a newline"
+  assert_contains "$out" "WORKTREE_COLLISION: live $(line_safe "$wt") claimed by fm-tn-a (process alive, recorded $link), fm-tn-b (process state unknown (backend=tmux reported ambiguous), recorded $link) - shared path still has unlanded work, do not discard" \
+    "the collision must name the copy that actually exists, escaped, and report the work it holds"
+
+  pass "fm_worktree_collision_lines: a copy whose name ends in a newline is named, never resolved away"
+}
+
 # The group key is an ENCODING, so it has to be injective: two different
 # physical copies may never encode to one key. Doubling backslashes only for
 # strings that already hold a newline breaks that - a copy whose real name
@@ -1092,6 +1135,7 @@ test_collision_lines_path_with_tab_is_still_reported
 test_collision_lines_newline_in_resolved_path_is_still_reported
 test_collision_lines_groups_differently_spelled_newline_path
 test_collision_lines_newline_and_literal_backslash_n_stay_distinct
+test_collision_lines_trailing_newline_path_names_the_real_copy
 test_collision_lines_groups_symlinked_spellings_of_one_copy
 test_collision_lines_scaffolding_only_path_is_not_called_unlanded
 test_collision_lines_record_removed_mid_scan_is_dropped
