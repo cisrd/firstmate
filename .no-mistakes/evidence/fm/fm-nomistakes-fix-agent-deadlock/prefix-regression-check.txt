@@ -1,0 +1,14 @@
+Regression check: the two new tests run against the PRE-FIX product code (tests kept at target commit)
+
+--- bin/fm-teardown.sh @ 101bd07 (before 'refuse promptly when the state dir is unwritable') ---
+$ bash tests/fm-teardown.test.sh  # test_unwritable_state_refuses_promptly_instead_of_hanging
+not ok - unwritable-state: teardown hung on a lock it could never create instead of refusing
+
+--- bin/fm-teardown.sh @ d4de08e (before 'serialize the discard-log rotation') ---
+$ bash tests/fm-teardown.test.sh  # test_concurrent_forced_discards_do_not_lose_records
+not ok - concurrent-discard-race: expected all 20 concurrently discarded tasks' records to survive rotation, only 4 did
+
+--- both at target commit 61674ff ---
+ok - an unwritable state refuses the forced discard promptly and names the cause, instead of hanging on the lock
+ok - --force refuses when the durable discard record cannot be written, rather than destroying untraceable work
+ok - concurrent forced discards across different tasks never lose an already-recorded discard to a racing rotation

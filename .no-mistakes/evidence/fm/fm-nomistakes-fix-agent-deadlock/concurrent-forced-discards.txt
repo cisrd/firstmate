@@ -1,0 +1,19 @@
+$ fm-teardown.sh task-d1 --force        # (10 such teardowns run concurrently, FM_DISCARD_LOG_MAX_BYTES=80)
+DISCARDING UNLANDED WORK: no-mistakes run for task-d1 left pipeline-committed work in the gate that never reached this worktree (<case>/wt-d1).
+Proceeding because --force was passed. Treat --force here as your explicit authorization to discard THIS work (branch fm/task-d1, pipeline commit fix0head) - it is not a convenience bypass, and teardown is about to make it unrecoverable.
+Recorded the discard in <case>/state/.discarded-pipeline-commits.log.
+warning: lsof is unavailable; cannot resolve the tmux pane process group for task-d1
+
+$ cat $STATE/.discarded-pipeline-commits.log
+[2026-08-30T12:17:48+0200] task=task-d1 reason=recover_custody branch=fm/task-d1 pipeline_head=fix0head worktree=<case>/wt-d1
+[2026-08-30T12:17:48+0200] task=task-d5 reason=recover_custody branch=fm/task-d5 pipeline_head=fix0head worktree=<case>/wt-d5
+[2026-08-30T12:17:48+0200] task=task-d10 reason=recover_custody branch=fm/task-d10 pipeline_head=fix0head worktree=<case>/wt-d10
+[2026-08-30T12:17:48+0200] task=task-d7 reason=recover_custody branch=fm/task-d7 pipeline_head=fix0head worktree=<case>/wt-d7
+[2026-08-30T12:17:48+0200] task=task-d3 reason=recover_custody branch=fm/task-d3 pipeline_head=fix0head worktree=<case>/wt-d3
+[2026-08-30T12:17:48+0200] task=task-d4 reason=recover_custody branch=fm/task-d4 pipeline_head=fix0head worktree=<case>/wt-d4
+[2026-08-30T12:17:49+0200] task=task-d2 reason=recover_custody branch=fm/task-d2 pipeline_head=fix0head worktree=<case>/wt-d2
+[2026-08-30T12:17:49+0200] task=task-d9 reason=recover_custody branch=fm/task-d9 pipeline_head=fix0head worktree=<case>/wt-d9
+[2026-08-30T12:17:49+0200] task=task-d6 reason=recover_custody branch=fm/task-d6 pipeline_head=fix0head worktree=<case>/wt-d6
+[2026-08-30T12:17:49+0200] task=task-d8 reason=recover_custody branch=fm/task-d8 pipeline_head=fix0head worktree=<case>/wt-d8
+
+records surviving rotation: 10 of 10 forced discards

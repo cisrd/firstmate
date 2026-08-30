@@ -1,0 +1,11 @@
+# $STATE goes read-only after the verification query, before the discard record is written
+$ fm-teardown.sh task-x1 --force
+DISCARDING UNLANDED WORK: no-mistakes run for task-x1 left pipeline-committed work in the gate that never reached this worktree (<case>/wt).
+Proceeding because --force was passed. Treat --force here as your explicit authorization to discard THIS work (branch fm/task-x1, pipeline commit fix0head) - it is not a convenience bypass, and teardown is about to make it unrecoverable.
+Cannot take the discard-log lock <case>/state/.discarded-pipeline-commits.lock: mktemp: failed to create directory via template ‘<case>/state/.discarded-pipeline-commits.lock.probe.XXXXXX’: Permission denied
+REFUSED: --force authorized discarding branch fm/task-x1, pipeline commit fix0head, but the durable record of that discard could NOT be written to <case>/state/.discarded-pipeline-commits.log, so teardown would destroy work that nothing afterwards can account for.
+This is a RECORD-WRITE failure, not a no-mistakes failure: the axi status check itself completed. Fix write access to <case>/state (permissions, disk space, read-only mount), then re-run with --force.
+
+exit status: 1   (elapsed: 1s; pre-fix this hung until killed, holding $STATE/.control-task-x1.lock)
+worktree still present: yes
+treehouse return invoked: no
