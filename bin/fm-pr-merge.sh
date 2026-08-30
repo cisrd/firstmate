@@ -22,10 +22,14 @@
 # and naming both failed reads when gh is present and its own read failed.
 # If the pull request remains open and the base branch has an effective
 # merge_queue rule, the refusal names the queue's configured merge method and
-# the exact -- --auto --<method> retry flags, unless the caller already passed
-# that method with --auto to a merge command that returned success, in which
-# case it reports instead that the accepted request has not entered the queue
-# and the queue state has to be re-checked.
+# the exact -- --auto --no-method retry flags. It names no strategy because the
+# queue sets the method itself and refuses an explicit one, so the same retry
+# holds whether that method is known, ambiguous or unrecognised, and naming a
+# strategy would send the operator back into the refusal this path exists for.
+# The exception is a caller who already passed a forge-decides method with
+# --auto to a merge command that returned success, in which case it reports
+# instead that the accepted request has not entered the queue and the queue
+# state has to be re-checked.
 # No method is selected for the caller in any case. A rules response that names
 # no queue rule, one that could not be read, rules that disagree, and a method
 # this script does not recognise are four distinct outcomes and are reported
@@ -125,6 +129,8 @@ caller_has_merge_method() {
 
 # The merge method the caller's own extra arguments named, in the --flag,
 # --method <value> and --method=<value> forms caller_has_merge_method accepts.
+# Every spelling of "let the forge choose" normalises to queue, so one request
+# is not mistaken for another spelling of it or for naming no method at all.
 caller_merge_method() {
   local arg method='' pending=false
   for arg in "$@"; do
@@ -137,6 +143,7 @@ caller_merge_method() {
       --squash) method=squash ;;
       --merge) method=merge ;;
       --rebase) method=rebase ;;
+      --no-method) method=queue ;;
       --method) pending=true ;;
       --method=*) method=${arg#--method=} ;;
     esac
@@ -632,15 +639,20 @@ github_state_is_open() {
   esac
 }
 
-# Whether the caller's own named method is the one the queue is configured for,
-# compared without regard to the spelling either side happens to use.
-github_caller_method_is() {
-  case "$FM_PR_GITHUB_CALLER_METHOD" in
-    [mM][eE][rR][gG][eE]) [ "$1" = merge ] ;;
-    [sS][qQ][uU][aA][sS][hH]) [ "$1" = squash ] ;;
-    [rR][eE][bB][aA][sS][eE]) [ "$1" = rebase ] ;;
-    *) return 1 ;;
-  esac
+# Whether the caller already asked the forge to choose the merge method, in any
+# of the spellings caller_merge_method normalises to queue. That is the one
+# method request a queue-governed base accepts, so it is what this refusal
+# treats as flags the caller had already got right.
+github_caller_method_is_forge_decides() {
+  [ "$FM_PR_GITHUB_CALLER_METHOD" = queue ]
+}
+
+# The one retry a queue-governed base accepts. It names no strategy, because the
+# queue sets the merge method itself and refuses an explicit one, so it does not
+# vary with the queue's configured method and stays nameable even when that
+# method is ambiguous or unrecognised.
+github_queue_retry_command() {
+  printf '%s %s %s -- --auto --no-method' "$0" "$ID" "$URL"
 }
 
 github_report_queue_rules() {
@@ -655,23 +667,24 @@ github_report_queue_rules() {
       esac
       if github_merge_command_succeeded \
         && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
-        && github_caller_method_is "$queue_method"; then
-        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --%s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
+        && github_caller_method_is_forge_decides; then
+        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --no-method, which leaves the queue'"'"'s own %s method to apply): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
           "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
       else
-        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s -- --auto --%s\n' \
-          "$FM_PR_GITHUB_BASE" "$0" "$ID" "$URL" "$queue_method" >&2
+        printf 'error: base branch %s requires the merge queue, which sets the merge method (%s) itself and refuses an explicit strategy; retry with: %s\n' \
+          "$FM_PR_GITHUB_BASE" "$queue_method" "$(github_queue_retry_command)" >&2
       fi
       ;;
     conflicting)
-      printf 'error: base branch %s has conflicting merge queue methods (%s); exact retry flags are ambiguous\n' \
-        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }" >&2
+      printf 'error: base branch %s has conflicting merge queue methods (%s), so which one it would apply is ambiguous; the merge queue applies its own without being told, so retry with: %s\n' \
+        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }" \
+        "$(github_queue_retry_command)" >&2
       ;;
     unrecognised)
       methods_display=${FM_PR_GITHUB_QUEUE_METHODS//,/, }
       [ -n "$methods_display" ] || methods_display='<none reported>'
-      printf 'error: base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises, so exact retry flags cannot be named\n' \
-        "$FM_PR_GITHUB_BASE" "$methods_display" >&2
+      printf 'error: base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises; the merge queue applies its own without being told, so retry with: %s\n' \
+        "$FM_PR_GITHUB_BASE" "$methods_display" "$(github_queue_retry_command)" >&2
       ;;
     unreadable)
       printf 'error: the branch rules for base branch %s could not be read, so a merge queue requirement can be neither confirmed nor ruled out here\n' \

@@ -98,6 +98,6 @@ bin/fm-test-run.sh tests/fm-pr-check-security.test.sh
 bin/fm-test-run.sh tests/fm-teardown.test.sh
 ```
 
-The merge tests prove `--method=queue`, `--method queue`, and `--no-method` invoke `gh-axi pr merge` with no strategy flag, that combining one of those tokens with an explicit GitHub strategy is refused before the forge is called, that the same live outcome read names a queued pull request as queued and a merged one as merged, that an unreadable state refuses rather than claiming a merge, and that those tokens are refused on GitLab before any state is recorded while a real GitLab merge method still forwards.
+The merge tests prove `--method=queue`, `--method queue`, and `--no-method` invoke `gh-axi pr merge` with no strategy flag, that a queue-governed base is refused with a forge-decides retry rather than an explicit strategy the queue would reject, that the printed retry is itself accepted when run, that combining one of those tokens with an explicit GitHub strategy is refused before the forge is called, that the same live outcome read names a queued pull request as queued and a merged one as merged, that an unreadable state refuses rather than claiming a merge, and that those tokens are refused on GitLab before any state is recorded while a real GitLab merge method still forwards.
 The poll contract stays silent for `OPEN`, `CLOSED`, an empty state, and a malformed one, and emits `merged` only for `MERGED`.
 Teardown refuses an open pull request whose commits are not otherwise landed.
