@@ -1,0 +1,23 @@
+Regression discipline: the two Grok busy-signature regressions fail on the
+pre-fix libs (bin/fm-busy-lib.sh + bin/fm-composer-lib.sh at debe4bfa) and
+pass at the branch head. Everything else in both suites is unchanged.
+
+$ bash tests/fm-busy-state.test.sh            # PRE-FIX libs
+  ok - converted adapters never classify busy from rendered footer text
+  ok - the grok fallback is regex-scoped to grok and classifies only grok tasks
+  not ok - grok thinking (Esc:cancel only) must classify busy, got 'idle grok-regex'
+
+$ bash tests/fm-tmux-submit-busy.test.sh      # PRE-FIX libs
+  ok - fm_pane_is_busy: Claude spinner is scoped, multi-frame, and backward-compatible
+  not ok - grok's active-turn Esc:cancel footer must read busy for the grok harness
+
+$ bash tests/fm-busy-state.test.sh            # branch head
+  ok - herdr's native verdict is trusted for busy only, and records outrank it
+  ok - record parsing never clobbers the caller's positional parameters, glob setting, or fields
+  ok - the boolean view reports busy only on an exact busy verdict
+  all fm-busy-state tests passed
+
+$ bash tests/fm-tmux-submit-busy.test.sh      # branch head
+  ok - fm_tmux_submit_enter_core: unrecognized states skip busy conversion
+  ok - fm_pane_is_busy: Claude spinner is scoped, multi-frame, and backward-compatible
+  ok - grok's Esc:cancel widens only its own signature, never the delivery union

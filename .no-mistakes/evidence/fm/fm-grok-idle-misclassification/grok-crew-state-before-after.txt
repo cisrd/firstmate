@@ -1,0 +1,50 @@
+grok 1.0.5 busy-footer misclassification - end-to-end through bin/fm-crew-state.sh
+(real tmux session 'fm-grok-e2e', real panes, real crew meta; grok screens verbatim from
+ docs/verification/runtime-backends.md's live 1.0.5 capture)
+
+### grok pane on screen: thinking.txt
+--- what the operator sees in the crew's tmux pane ---
+        ⠴ Thinking… 4.7s                                          9.7s ⇣1.63k [stop]
+      ╭──────────────────────────────────────────────────────────────────────────╮
+      │ ❯                                                                        │
+      ╰────────────────────────────────────────────────────────── Grok 4.6 (xhigh) ─╯
+      Shift+Tab:mode  │  Esc:cancel  │  Ctrl+x:shortcuts
+--- $ bin/fm-crew-state.sh thinking   (BEFORE this change) ---
+    state: done · source: status-log · previous turn validated
+--- $ bin/fm-crew-state.sh thinking   (AFTER this change) ---
+    state: working · source: pane · harness busy (grok-regex)
+
+### grok pane on screen: running-tool.txt
+--- what the operator sees in the crew's tmux pane ---
+        ⠋ Print timestamps every 2 seconds, 8 time… 40s   [running the approved command]
+      Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
+--- $ bin/fm-crew-state.sh runtool   (BEFORE this change) ---
+    state: done · source: status-log · previous turn validated
+--- $ bin/fm-crew-state.sh runtool   (AFTER this change) ---
+    state: working · source: pane · harness busy (grok-regex)
+
+### grok pane on screen: approval.txt
+--- what the operator sees in the crew's tmux pane ---
+      ┃  Print timestamps every 2 seconds, 8 times
+      ┃  for i in 1 2 3 4 5 6 7 8; do date +%s; sleep 2; done
+      ┃
+      ┃  1 (●) Yes, and don't ask again for anything (always-approve mode)
+      ┃  2 (○) Yes, proceed
+      ┃  3 (○) No, reject (type to add feedback)
+      1/3:select  │  Tab:next option  │  Ctrl+o:always-approve  │  Ctrl+c:cancel  │  Esc:scrollback
+--- $ bin/fm-crew-state.sh approval   (BEFORE this change) ---
+    state: working · source: pane · harness busy (grok-regex)
+--- $ bin/fm-crew-state.sh approval   (AFTER this change) ---
+    state: working · source: pane · harness busy (grok-regex)
+
+### grok pane on screen: idle.txt
+--- what the operator sees in the crew's tmux pane ---
+      ╭──────────────────────────────────────────────────────────────────────────╮
+      │ ❯                                                                        │
+      ╰────────────────────────────────────────────────────────── Grok 4.6 (xhigh) ─╯
+      Shift+Tab:mode  │  Ctrl+x:shortcuts
+--- $ bin/fm-crew-state.sh idlecrew   (BEFORE this change) ---
+    state: done · source: status-log · previous turn validated
+--- $ bin/fm-crew-state.sh idlecrew   (AFTER this change) ---
+    state: done · source: status-log · previous turn validated
+
