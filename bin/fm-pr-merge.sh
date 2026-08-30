@@ -27,11 +27,11 @@
 # holds whether that method is known, ambiguous or unrecognised, and naming a
 # strategy would send the operator back into the refusal this path exists for.
 # The exception is a caller who already passed a forge-decides method with
-# --auto to a merge command that returned success, in which case it reports
-# instead that the accepted request has not entered the queue and the queue
-# state has to be re-checked. Because the retry does not vary with the queue's
-# method, that exception cannot either: it is decided once, and holds for every
-# rules outcome that would otherwise name the retry.
+# --auto, in which case that retry would only repeat what they ran, so it says
+# no different retry exists and points at the blocking cause reported above it.
+# Because the retry itself is one fixed command, that exception is read from the
+# caller's arguments alone: it holds for every rules outcome that would
+# otherwise name the retry, and whether the merge command succeeded or failed.
 # No method is selected for the caller in any case. A rules response that names
 # no queue rule, one that could not be read, rules that disagree, and a method
 # this script does not recognise are four distinct outcomes and are reported
@@ -657,15 +657,14 @@ github_queue_retry_command() {
   printf '%s %s %s -- --auto --no-method' "$0" "$ID" "$URL"
 }
 
-# Whether the merge command already accepted the exact flags a queue-governed
-# base takes, which makes naming that retry an echo of the command the caller
-# just ran. The retry never varies with the queue's configured method, so this
-# cannot vary with it either: it is decided once for every status that names a
-# retry rather than inside one of them.
-github_queue_retry_already_used() {
-  github_merge_command_succeeded \
-    && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
-    && github_caller_method_is_forge_decides
+# Whether the caller's own arguments already are the retry a queue-governed base
+# takes, which makes naming that retry an echo of the command just run. The
+# retry is one fixed command, so whether it would repeat the caller is settled
+# by what they typed: it is read from their arguments alone, never from what the
+# merge command then returned or from which rules outcome came back, so no path
+# can reach the point of handing the caller their own command back.
+github_caller_already_ran_queue_retry() {
+  [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] && github_caller_method_is_forge_decides
 }
 
 github_report_queue_rules() {
@@ -703,8 +702,8 @@ github_report_queue_rules() {
       return 0
       ;;
   esac
-  if github_queue_retry_already_used; then
-    printf 'error: %s; this run refuses even though the request for %s was accepted with the exact flags that base requires (--auto --no-method): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
+  if github_caller_already_ran_queue_retry; then
+    printf 'error: %s; --auto --no-method is the only thing that base takes and this run already used it, so no different retry exists to name: the outcome reported above for %s is the blocking cause, and re-check the pull request'"'"'s merge queue state before running the same command again\n' \
       "$situation" "$URL" >&2
   else
     printf 'error: %s; retry with: %s\n' "$situation" "$(github_queue_retry_command)" >&2
