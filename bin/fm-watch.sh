@@ -1072,6 +1072,11 @@ busy_progress_check() {  # <window> <task> <tail40> <window-key>
   esac
   age=$(( $(date +%s) - since ))
   [ "$age" -ge "$BUSY_NO_PROGRESS_SECS" ] || return 0
+  if crew_run_step_working "$task"; then
+    date +%s > "$sincef"
+    triage_log "absorbed busy no-progress (authoritative no-mistakes run-step is still working): $win"
+    return 0
+  fi
   if crew_worktree_written_since "$task" "$STATE" "$sincef"; then
     date +%s > "$sincef"
     triage_log "absorbed busy no-progress (its own worktree was written during the frozen-counter window, ${age}s): $win"

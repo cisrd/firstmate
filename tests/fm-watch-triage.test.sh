@@ -454,14 +454,17 @@ test_crew_absorb_class_classifier() {
   export FM_FAKE_CREW_STATE
   FM_FAKE_CREW_STATE='state: working · source: run-step · validating (running)'
   [ "$(crew_absorb_class a)" = working ] || fail "active run-step not classed working"
+  crew_run_step_working a || fail "active run-step not recognized by the narrow liveness exemption"
   FM_FAKE_CREW_STATE='state: working · source: pane · harness busy'
   [ "$(crew_absorb_class a)" = working ] || fail "busy pane not classed working"
+  ! crew_run_step_working a || fail "busy pane was incorrectly granted the run-step liveness exemption"
   FM_FAKE_CREW_STATE='state: paused · source: status-log · awaiting upstream'
   [ "$(crew_absorb_class a)" = paused ] || fail "declared pause not classed paused"
   crew_is_paused a || fail "crew_is_paused did not recognize a paused verdict"
   ! crew_is_provably_working a || fail "a paused crew was treated as provably working"
   FM_FAKE_CREW_STATE='state: working · source: status-log · working: compiling'
   [ "$(crew_absorb_class a)" = none ] || fail "stale working: status-log classed absorbable"
+  ! crew_run_step_working a || fail "status-log activity was incorrectly granted the run-step liveness exemption"
   FM_FAKE_CREW_STATE='state: unknown · source: none · worktree gone'
   [ "$(crew_absorb_class a)" = none ] || fail "unknown crew classed absorbable"
   ! crew_is_paused a || fail "unknown crew classed paused"
@@ -3391,6 +3394,63 @@ test_busy_declared_wait_is_exempt_from_the_progress_report() {
   pass "a worker that declared its own external wait is never reported through the progress measure"
 }
 
+# An authoritative no-mistakes run-step can be waiting on its upstream review or
+# CI monitor with frozen pane counters, no status-log churn, and no crew-worktree
+# writes. That is still legitimate progress context, so only this exact source
+# gets the narrow exemption; a busy pane with another source remains reportable.
+test_busy_run_step_is_exempt_from_progress_report() {
+  local dir state fakebin out capture_file window key sig pid
+  dir=$(make_case busy-run-step-progress); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-busy-run-step"
+  busy_footer 61 2481 > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/busy-run-step.meta"
+  record_pi_busy "$state" busy-run-step
+  printf 'working: validating upstream checks\n' > "$state/busy-run-step.status"
+  sig=$(seen_sig "$state/busy-run-step.status"); printf '%s' "$sig" > "$state/.seen-busy-run-step_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch "$state/busy-run-step.turn-ended"
+  prime_turnend_seen "$state/busy-run-step.turn-ended"
+  # Seed the previous counter reading, then let a real watcher cycle record the
+  # current reading and arm the measure. The test script does not source the
+  # watcher's private helpers, so this also exercises the production call path.
+  printf 'tok:n=2344 ' > "$state/.progress-counters-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · waiting on upstream CI' \
+    FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_BUSY_NO_PROGRESS_SECS=999999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "the run-step setup cycle unexpectedly surfaced: $(cat "$out")"
+  fi
+  [ -e "$state/.progress-moved-$key" ] \
+    || { reap "$pid"; fail "the run-step setup cycle did not arm the progress measure"; }
+  [ -s "$state/.progress-since-$key" ] \
+    || { reap "$pid"; fail "the run-step setup cycle did not start the frozen-window timer"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional run-step setup stop"
+  printf '%s' "$(( $(date +%s) - 100000 ))" > "$state/.progress-since-$key"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · waiting on upstream CI' \
+    FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_BUSY_NO_PROGRESS_SECS=1 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "an active run-step was reported as frozen progress: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "run-step liveness exemption produced a wake: $(cat "$out")"; }
+  [ "$(( $(date +%s) - $(cat "$state/.progress-since-$key") ))" -lt 100 ] \
+    || { reap "$pid"; fail "run-step liveness exemption did not restart the frozen-window timer"; }
+  grep -F 'authoritative no-mistakes run-step is still working' "$state/.watch-triage.log" >/dev/null \
+    || { reap "$pid"; fail "run-step liveness exemption left no triage evidence"; }
+  reap "$pid"
+  pass "an authoritative run-step waiting on upstream checks is exempt from the busy-progress report"
+}
+
 # A harness that renders no counters at all (Codex's footer is the recorded
 # example) gives no sharp measure. That is admitted, not guessed around: no
 # timer runs, nothing is reported on this path, and the completed-turn bound
@@ -4490,6 +4550,7 @@ test_busy_frozen_counters_are_reported
 test_busy_moving_counters_are_never_reported
 test_idle_pane_keeps_the_unchanged_stale_path
 test_busy_declared_wait_is_exempt_from_the_progress_report
+test_busy_run_step_is_exempt_from_progress_report
 test_counterless_harness_is_admitted_not_guessed
 test_busy_no_progress_default_is_1500s
 test_static_counter_shaped_content_never_arms_the_measure
