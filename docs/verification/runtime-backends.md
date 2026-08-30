@@ -303,7 +303,7 @@ It does not refresh the separate, already-known staleness of grok 1.0.5's `empty
 
 ### Ctrl+C interrupt, re-verified on grok 1.0.5
 
-The Interrupt fact for grok (`.agents/skills/harness-adapters/SKILL.md`, `bin/fm-control-lib.sh:109-110`) was verified on grok 0.2.73 and had not been re-verified since.
+The Interrupt fact for grok (`.agents/skills/harness-adapters/references/harness/grok.md`, `bin/fm-control-lib.sh:109-110`) was verified on grok 0.2.73 and had not been re-verified since.
 The busy-footer capture above raised a live doubt: the approval dialog's footer advertises `Ctrl+c:cancel`, and a footer string is advertising, not proof of a key's actual behavior - the exact trap the busy-footer fix itself was written to avoid for `Esc:cancel`.
 So the same session re-verified Ctrl+C directly rather than carry that same kind of unproven claim forward.
 
