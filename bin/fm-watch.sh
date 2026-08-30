@@ -986,18 +986,25 @@ busy_progress_counters_only() {  # <tail40>
   printf '%s' "$counters" | tr '\n' ' '
 }
 
-# WHICH agent currently occupies this window: the spawn record's mtime, which
-# both a fresh spawn and a relaunch rewrite, and the semantic busy record's
-# generation, which is re-minted per incarnation. A window's name - and so every
-# per-window marker keyed by it - outlives teardown, respawn and relaunch of the
-# same task id, while what a harness renders does not, so the evidence below
-# names the incarnation that earned it and is never inherited by its successor.
+# WHICH agent currently occupies this window: the spawn generation this repo
+# already treats as a task's incarnation identity (bin/fm-inactive-reconcile.sh,
+# bin/fm-secondmate-reconcile.sh) and the semantic busy generation, both minted
+# fresh by a spawn and by a relaunch. A window's name - and so every per-window
+# marker keyed by it - outlives teardown, respawn and relaunch of the same task
+# id, while what a harness renders does not, so the readings below are bounded
+# by this and never cross from one agent to the next.
+#
+# Both halves are recorded CONTENT, never a file's mtime: the spawn record is
+# rewritten during a task's ordinary life by writers that have nothing to do
+# with a new agent (fm-pr-check.sh appending pr=, the Relay and captain-hold
+# writers), and treating those as a new incarnation would retire a live worker's
+# evidence - which a frozen worker can never earn back, since re-earning it
+# requires seeing its counters rise.
 busy_progress_incarnation() {  # <task>
-  local meta gen
-  meta=$(stat_mtime "$STATE/$task.meta" || true)
-  gen=$(sed -n 's/.*[[:space:]]gen=\([^[:space:]][^[:space:]]*\).*/\1/p' \
-    "$STATE/$task.busy-state" 2>/dev/null | tail -1)
-  printf 'meta=%s gen=%s' "${meta:-none}" "${gen:-none}"
+  local spawn gen
+  spawn=$(fm_meta_get "$STATE/$task.meta" spawn_gen)
+  gen=$(fm_busy_current_gen "$STATE" "$task" 2>/dev/null || true)
+  printf 'spawn=%s gen=%s' "${spawn:-none}" "${gen:-none}"
 }
 
 # The busy-pane progress report: the one path that can see a worker frozen
@@ -1009,15 +1016,18 @@ busy_progress_incarnation() {  # <task>
 # because a worker on one very long call produces the same reading as a frozen
 # one and the difference is the supervisor's to judge, not this poll's.
 #
-# Four cases never reach the timer at all:
+# Five cases never reach the timer at all:
 #   - away mode, where the daemon owns triage and a new wake identity would
 #     climb its escalation ladder for the whole quiet stretch;
 #   - a declared external wait or verified captain-held transfer, an already
 #     explained standstill that handle_paused_stale's long cadence owns;
-#   - a pane whose numbers have never been SEEN to move, which includes every
+#   - a pane whose numbers have never been SEEN to advance, which includes every
 #     harness that renders no counters and every pane whose only counter-shaped
-#     text is static transcript content; both are recorded in the triage log as
-#     an admitted blind spot and left to BUSY_TURN_MAX_SECS;
+#     text is displayed content; both are recorded in the triage log as an
+#     admitted blind spot and left to BUSY_TURN_MAX_SECS;
+#   - a task whose authoritative state is an actively running no-mistakes
+#     run-step, which legitimately waits on its upstream review or CI monitor
+#     with nothing moving in its own pane (crew_run_step_working);
 #   - a task whose own worktree was written during the frozen window, the same
 #     harder-to-fake liveness wedge_defer_writing already trusts over the pane.
 #
@@ -1025,24 +1035,26 @@ busy_progress_incarnation() {  # <task>
 # meter. Matching a counter shape proves only that the text looks like one: a
 # transcript line reading "2481 tokens" or a quoted "$1.42" sitting in the
 # footer region of a counter-free harness matches exactly as a real meter does,
-# and being static forever is precisely what a frozen counter looks like. So a
-# shape alone never arms the short fuse. This window's numbers must first be
-# observed CHANGING at least once - behaving like a meter, not merely looking
-# like one - which static content can never do and a real meter does within the
+# and being frozen is precisely what a wedged counter looks like. So a shape
+# alone never arms the short fuse. This window's numbers must first be observed
+# ADVANCING at least once - one of them rising, which is what a meter does and
+# what scrolling content does not, since displayed text that changes between two
+# polls is as likely to fall as to rise - and a real meter does that within the
 # first seconds of generation. Until then the pane is treated exactly like a
 # counter-free harness. The evidence is per window and kept for the task's life,
 # so a worker that froze after its first tokens is still covered - but only for
-# THAT life: it is stamped with the incarnation that earned it, because the
-# window survives teardown, respawn and relaunch while the agent behind it does
-# not, and a replacement (a different harness, or one that renders no counters
-# at all) has proved nothing about its own numbers yet.
+# THAT life: every reading here, armed or not, is bounded by the incarnation
+# that took it, because the window survives teardown, respawn and relaunch while
+# the agent behind it does not, and a replacement (a different harness, or one
+# that renders no counters at all) has proved nothing about its own numbers yet.
 busy_progress_check() {  # <window> <task> <tail40> <window-key>
-  local win=$1 task=$2 tail40=$3 key=$4 fpf sincef cfpf movedf fp prev cfp prevc since age reason incarnation
+  local win=$1 task=$2 tail40=$3 key=$4 fpf sincef cfpf movedf incf fp prev cfp prevc since age reason incarnation
   [ -n "$task" ] || return 0
   fpf="$STATE/.progress-fp-$key"
   sincef="$STATE/.progress-since-$key"
   cfpf="$STATE/.progress-counters-$key"
   movedf="$STATE/.progress-moved-$key"
+  incf="$STATE/.progress-incarnation-$key"
   if afk_present; then
     clear_progress_tracking "$key"
     return 0
@@ -1052,21 +1064,24 @@ busy_progress_check() {  # <window> <task> <tail40> <window-key>
     return 0
   fi
   incarnation=$(busy_progress_incarnation "$task")
-  if [ -e "$movedf" ] && [ "$(cat "$movedf" 2>/dev/null || true)" != "$incarnation" ]; then
+  if [ "$(cat "$incf" 2>/dev/null || true)" != "$incarnation" ]; then
+    if [ -e "$movedf" ] || [ -e "$fpf" ] || [ -e "$cfpf" ]; then
+      triage_log "busy progress readings retired with the incarnation that took them (this window holds a different agent now, which has proved nothing about its own numbers): $win"
+    fi
     rm -f "$movedf"
     clear_progress_tracking "$key"
-    triage_log "busy progress evidence retired with the incarnation that earned it (this window holds a different agent now, which has proved nothing about its own numbers): $win"
+    printf '%s' "$incarnation" > "$incf"
   fi
   fp=$(busy_progress_fingerprint "$task" "$tail40")
   prev=$(cat "$fpf" 2>/dev/null || true)
   cfp=$(busy_progress_counters_only "$tail40")
   prevc=$(cat "$cfpf" 2>/dev/null || true)
-  # Promote this window to measurable the first time its counter-shaped text is
-  # seen to change. Recorded before the gate below, so the very poll that proves
-  # the numbers move is also the one that arms the measure.
-  if [ -n "$cfp" ] && [ -n "$prevc" ] && [ "$cfp" != "$prevc" ] && [ ! -e "$movedf" ]; then
-    printf '%s' "$incarnation" > "$movedf"
-    triage_log "busy progress now measurable (this worker's rendered counters were observed changing): $win"
+  # Promote this window to measurable the first time one of its counter-shaped
+  # numbers is seen to RISE. Recorded before the gate below, so the very poll
+  # that proves the numbers advance is also the one that arms the measure.
+  if [ ! -e "$movedf" ] && fm_progress_advanced "$prevc" "$cfp"; then
+    : > "$movedf"
+    triage_log "busy progress now measurable (this worker's rendered counters were observed advancing): $win"
   fi
   if [ -n "$cfp" ]; then
     printf '%s' "$cfp" > "$cfpf"
@@ -1076,7 +1091,7 @@ busy_progress_check() {  # <window> <task> <tail40> <window-key>
   if [ ! -e "$movedf" ]; then
     case "$prev" in
       unproven*) ;;
-      *) triage_log "busy progress unmeasurable (no rendered number here has been seen to move, so nothing proves this pane has a real progress meter; the completed-turn bound remains its only backstop): $win" ;;
+      *) triage_log "busy progress unmeasurable (no rendered number here has been seen to rise, so nothing proves this pane has a real progress meter; the completed-turn bound remains its only backstop): $win" ;;
     esac
     printf 'unproven %s' "$fp" > "$fpf"
     rm -f "$sincef"

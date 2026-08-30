@@ -57,6 +57,50 @@ _FM_PROGRESS_ARROW_DOWN=$'\xE2\x86\x93'
 # Reads <text> when given, else stdin. Returns 1 when the tail renders no
 # progress counter at all - the caller's cue that this harness gives no sharp
 # measure here and must say so rather than guess.
+# fm_progress_advanced: 0 iff two readings from fm_progress_counters show the
+# same counter KIND at a strictly higher value in the later one - the one shape
+# of change that only a real meter produces.
+#
+# "Changed" is too weak to be evidence, because the reading is taken over a live
+# pane's footer region and the transcript scrolls through it: a counter-free
+# harness whose displayed content says "we used 4321 tokens" on one poll and
+# something else on the next renders a DIFFERENT counter-shaped string each
+# time, which is motion without progress and exactly what this library exists to
+# separate. A meter, by contrast, accumulates: tokens, spend and context filled
+# only ever rise within a turn. So a kind that appears in one reading and not
+# the other proves nothing, a value that falls proves nothing, and a compound
+# value (the used/total context ratio) is not compared at all; only a rise does.
+# Values carry the k/M suffixes harnesses render, which are normalized here so
+# "1.1k" and "1100" compare as the same number.
+fm_progress_advanced() {  # <previous-reading> <current-reading>
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  awk -v prev="$1" -v cur="$2" '
+    function num(v,   mult) {
+      mult = 1
+      if (v ~ /[kK]$/) { mult = 1000; v = substr(v, 1, length(v) - 1) }
+      else if (v ~ /[mM]$/) { mult = 1000000; v = substr(v, 1, length(v) - 1) }
+      if (v !~ /^[0-9]+(\.[0-9]+)?$/) return -1
+      return v * mult
+    }
+    function load(s, arr,   i, n, parts, k, v, x) {
+      n = split(s, parts, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        x = index(parts[i], "=")
+        if (x < 2) continue
+        k = substr(parts[i], 1, x - 1)
+        v = num(substr(parts[i], x + 1))
+        if (v < 0) continue
+        if (!(k in arr) || v > arr[k]) arr[k] = v
+      }
+    }
+    BEGIN {
+      load(prev, a); load(cur, b)
+      for (k in b) if (k in a && b[k] > a[k]) exit 0
+      exit 1
+    }
+  '
+}
+
 fm_progress_counters() {  # [<text>]
   local text out
   if [ "$#" -gt 0 ]; then text=$1; else text=$(cat); fi

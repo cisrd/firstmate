@@ -132,4 +132,49 @@ has_counter "$SIX_DOWN" 'tok:down=1.1k' \
   || fail "a real meter on the status line was missed inside the footer window: $(counters_of "$SIX_DOWN")"
 pass "the footer window is narrow enough to exclude nearby transcript and wide enough to keep the status line"
 
+# --- advance, not mere change: what may arm the busy-progress measure --------
+# The measure is armed by comparing two readings of the same window, and the
+# reading is taken over a LIVE pane's footer region, which transcript scrolls
+# through. So "these two readings differ" cannot be the evidence: a meter
+# accumulates, and only a number that rose says this worker got somewhere.
+
+fm_progress_advanced 'tok:n=2344' 'tok:n=2481' \
+  || fail "a rising token count was not read as advance"
+fm_progress_advanced 'tok:down=1.1k' 'tok:down=1200' \
+  || fail "a rise from a k-suffixed value to a plain one was not read as advance"
+fm_progress_advanced 'tok:up=3.2k cost=1.42' 'tok:up=3.2k cost=1.55' \
+  || fail "a rising spend meter beside a static token meter was not read as advance"
+pass "a counter that rises between two readings is advance"
+
+fm_progress_advanced 'tok:n=2481' 'tok:n=2481' \
+  && fail "an unchanged counter was read as advance"
+fm_progress_advanced 'tok:n=4321' 'tok:n=1234' \
+  && fail "a counter that fell was read as advance"
+fm_progress_advanced 'tok:n=1.2k' 'tok:n=900' \
+  && fail "a k-suffixed value was compared as a bare number, so a fall read as advance"
+fm_progress_advanced 'cost=1.42' 'tok:n=1234' \
+  && fail "a kind present in only one reading was read as advance"
+fm_progress_advanced '' 'tok:n=1234' \
+  && fail "a first-ever reading was read as advance"
+fm_progress_advanced 'tok:n=1234' '' \
+  && fail "a reading whose counters disappeared was read as advance"
+pass "an unchanged, falling, or newly-appearing counter is never advance"
+
+fm_progress_advanced 'ctx:ratio=12.3k/200k' 'ctx:ratio=15k/200k' \
+  && fail "a compound used/total ratio was compared as if it were one number"
+fm_progress_advanced 'ctx:pct=45 ctx:ratio=12.3k/200k' 'ctx:pct=52 ctx:ratio=15k/200k' \
+  || fail "a rising context percentage beside a ratio was not read as advance"
+pass "a compound value never decides advance by itself, and a scalar beside it still does"
+
+# The case this rule exists for: a counter-free harness whose displayed content
+# carries token-shaped text through the footer window renders a different
+# reading on every poll while nothing about the worker advanced.
+SCROLL_ONE=$(counters_of "$(printf 'we used 4321 tokens on that attempt\nWorking (6s - esc to interrupt)\n')")
+SCROLL_TWO=$(counters_of "$(printf 'the earlier run took 1234 tokens\nWorking (9s - esc to interrupt)\n')")
+[ "$SCROLL_ONE" != "$SCROLL_TWO" ] \
+  || fail "the scrolling-content fixture did not change between readings, so it proves nothing"
+fm_progress_advanced "$SCROLL_ONE" "$SCROLL_TWO" \
+  && fail "counter-shaped text scrolling through the footer was accepted as proof of a real meter"
+pass "counter-shaped displayed content that changes without rising is not advance"
+
 echo "# fm-progress-lib.test.sh: all assertions passed"
