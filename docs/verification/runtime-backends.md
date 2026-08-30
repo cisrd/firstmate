@@ -338,8 +338,8 @@ ok - token-shaped text outside the footer region is not read as progress
 Codex's recorded footer, `- Working (6s - esc to interrupt)`, renders no counter at all and correctly yields no reading; that is an admitted blind spot, recorded in the watcher's absorbed-wake log, and such a harness keeps `FM_BUSY_TURN_MAX_SECS` as its only backstop rather than being measured on a guess.
 
 Pattern matching alone is deliberately not sufficient to arm the report.
-A counter shape proves only that the text looks like a meter, and displayed content inside the footer region matches exactly as a real meter does while staying static forever - which is also what a frozen counter looks like.
-`busy_progress_check` therefore requires a pane's numbers to be observed changing at least once before the short fuse applies to it, so a counter-free harness showing counter-shaped transcript text is treated exactly like one showing no numbers at all.
+A counter shape proves only that the text looks like a meter, and displayed content inside the footer region matches exactly as a real meter does - a transcript line reading `2481 tokens` scrolling through the scan window even changes between polls, so mere change is not evidence either, since text that differs is as likely to fall as to rise.
+`busy_progress_check` therefore requires one of a pane's numbers to be observed RISING at least once - what a meter does within the first seconds of generation, and what scrolled content does not - before the short fuse applies to it, so a counter-free harness showing counter-shaped transcript text is treated exactly like one showing no numbers at all.
 `tests/fm-watch-triage.test.sh` pins both halves against a real watcher process.
 
 Not yet verified: whether each installed harness RELEASE still renders these counters during a real turn.
@@ -350,8 +350,8 @@ Until it is run, only `claude` carries recorded counter evidence in this repo, a
 FM_BUSY_PROGRESS_DRIFT=1 tests/fm-busy-progress-drift-live-e2e.test.sh
 ```
 
-Run it after any harness upgrade; it launches each installed harness, drives one short real turn, samples the pane across it, fails naming any harness whose recorded counters have disappeared, reports absent harnesses explicitly, and refuses a pass that checked nothing.
-An installed harness observed to render counters is promoted into the guard's expectation list in the same commit that records the evidence here.
+Run it after any harness upgrade; it launches each installed harness, drives one short real turn, samples the pane repeatedly across it until one counter is seen rising, fails naming any harness whose recorded counters have disappeared or no longer advance, reports absent harnesses explicitly, and refuses a pass that checked nothing.
+An installed harness observed to advance a counter is promoted into the guard's expectation list in the same commit that records the evidence here.
 
 ## Steering-inbox doorbell
 

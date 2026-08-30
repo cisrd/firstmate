@@ -1001,7 +1001,7 @@ busy_progress_counters_only() {  # <tail40>
 # evidence - which a frozen worker can never earn back, since re-earning it
 # requires seeing its counters rise.
 busy_progress_incarnation() {  # <task>
-  local spawn gen
+  local task=$1 spawn gen
   spawn=$(fm_meta_get "$STATE/$task.meta" spawn_gen)
   gen=$(fm_busy_current_gen "$STATE" "$task" 2>/dev/null || true)
   printf 'spawn=%s gen=%s' "${spawn:-none}" "${gen:-none}"
