@@ -1847,9 +1847,43 @@ NM_DISCARD_LOG="$STATE/.discarded-pipeline-commits.log"
 NM_DISCARD_LOG_LOCK="$STATE/.discarded-pipeline-commits.lock"
 NM_DISCARD_LOG_MAX_BYTES=${FM_DISCARD_LOG_MAX_BYTES:-262144}
 case "$NM_DISCARD_LOG_MAX_BYTES" in ''|*[!0-9]*|0) NM_DISCARD_LOG_MAX_BYTES=262144 ;; esac
+# Does $STATE still accept new entries? fm_lock_acquire_wait cannot answer
+# that: it spins until fm_lock_try_acquire succeeds and never returns non-zero,
+# and fm_lock_try_acquire itself cannot fail cleanly when the directory refuses
+# new entries - mktemp for the owner dir fails, so it falls through to the
+# stale-owner steal and recurses on "$lockdir.steal", ".steal.steal", ... So the
+# same mktemp the lock would do is attempted here first, and its own error text
+# is what names the concrete cause. Without this, a $STATE that went read-only
+# or filled up AFTER teardown started (the control lock proves it was writable
+# at startup) turns the refusal below into a hang that holds
+# "$STATE/.control-$ID.lock" until the process is killed, wedging every later
+# lifecycle action for the task.
+NM_DISCARD_LOG_WRITE_ERROR=
+nm_discard_log_dir_accepts_writes() {
+  local probe
+  NM_DISCARD_LOG_WRITE_ERROR=
+  if probe=$(mktemp -d "$NM_DISCARD_LOG_LOCK.probe.XXXXXX" 2>&1); then
+    rmdir "$probe" 2>/dev/null || true
+    return 0
+  fi
+  NM_DISCARD_LOG_WRITE_ERROR=$(printf '%s' "$probe" | tr '\n' ' ')
+  [ -n "$NM_DISCARD_LOG_WRITE_ERROR" ] \
+    || NM_DISCARD_LOG_WRITE_ERROR="mktemp could not create a directory in $STATE"
+  return 1
+}
+
 record_discarded_pipeline_commits() {  # <reason> <branch> <pipeline-head> <worktree>
   local sz rc=0
-  fm_lock_acquire_wait "$NM_DISCARD_LOG_LOCK" || return 1
+  # Re-probed on every pass, not once before the wait: the directory can go
+  # unwritable while this loop is parked behind another task's forced discard,
+  # and entering fm_lock_try_acquire after that is the unbounded-recursion case.
+  until nm_discard_log_dir_accepts_writes && fm_lock_try_acquire "$NM_DISCARD_LOG_LOCK"; do
+    if [ -n "$NM_DISCARD_LOG_WRITE_ERROR" ]; then
+      echo "Cannot take the discard-log lock $NM_DISCARD_LOG_LOCK: $NM_DISCARD_LOG_WRITE_ERROR" >&2
+      return 1
+    fi
+    sleep 0.1
+  done
   printf '[%s] task=%s reason=%s branch=%s pipeline_head=%s worktree=%s\n' \
     "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$ID" "${1:-unknown}" "${2:-unknown}" \
     "${3:-unknown}" "${4:-unknown}" >> "$NM_DISCARD_LOG" || rc=1

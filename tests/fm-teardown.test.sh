@@ -583,13 +583,20 @@ backlog_row_state() {
     sed -n 's/^  state: *//p' | head -1
 }
 
-# Build the teardown test's executable search path without lsof, regardless of
-# whether the host installs it in /usr/bin, /usr/sbin, or a package-manager bin.
-make_path_without_lsof() {  # <case-dir>
-  local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
+# Build the teardown test's executable search path with the named commands
+# left out, regardless of whether the host installs them in /usr/bin,
+# /usr/sbin, or a package-manager bin. One helper for every "teardown on a host
+# without X" case, so the command list cannot drift between them when teardown
+# picks up a new dependency.
+make_path_excluding() {  # <case-dir> <path-dir-name> <excluded-cmd>...
+  local case_dir=$1 path_dir="$1/$2" cmd resolved excluded
+  shift 2
   mkdir -p "$path_dir"
   for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
-    mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
+    lsof mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
+    for excluded in "$@"; do
+      [ "$cmd" != "$excluded" ] || continue 2
+    done
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
   done
@@ -2344,20 +2351,9 @@ test_gated_branch_still_refuses_on_unanswerable_query() {
   pass "the same unanswerable query still refuses on a branch the gate demonstrably knows"
 }
 
-# Build a PATH with no timeout, gtimeout, or perl, so fm_nm_run_bounded has no
-# way to bound the CLI call at all - a condition it reports with the same bare
-# exit 1 as a genuine query failure, but which needs a completely different fix.
-make_path_without_bounded_tools() {  # <case-dir>
-  local case_dir=$1 path_dir="$1/path-without-bounded" cmd resolved
-  mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
-    mkdir mktemp mv ps readlink realpath rm sed sh sleep sort stat tail tr uname wc xargs; do
-    resolved=$(command -v "$cmd" 2>/dev/null) || continue
-    case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
-  done
-  printf '%s\n' "$path_dir"
-}
-
+# With no timeout, gtimeout, or perl on PATH, fm_nm_run_bounded has no way to
+# bound the CLI call at all - a condition it reports with the same bare exit 1
+# as a genuine query failure, but which needs a completely different fix.
 test_missing_bounded_execution_tool_is_named_in_the_refusal() {
   local case_dir rc head
   case_dir=$(make_case no-bounded-tool)
@@ -2367,7 +2363,7 @@ test_missing_bounded_execution_tool_is_named_in_the_refusal() {
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
 
   rc=0
-  FM_TEARDOWN_TEST_PATH="$(make_path_without_bounded_tools "$case_dir")" \
+  FM_TEARDOWN_TEST_PATH="$(make_path_excluding "$case_dir" path-without-bounded timeout gtimeout perl)" \
   FM_FAKE_AXI_STATUS="$(recover_custody_axi_status_toon fm/task-x1 "$head")" \
   FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
@@ -2415,6 +2411,69 @@ test_unrecordable_discard_under_force_refuses() {
   assert_present "$case_dir/state/task-x1.meta" \
     "unrecordable-discard-force: teardown removed task metadata after refusing"
   pass "--force refuses when the durable discard record cannot be written, rather than destroying untraceable work"
+}
+
+# Model the window this refusal actually has to survive: $STATE was writable at
+# startup (teardown's own control lock proves it), then goes read-only or fills
+# up before the discard is recorded. Sealing it from the fake CLI's own bare
+# `axi status` puts the change exactly between the verification query and the
+# record write, with no cooperation from teardown itself.
+seal_state_dir_after_status_query() {  # <case-dir>
+  local case_dir=$1
+  mv "$case_dir/fakebin/no-mistakes" "$case_dir/fakebin/no-mistakes.inner"
+  cat > "$case_dir/fakebin/no-mistakes" <<EOF
+#!/usr/bin/env bash
+"$case_dir/fakebin/no-mistakes.inner" "\$@"
+rc=\$?
+[ "\$*" != "axi status" ] || chmod 555 "$case_dir/state"
+exit \$rc
+EOF
+  chmod +x "$case_dir/fakebin/no-mistakes"
+}
+
+# Regression (round 1 review): the durable record is taken under a fleet-wide
+# lock, and the lock library cannot report a failure to CREATE that lock - the
+# waiter loops until success, and the acquire recurses on <lock>.steal forever
+# when the directory refuses new entries. So an unwritable $STATE turned this
+# refusal into a hang that never released "$STATE/.control-<id>.lock", wedging
+# every later lifecycle action for the task. It must instead refuse promptly and
+# name the concrete cause. The whole run is time-bounded so a regression shows
+# up as a failure rather than a stuck suite.
+test_unwritable_state_refuses_promptly_instead_of_hanging() {
+  local case_dir rc head bound
+  case_dir=$(make_case unwritable-state-discard-force)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  log_treehouse_returns "$case_dir"
+  head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  seal_state_dir_after_status_query "$case_dir"
+
+  bound=$(command -v timeout || command -v gtimeout || true)
+  [ -n "$bound" ] || { pass "unwritable-state: skipped, no timeout available to bound the run"; return 0; }
+
+  rc=0
+  FM_FAKE_AXI_STATUS="$(recover_custody_axi_status_toon fm/task-x1 "$head")" \
+  FM_FAKE_NM_ABORT_LOG="$case_dir/nm-abort.log" \
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$bound" 30 "$TEARDOWN" task-x1 --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  chmod 755 "$case_dir/state"
+
+  [ "$rc" -ne 124 ] || fail "unwritable-state: teardown hung on a lock it could never create instead of refusing"
+  expect_code 1 "$rc" "unwritable-state: an unrecordable discard must refuse"
+  assert_grep "Cannot take the discard-log lock" "$case_dir/stderr" \
+    "unwritable-state: the refusal did not name the concrete cause of the record-write failure"
+  assert_grep "Permission denied" "$case_dir/stderr" \
+    "unwritable-state: the refusal did not surface the underlying filesystem error"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "unwritable-state: teardown did not refuse the unrecordable discard"
+  assert_absent "$case_dir/treehouse.log" \
+    "unwritable-state: teardown returned the worktree despite being unable to record the discard"
+  assert_present "$case_dir/wt" \
+    "unwritable-state: teardown removed the worktree it could not account for"
+  pass "an unwritable state refuses the forced discard promptly and names the cause, instead of hanging on the lock"
 }
 
 # A second ship worktree/branch/meta in the SAME case, so its forced teardown
@@ -2959,7 +3018,7 @@ test_lsof_absent_reaps_tmux_process_group() {
   case_dir=$(make_case lsof-absent-process-group-reap)
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
-  path_without_lsof=$(make_path_without_lsof "$case_dir")
+  path_without_lsof=$(make_path_excluding "$case_dir" path-without-lsof lsof)
   PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
     && fail "lsof-absent-process-group-reap: fixture path unexpectedly exposes lsof"
 
@@ -3336,6 +3395,7 @@ test_ungated_branch_tears_down_despite_unanswerable_query
 test_gated_branch_still_refuses_on_unanswerable_query
 test_missing_bounded_execution_tool_is_named_in_the_refusal
 test_unrecordable_discard_under_force_refuses
+test_unwritable_state_refuses_promptly_instead_of_hanging
 test_concurrent_forced_discards_do_not_lose_records
 test_live_pipeline_commit_ahead_of_worktree_refuses_before_any_abort
 test_terminal_pipeline_owned_run_gets_reachable_remedy_not_wait
