@@ -332,6 +332,7 @@ test_lock_try_acquire_refuses_when_lock_cannot_be_created() {
   chmod a-w "$state/sealed-empty" "$state/sealed-stale"
 
   rc=0
+  # shellcheck disable=SC2016  # $1/$2 are the bounded child's positional args.
   FM_STATE_OVERRIDE="$state" "$bound" 15 bash -c '
     . "$1"
     fm_lock_try_acquire "$2"
@@ -340,6 +341,7 @@ test_lock_try_acquire_refuses_when_lock_cannot_be_created() {
   [ "$rc" -eq 1 ] || fail "acquire on an unwritable dir returned $rc, expected a plain refusal"
 
   rc=0
+  # shellcheck disable=SC2016  # $1/$2 are the bounded child's positional args.
   FM_LOCK_STALE_AFTER=0 FM_STATE_OVERRIDE="$state" "$bound" 15 bash -c '
     . "$1"
     fm_lock_try_acquire "$2"
