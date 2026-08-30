@@ -1029,26 +1029,35 @@ busy_progress_incarnation() {  # <task>
 #   - a declared external wait or verified captain-held transfer, an already
 #     explained standstill that handle_paused_stale's long cadence owns;
 #   - a pane whose numbers have never been SEEN to advance, which includes every
-#     harness that renders no counters and every pane whose only counter-shaped
-#     text is displayed content; both are recorded in the triage log as an
-#     admitted blind spot and left to BUSY_TURN_MAX_SECS;
+#     harness that renders no counters and, in the ordinary case, every pane
+#     whose only counter-shaped text is displayed content; both are recorded in
+#     the triage log as an admitted blind spot and left to BUSY_TURN_MAX_SECS;
 #   - a task whose authoritative state is an actively running no-mistakes
 #     run-step, which legitimately waits on its upstream review or CI monitor
 #     with nothing moving in its own pane (crew_run_step_working);
 #   - a task whose own worktree was written during the frozen window, the same
 #     harder-to-fake liveness wedge_defer_writing already trusts over the pane.
 #
-# That third exemption is what keeps displayed CONTENT from being read as a
-# meter. Matching a counter shape proves only that the text looks like one: a
-# transcript line reading "2481 tokens" or a quoted "$1.42" sitting in the
-# footer region of a counter-free harness matches exactly as a real meter does,
-# and being frozen is precisely what a wedged counter looks like. So a shape
-# alone never arms the short fuse. This window's numbers must first be observed
-# ADVANCING at least once - one of them rising, which is what a meter does and
-# what scrolling content does not, since displayed text that changes between two
-# polls is as likely to fall as to rise - and a real meter does that within the
-# first seconds of generation. Until then the pane is treated exactly like a
-# counter-free harness. The evidence is per window and kept for the task's life,
+# That third exemption is what keeps displayed CONTENT from ordinarily being
+# read as a meter. Matching a counter shape proves only that the text looks like
+# one: a transcript line reading "2481 tokens" or a quoted "$1.42" sitting in
+# the footer region of a counter-free harness matches exactly as a real meter
+# does, and being frozen is precisely what a wedged counter looks like. So a
+# shape alone never arms the short fuse. This window's numbers must first be
+# observed ADVANCING at least once - one of them rising, which a real meter does
+# within the first seconds of generation and on poll after poll thereafter,
+# while scrolling text rises only by chance and falls just as readily. Until
+# then the pane is treated exactly like a counter-free harness.
+#
+# That raises the bar; it does not close the gap, and the report is worded and
+# gated for a reason. A reading keeps the LARGEST value found per kind, so a
+# transcript number that scrolls into the footer window higher than the one read
+# before is a rise by this measure even when the harness renders no meter at
+# all, and a counter-free pane is therefore not guaranteed to stay unarmed. What
+# bounds that is everything this path already refuses to do: it takes no action,
+# the run-step and worktree-write exemptions still stand a wrongly armed pane
+# down, and both the arming and the report are recorded in the triage log for
+# whoever reads it. The evidence is per window and kept for the task's life,
 # so a worker that froze after its first tokens is still covered - but only for
 # THAT life: every reading here, armed or not, is bounded by the incarnation
 # that took it, because the window survives teardown, respawn and relaunch while

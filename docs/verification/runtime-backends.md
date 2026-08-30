@@ -339,7 +339,8 @@ Codex's recorded footer, `- Working (6s - esc to interrupt)`, renders no counter
 
 Pattern matching alone is deliberately not sufficient to arm the report.
 A counter shape proves only that the text looks like a meter, and displayed content inside the footer region matches exactly as a real meter does - a transcript line reading `2481 tokens` scrolling through the scan window even changes between polls, so mere change is not evidence either, since text that differs is as likely to fall as to rise.
-`busy_progress_check` therefore requires one of a pane's numbers to be observed RISING at least once - what a meter does within the first seconds of generation, and what scrolled content does not - before the short fuse applies to it, so a counter-free harness showing counter-shaped transcript text is treated exactly like one showing no numbers at all.
+`busy_progress_check` therefore requires one of a pane's numbers to be observed RISING at least once - what a real meter does within the first seconds of generation and on poll after poll thereafter, and what scrolled text does only by chance - before the short fuse applies to it, so a counter-free harness showing counter-shaped transcript text is ordinarily treated exactly like one showing no numbers at all.
+That is a raised bar rather than a closed gap: a reading keeps the largest value per kind, so a transcript number that scrolls into the footer window higher than the one read before still reads as a rise, and the report stays report-only, exemption-gated, and logged for exactly that reason.
 `tests/fm-watch-triage.test.sh` pins both halves against a real watcher process.
 
 Not yet verified: whether each installed harness RELEASE still renders these counters during a real turn.
