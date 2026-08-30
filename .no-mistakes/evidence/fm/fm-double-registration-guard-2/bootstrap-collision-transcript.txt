@@ -1,0 +1,78 @@
+
+========================================================================
+1. Healthy fleet: every task record owns its own worktree
+========================================================================
+$ bin/fm-bootstrap.sh          # session-start digest, bootstrap section
+MISSING: treehouse (install: curl -fsSL https://kunchenguid.github.io/treehouse/install.sh | sh)
+MISSING: node (install: brew install node  # or the platform's package manager)
+MISSING: no-mistakes (install: curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh)
+MISSING: gh-axi (install: npm install -g gh-axi && gh-axi setup hooks)
+MISSING: chrome-devtools-axi (install: npm install -g chrome-devtools-axi && chrome-devtools-axi setup hooks)
+MISSING: lavish-axi (install: npm install -g lavish-axi && lavish-axi setup hooks)
+MISSING: tasks-axi (install: npm install -g tasks-axi)
+MISSING: quota-axi (install: npm install -g quota-axi)
+
+========================================================================
+2. THE BUG THIS GUARD CATCHES: one pooled copy handed to two live tasks,
+========================================================================
+   and the copy holds the task's own uncommitted work
+$ bin/fm-bootstrap.sh
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/pool-wt-1 claimed by fm-alpha (process alive, recorded /tmp/tmp.P701X9GGyV/pool-wt-1), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/pool-wt-1) - shared path still has unlanded work, do not discard
+
+========================================================================
+3. Leftover bookkeeping: a finished task's record still claims the copy
+========================================================================
+$ bin/fm-bootstrap.sh
+WORKTREE_COLLISION: stale /tmp/tmp.P701X9GGyV/pool-wt-2 claimed by fm-alpha (process alive, recorded /tmp/tmp.P701X9GGyV/pool-wt-2), fm-gone (process gone, recorded /tmp/tmp.P701X9GGyV/pool-wt-2) - shared path still has unlanded work, do not discard
+
+========================================================================
+4. Verdict honesty (a): clean copy whose work IS on the published default
+========================================================================
+$ git -C pool-wt-3a status --porcelain     # clean
+(empty)
+$ bin/fm-bootstrap.sh     # collision still reported; NO caveat - nothing at risk there
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/pool-wt-3a claimed by fm-alpha (process alive, recorded /tmp/tmp.P701X9GGyV/pool-wt-3a), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/pool-wt-3a)
+
+========================================================================
+4. Verdict honesty (b): clean copy merged into a LOCAL main that was never pushed
+========================================================================
+$ git -C pool-wt-3b status --porcelain     # clean, nothing uncommitted
+(empty)
+$ git -C pool-wt-3b merge-base --is-ancestor HEAD main && echo "HEAD is on LOCAL main"
+HEAD is on LOCAL main
+$ bin/fm-bootstrap.sh     # must NOT read as safe-to-reclaim
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/pool-wt-3b claimed by fm-alpha (process alive, recorded /tmp/tmp.P701X9GGyV/pool-wt-3b), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/pool-wt-3b) - shared path is a git worktree whose HEAD was found reachable only from a local default branch, because the published origin/<default> either does not exist or could not answer, so whether work would be lost cannot be verified, do not discard
+
+========================================================================
+5. Same copy spelled two ways (symlinked pool path) is ONE collision
+========================================================================
+$ bin/fm-bootstrap.sh
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/pool-wt-4 claimed by fm-alpha (process alive, recorded /tmp/tmp.P701X9GGyV/pool-wt-4), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/pool-link)
+
+========================================================================
+6. CANONICAL NEWLINE-PATH GROUPING: one physical copy under a newline-holding
+========================================================================
+   pool dir, recorded by two records through two different symlinks
+$ ls -bd "$TMP"/pool-a*     # the physical pool dir really does hold a newline
+/tmp/tmp.P701X9GGyV/pool-a\nb
+$ bin/fm-bootstrap.sh     # expect ONE line, newline printed escaped as \n
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/pool-a\nb/wt claimed by fm-alpha (process alive, recorded /tmp/tmp.P701X9GGyV/nl-link-a/wt), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/nl-link-b/wt) - shared path still has unlanded work, do not discard
+
+========================================================================
+7. A real-newline copy and a literal backslash-n copy stay DISTINCT
+========================================================================
+$ ls -bd "$TMP"/inj-a*      # two DIFFERENT physical copies
+/tmp/tmp.P701X9GGyV/inj-a\nb
+/tmp/tmp.P701X9GGyV/inj-a\\nb
+$ bin/fm-bootstrap.sh     # expect TWO separate lines, each naming only its own claimants
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/inj-a\\nb claimed by fm-bs1 (process alive, recorded /tmp/tmp.P701X9GGyV/inj-a\nb), fm-bs2 (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/inj-a\nb)
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/inj-a\nb claimed by fm-nl1 (process alive, recorded /tmp/tmp.P701X9GGyV/inj-link), fm-nl2 (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/inj-link)
+
+========================================================================
+8. A copy whose name ENDS in a newline is named as itself, not resolved away
+========================================================================
+$ ls -bd "$TMP"/tail-pool/wt*  ;  test -e "$TMP/tail-pool/wt"  # the TRUNCATED path does NOT exist
+/tmp/tmp.P701X9GGyV/tail-pool/wt\n
+tail-pool/wt: no such path
+$ bin/fm-bootstrap.sh     # must name the copy that exists, and NOT say it is gone
+WORKTREE_COLLISION: live /tmp/tmp.P701X9GGyV/tail-pool/wt\n claimed by fm-alpha (process alive, recorded /tmp/tmp.P701X9GGyV/tail-pool/link), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.P701X9GGyV/tail-pool/link) - shared path still has unlanded work, do not discard

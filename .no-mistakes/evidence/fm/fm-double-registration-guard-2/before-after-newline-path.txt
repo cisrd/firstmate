@@ -1,0 +1,58 @@
+=== BEFORE/AFTER: the newline-path regressions at the operator's surface ===
+
+### BEFORE the newline-grouping fix (lib at c608579^) - scenarios 6 and 8
+6. CANONICAL NEWLINE-PATH GROUPING: one physical copy under a newline-holding
+========================================================================
+   pool dir, recorded by two records through two different symlinks
+$ ls -bd "$TMP"/pool-a*     # the physical pool dir really does hold a newline
+/tmp/tmp.XMhkpXCn0L/pool-a\nb
+$ bin/fm-bootstrap.sh     # expect ONE line, newline printed escaped as \n
+!! NO COLLISION LINE - the double registration went unreported !!
+
+========================================================================
+7. A real-newline copy and a literal backslash-n copy stay DISTINCT
+========================================================================
+$ ls -bd "$TMP"/inj-a*      # two DIFFERENT physical copies
+/tmp/tmp.XMhkpXCn0L/inj-a\nb
+/tmp/tmp.XMhkpXCn0L/inj-a\\nb
+$ bin/fm-bootstrap.sh     # expect TWO separate lines, each naming only its own claimants
+WORKTREE_COLLISION: live /tmp/tmp.XMhkpXCn0L/inj-a\nb claimed by fm-bs1 (process alive, recorded /tmp/tmp.XMhkpXCn0L/inj-a\nb), fm-bs2 (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.XMhkpXCn0L/inj-a\nb)
+WORKTREE_COLLISION: live /tmp/tmp.XMhkpXCn0L/inj-link claimed by fm-nl1 (process alive, recorded /tmp/tmp.XMhkpXCn0L/inj-link), fm-nl2 (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.XMhkpXCn0L/inj-link)
+
+========================================================================
+8. A copy whose name ENDS in a newline is named as itself, not resolved away
+========================================================================
+$ ls -bd "$TMP"/tail-pool/wt*  ;  test -e "$TMP/tail-pool/wt"  # the TRUNCATED path does NOT exist
+/tmp/tmp.XMhkpXCn0L/tail-pool/wt\n
+tail-pool/wt: no such path
+$ bin/fm-bootstrap.sh     # must name the copy that exists, and NOT say it is gone
+WORKTREE_COLLISION: live /tmp/tmp.XMhkpXCn0L/tail-pool/wt claimed by fm-alpha (process alive, recorded /tmp/tmp.XMhkpXCn0L/tail-pool/link), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.XMhkpXCn0L/tail-pool/link) - shared worktree no longer exists at that path
+
+
+### BEFORE the trailing-newline fix only (lib at 34eecf4^) - scenarios 6 and 8
+6. CANONICAL NEWLINE-PATH GROUPING: one physical copy under a newline-holding
+========================================================================
+   pool dir, recorded by two records through two different symlinks
+$ ls -bd "$TMP"/pool-a*     # the physical pool dir really does hold a newline
+/tmp/tmp.pdmczi4XyD/pool-a\nb
+$ bin/fm-bootstrap.sh     # expect ONE line, newline printed escaped as \n
+WORKTREE_COLLISION: live /tmp/tmp.pdmczi4XyD/pool-a\nb/wt claimed by fm-alpha (process alive, recorded /tmp/tmp.pdmczi4XyD/nl-link-a/wt), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.pdmczi4XyD/nl-link-b/wt) - shared path still has unlanded work, do not discard
+
+========================================================================
+7. A real-newline copy and a literal backslash-n copy stay DISTINCT
+========================================================================
+$ ls -bd "$TMP"/inj-a*      # two DIFFERENT physical copies
+/tmp/tmp.pdmczi4XyD/inj-a\nb
+/tmp/tmp.pdmczi4XyD/inj-a\\nb
+$ bin/fm-bootstrap.sh     # expect TWO separate lines, each naming only its own claimants
+WORKTREE_COLLISION: live /tmp/tmp.pdmczi4XyD/inj-a\\nb claimed by fm-bs1 (process alive, recorded /tmp/tmp.pdmczi4XyD/inj-a\nb), fm-bs2 (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.pdmczi4XyD/inj-a\nb)
+WORKTREE_COLLISION: live /tmp/tmp.pdmczi4XyD/inj-a\nb claimed by fm-nl1 (process alive, recorded /tmp/tmp.pdmczi4XyD/inj-link), fm-nl2 (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.pdmczi4XyD/inj-link)
+
+========================================================================
+8. A copy whose name ENDS in a newline is named as itself, not resolved away
+========================================================================
+$ ls -bd "$TMP"/tail-pool/wt*  ;  test -e "$TMP/tail-pool/wt"  # the TRUNCATED path does NOT exist
+/tmp/tmp.pdmczi4XyD/tail-pool/wt\n
+tail-pool/wt: no such path
+$ bin/fm-bootstrap.sh     # must name the copy that exists, and NOT say it is gone
+WORKTREE_COLLISION: live /tmp/tmp.pdmczi4XyD/tail-pool/wt claimed by fm-alpha (process alive, recorded /tmp/tmp.pdmczi4XyD/tail-pool/link), fm-beta (process state unknown (backend=tmux reported ambiguous), recorded /tmp/tmp.pdmczi4XyD/tail-pool/link) - shared worktree no longer exists at that path
