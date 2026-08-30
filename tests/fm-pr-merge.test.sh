@@ -35,13 +35,13 @@
 #   (r) GitHub success is accepted only after the PR is read back as merged
 #   (s) an open GitHub PR that is neither merged nor queued fails verification
 #   (t) a GitHub PR in the merge queue is reported as queued, not merged
-#   (u) a queue-required refusal names the exact compatible retry flags
+#   (u) a queue-required refusal names the forge-decides retry the queue accepts
 #   (v) a failed poll setup cannot be reported as a verified GitHub merge
 #   (w) a zero-exit queue-required refusal keeps merge semantics unchanged
 #   (x) an unreadable outcome after a successful merge call keeps the PR
 #       recorded and the merge poll armed
 #   (y) agreeing queue rules still produce exact retry flags
-#   (z) conflicting queue rules report ambiguous retry guidance
+#   (z) conflicting queue rules name the ambiguity and still name a retry
 #   (aa) gh-axi remains usable when gh is absent
 #   (ab) a landed merge whose fallback outcome read fails keeps its poll armed
 #   (ac) a successful merge in a secondmate home reports the landed PR upward
@@ -67,11 +67,12 @@
 #       without ever claiming auto-merge was armed
 #   (aq) an outcome read that fails after a zero-exit merge still quotes the
 #       forge's own output, the only evidence left
-#   (ar) auto-merge with the queue's own method that is still unqueued refuses
+#   (ar) auto-merge with a forge-decides method that is still unqueued refuses
 #       without echoing back the flags just used, and names the next step
-#   (as) a caller method the queue does not use still gets exact retry flags
+#   (as) an explicit caller method the queue refuses still gets exact retry flags
 #   (at) an unrecognised queue method still names the queue requirement and
 #       guesses no method
+#   (ax) the retry a queue-required refusal prints is itself accepted when run
 #   (au) unreadable branch rules are reported apart from a queue-less base
 #   (av) a base branch with no queue rule says nothing about a merge queue
 #   (aw) a refusal built on the gh-axi view says the merge queue could not be
@@ -715,10 +716,11 @@ test_github_failed_merge_with_queue_flags_never_claims_acceptance() {
     "github-failed-merge-queue-flags: a failed merge command was reported as an accepted request"
   assert_no_grep 'armed' "$case_dir/stderr" \
     "github-failed-merge-queue-flags: a failed merge command was reported as an armed auto-merge"
-  assert_grep 'base branch main requires the merge queue; retry with:' "$case_dir/stderr" \
+  assert_grep 'base branch main requires the merge queue, which sets the merge method (merge) itself and refuses an explicit strategy; retry with:' \
+    "$case_dir/stderr" \
     "github-failed-merge-queue-flags: the failed merge command lost its concrete retry guidance"
-  assert_grep 'task-x1 https://github.com/example/repo/pull/74 -- --auto --merge' "$case_dir/stderr" \
-    "github-failed-merge-queue-flags: the retry guidance named no queue flags"
+  assert_grep 'task-x1 https://github.com/example/repo/pull/74 -- --auto --no-method' "$case_dir/stderr" \
+    "github-failed-merge-queue-flags: the retry guidance named no queue-accepted flags"
   assert_no_grep 'verified: ' "$case_dir/stdout" \
     "github-failed-merge-queue-flags: a failed merge command was reported as verified"
   pass "fm-pr-merge claims no acceptance for a failed merge command carrying queue flags"
@@ -735,7 +737,7 @@ test_github_accepted_queue_flags_do_not_echo_back_the_same_command() {
   : > "$case_dir/gh.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/68 -- --auto --merge \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/68 -- --auto --no-method \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -743,7 +745,7 @@ test_github_accepted_queue_flags_do_not_echo_back_the_same_command() {
   expect_code 1 "$rc" "github-accepted-queue-flags: an unproved merge must still fail"
   assert_grep 'state=OPEN, merged=false, isInMergeQueue=false' "$case_dir/stderr" \
     "github-accepted-queue-flags: refusal did not name the concrete observed state"
-  assert_grep 'this run refuses even though the request for https://github.com/example/repo/pull/68 was accepted with the exact flags base branch main requires (--auto --merge)' \
+  assert_grep 'this run refuses even though the request for https://github.com/example/repo/pull/68 was accepted with the exact flags base branch main requires (--auto --no-method, which leaves the queue'"'"'s own merge method to apply)' \
     "$case_dir/stderr" \
     "github-accepted-queue-flags: the refusal did not explain that the right flags were already used"
   assert_grep "re-check the pull request's merge queue state" "$case_dir/stderr" \
@@ -772,15 +774,18 @@ test_github_mismatched_queue_flags_still_name_the_retry() {
   set -e
 
   expect_code 1 "$rc" "github-mismatched-queue-flags: an unproved merge must still fail"
-  assert_grep 'base branch main requires the merge queue; retry with:' "$case_dir/stderr" \
+  assert_grep 'base branch main requires the merge queue, which sets the merge method (rebase) itself and refuses an explicit strategy; retry with:' \
+    "$case_dir/stderr" \
     "github-mismatched-queue-flags: a caller method the queue does not use lost its retry guidance"
-  assert_grep '-- --auto --rebase' "$case_dir/stderr" \
+  assert_grep '-- --auto --no-method' "$case_dir/stderr" \
     "github-mismatched-queue-flags: the exact compatible flags were not named"
+  assert_no_grep '-- --auto --rebase' "$case_dir/stderr" \
+    "github-mismatched-queue-flags: the retry named a strategy the merge queue refuses"
   pass "fm-pr-merge still names retry flags when the caller used a different method"
 }
 
 test_github_unrecognised_queue_method_still_names_the_queue() {
-  local case_dir rc
+  local case_dir rc guessed
   case_dir=$(make_case github-unrecognised-queue-method)
   mkdir -p "$case_dir/wt"
   add_gh_mocks "$case_dir" 8383838383838383838383838383838383838383
@@ -799,11 +804,60 @@ test_github_unrecognised_queue_method_still_names_the_queue() {
   assert_grep 'base branch main requires the merge queue, but its configured merge method (FASTFORWARD) is not one this script recognises' \
     "$case_dir/stderr" \
     "github-unrecognised-queue-method: a readable queue rule produced no queue mention"
-  assert_no_grep 'retry with:' "$case_dir/stderr" \
-    "github-unrecognised-queue-method: retry flags were named for a method nothing recognises"
-  assert_no_grep '--auto --' "$case_dir/stderr" \
-    "github-unrecognised-queue-method: a merge method was guessed for the caller"
+  assert_grep '-- --auto --no-method' "$case_dir/stderr" \
+    "github-unrecognised-queue-method: an unrecognised method lost the retry that needs no method"
+  for guessed in '--auto --merge' '--auto --squash' '--auto --rebase' '--auto --fastforward'; do
+    assert_no_grep "$guessed" "$case_dir/stderr" \
+      "github-unrecognised-queue-method: a merge method was guessed for the caller"
+  done
   pass "fm-pr-merge names the queue requirement even when its method is unrecognised"
+}
+
+# The refusal's value is the command it hands the operator, so prove that
+# command by running it rather than by matching its text: the printed retry has
+# to reach the forge and be accepted on a queue-governed base, not bounce off
+# the guard that refuses an explicit strategy there.
+test_github_queue_retry_guidance_is_runnable() {
+  local case_dir rc retry_line retry_cmd retry_args
+  case_dir=$(make_case github-queue-retry-runnable)
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" 8484848484848484848484848484848484848484
+  write_github_outcome "$case_dir" OPEN false false main
+  printf 'merge_method=REBASE\n' > "$case_dir/github-rules"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/71 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "github-queue-retry-runnable: an unproved merge must fail"
+  retry_line=$(grep -F -- 'retry with: ' "$case_dir/stderr") \
+    || fail "github-queue-retry-runnable: the queue refusal named no retry command"
+  retry_cmd=${retry_line#*retry with: }
+  case "$retry_cmd" in
+    "$PR_MERGE "*) ;;
+    *) fail "github-queue-retry-runnable: the retry did not name this script: '$retry_cmd'" ;;
+  esac
+  retry_args=${retry_cmd#"$PR_MERGE" }
+
+  write_github_outcome "$case_dir" OPEN false true main
+  : > "$case_dir/gh-axi.log"
+  set +e
+  # shellcheck disable=SC2086  # The retry command's own arguments, as printed.
+  run_pr_merge "$case_dir" $retry_args > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "github-queue-retry-runnable: the advised retry was itself refused"
+  grep -qxF 'pr merge 71 --repo example/repo --auto' "$case_dir/gh-axi.log" \
+    || fail "github-queue-retry-runnable: the advised retry did not reach the forge without a strategy, got '$(cat "$case_dir/gh-axi.log")'"
+  assert_github_merge_has_no_strategy "$case_dir/gh-axi.log" github-queue-retry-runnable
+  assert_grep 'verified: https://github.com/example/repo/pull/71 is queued' \
+    "$case_dir/stdout" "github-queue-retry-runnable: the advised retry did not land in the queue"
+  pass "fm-pr-merge's merge-queue refusal names a retry that base branch accepts"
 }
 
 test_github_unreadable_queue_rules_are_not_reported_as_no_queue() {
@@ -1095,8 +1149,10 @@ test_github_zero_exit_queue_required_refuses_with_exact_retry() {
     "github-zero-exit-queue-required: refusal did not name the concrete observed state"
   assert_grep 'base branch release/2026 requires the merge queue' "$case_dir/stderr" \
     "github-zero-exit-queue-required: refusal did not name the queue requirement"
-  assert_grep '-- --auto --rebase' "$case_dir/stderr" \
+  assert_grep '-- --auto --no-method' "$case_dir/stderr" \
     "github-zero-exit-queue-required: refusal did not name the exact compatible flags"
+  assert_no_grep '-- --auto --rebase' "$case_dir/stderr" \
+    "github-zero-exit-queue-required: refusal named a strategy the merge queue refuses"
   assert_grep 'api --paginate repos/example/repo/rules/branches/release%2F2026' "$case_dir/gh.log" \
     "github-zero-exit-queue-required: queue rules were not read with pagination and encoded branch path"
   grep -qxF 'pr merge 56 --repo example/repo --squash' "$case_dir/gh-axi.log" \
@@ -1188,8 +1244,10 @@ test_github_queue_required_refusal_names_retry_flags() {
     "github-queue-required: the original forge failure was not preserved"
   assert_grep 'base branch master requires the merge queue' "$case_dir/stderr" \
     "github-queue-required: refusal did not name the queue requirement"
-  grep -F -- '-- --auto --merge' "$case_dir/stderr" >/dev/null \
+  grep -F -- '-- --auto --no-method' "$case_dir/stderr" >/dev/null \
     || fail "github-queue-required: refusal did not name the exact compatible flags"
+  assert_no_grep '-- --auto --merge' "$case_dir/stderr" \
+    "github-queue-required: refusal named a strategy the merge queue refuses"
   grep -qxF 'pr merge 54 --repo example/repo --squash' "$case_dir/gh-axi.log" \
     || fail "github-queue-required: the wrapper silently changed the attempted merge semantics"
   assert_present "$case_dir/state/task-x1.check.sh" \
@@ -1216,9 +1274,11 @@ test_github_agreeing_queue_rules_keep_retry_guidance() {
   expect_code 1 "$rc" "github-agreeing-queue-rules: an unproved merge must fail"
   assert_grep 'base branch main requires the merge queue' "$case_dir/stderr" \
     "github-agreeing-queue-rules: refusal did not name the queue requirement"
-  assert_grep '-- --auto --rebase' "$case_dir/stderr" \
+  assert_grep '-- --auto --no-method' "$case_dir/stderr" \
     "github-agreeing-queue-rules: agreeing rules omitted exact retry flags"
-  assert_no_grep 'exact retry flags are ambiguous' "$case_dir/stderr" \
+  assert_grep 'sets the merge method (rebase) itself' "$case_dir/stderr" \
+    "github-agreeing-queue-rules: agreeing rules did not resolve to one merge method"
+  assert_no_grep 'conflicting merge queue methods' "$case_dir/stderr" \
     "github-agreeing-queue-rules: agreeing rules were reported as ambiguous"
   pass "fm-pr-merge aggregates agreeing merge-queue rules"
 }
@@ -1250,6 +1310,8 @@ test_github_conflicting_queue_rules_report_ambiguity() {
     "github-conflicting-queue-rules: an exact retry method was guessed"
   assert_no_grep 'SQUASH, SQUASH' "$case_dir/stderr" \
     "github-conflicting-queue-rules: a repeated queue method was named twice"
+  assert_grep '-- --auto --no-method' "$case_dir/stderr" \
+    "github-conflicting-queue-rules: ambiguous rules lost the retry that needs no method"
   pass "fm-pr-merge reports ambiguity for conflicting merge-queue rules"
 }
 
@@ -2316,6 +2378,7 @@ test_github_unreadable_outcome_refusal_quotes_the_forge_output
 test_github_accepted_queue_flags_do_not_echo_back_the_same_command
 test_github_mismatched_queue_flags_still_name_the_retry
 test_github_unrecognised_queue_method_still_names_the_queue
+test_github_queue_retry_guidance_is_runnable
 test_github_unreadable_queue_rules_are_not_reported_as_no_queue
 test_github_no_queue_rule_says_nothing_about_a_queue
 test_github_fallback_view_refusal_says_the_queue_was_unobservable
