@@ -140,19 +140,43 @@ fm_worktree_collision_path_state() {  # <worktree-path>
 # resolved cwd beside ones that report the shell's logical, symlink-preserving
 # path - and grouping on the raw strings would never see those as one path.
 # This applies the same cd-and-pwd-P-with-fallback rule bin/fm-spawn.sh's
-# real_path_or_raw uses for exactly that question, with one added condition:
-# the resolved form is machine-generated and nothing bounds what `pwd -P` can
-# contain, so a resolved path holding a newline falls back to the recorded
-# string too. That keeps every key newline-free, which is what the line-based
-# transport in fm_worktree_collision_lines actually depends on.
+# real_path_or_raw uses for exactly that question, with one added step: the
+# resolved form is machine-generated and nothing bounds what `pwd -P` can
+# contain, so a resolved path holding a newline is escaped rather than
+# discarded (fm_worktree_collision_line_safe) before it becomes the key. Two
+# different recorded spellings of the SAME newline-holding copy still resolve
+# to the same physical path, so they must still produce the same key - falling
+# back to each record's own (different) recorded string here would key them
+# apart and let a real double registration on such a path go entirely
+# unreported, exactly what grouping exists to prevent. Only a resolution that
+# genuinely fails (cd or pwd -P itself does not succeed) falls back to the raw
+# recorded string, because then there is no canonical form to escape. Either
+# way the key stays newline-free, which is what the line-based transport in
+# fm_worktree_collision_lines depends on.
 fm_worktree_collision_group_key() {  # <recorded-path>
   local path=$1 real
-  if real=$(cd "$path" 2>/dev/null && pwd -P) && [ -n "$real" ] \
-    && [ "${real%%$'\n'*}" = "$real" ]; then
-    printf '%s' "$real"
+  if real=$(cd "$path" 2>/dev/null && pwd -P) && [ -n "$real" ]; then
+    fm_worktree_collision_line_safe "$real"
   else
     printf '%s' "$path"
   fi
+}
+
+# Backslash-then-newline escaping so a machine-generated path that happens to
+# hold a newline can still travel through a one-line transport or print on one
+# line: every backslash is doubled first so the newline escape it introduces
+# can never be confused with one already present, then every newline becomes
+# the two literal characters `\n`. A string with no newline passes through
+# completely unchanged - existing paths that merely contain a backslash (never
+# escaped) keep printing exactly as recorded.
+fm_worktree_collision_line_safe() {  # <string>
+  local s=$1
+  if [ "${s%%$'\n'*}" = "$s" ]; then
+    printf '%s' "$s"
+    return 0
+  fi
+  s=${s//\\/\\\\}
+  printf '%s' "${s//$'\n'/\\n}"
 }
 
 # Which porcelain lines count as the TASK's work at a worktree is not this
@@ -279,20 +303,23 @@ fm_worktree_collision_claimant_desc() {  # <claimant-process-state> [backend]
 # string, so two spellings of one pooled copy still collide. Because grouping
 # proves only that the records point at one physical copy - not that they spell
 # it alike - the line states both facts separately: the path after the kind is
-# the GROUP KEY, the physically resolved copy the claimants share, and every
-# claimant's own segment names the worktree= that record actually contains. No
-# single spelling is ever printed as though every claimant recorded it. A
-# claimant whose record no longer keys to this group when it is read is dropped
-# for the same reason a vanished record is: the line only ever names records
-# that still claim the copy it describes.
+# the shared physically resolved copy (re-derived from the first surviving
+# claimant's own recorded spelling, then made line-safe for printing - never
+# the group key itself, which may hold an escaped newline that is not a usable
+# path), and every claimant's own segment names the worktree= that record
+# actually contains. No single spelling is ever printed as though every
+# claimant recorded it. A claimant whose record no longer keys to this group
+# when it is read is dropped for the same reason a vanished record is: the
+# line only ever names records that still claim the copy it describes.
 # The internal id-to-key transport puts the id first and treats everything past
 # the first tab as the key, so a tab anywhere cannot split a group. It is
 # line-based, which holds because an id is a filename basename (no tab, no
 # newline) and because fm_worktree_collision_group_key never returns a key
-# containing a newline.
+# containing a raw newline (fm_worktree_collision_line_safe escapes one before
+# it can reach the key).
 # Portable: no associative arrays, so this runs on bash 3.2 (macOS) too.
 fm_worktree_collision_lines() {  # <state-dir>
-  local state=$1 meta id path pairs dup_keys key ids_for_key recorded
+  local state=$1 meta id path pairs dup_keys key ids_for_key recorded shown_path
   local proc_state desc claimant_line claimant_count live_count kind path_state caveat
   [ -d "$state" ] || return 0
   pairs=$(
@@ -316,12 +343,17 @@ fm_worktree_collision_lines() {  # <state-dir>
     live_count=0
     claimant_count=0
     claimant_line=
+    shown_path=
     while IFS= read -r id; do
       [ -n "$id" ] || continue
       [ -f "$state/$id.meta" ] || continue
       recorded=$(fm_meta_get "$state/$id.meta" worktree)
       [ -n "$recorded" ] || continue
       [ "$(fm_worktree_collision_group_key "$recorded")" = "$key" ] || continue
+      if [ -z "$shown_path" ]; then
+        shown_path=$(cd "$recorded" 2>/dev/null && pwd -P) || shown_path=$recorded
+        [ -n "$shown_path" ] || shown_path=$recorded
+      fi
       claimant_count=$((claimant_count + 1))
       proc_state=$(fm_worktree_collision_claimant_process "$state/$id.meta")
       case "$proc_state" in
@@ -334,14 +366,14 @@ fm_worktree_collision_lines() {  # <state-dir>
 $ids_for_key
 EOM
     [ "$claimant_count" -ge 2 ] || continue
-    path_state=$(fm_worktree_collision_path_state "$key")
+    path_state=$(fm_worktree_collision_path_state "$shown_path")
     caveat=$(fm_worktree_collision_path_caveat "$path_state")
     if [ "$live_count" -ge 2 ]; then
       kind=live
     else
       kind=stale
     fi
-    printf 'WORKTREE_COLLISION: %s %s claimed by %s%s\n' "$kind" "$key" "$claimant_line" "$caveat"
+    printf 'WORKTREE_COLLISION: %s %s claimed by %s%s\n' "$kind" "$(fm_worktree_collision_line_safe "$shown_path")" "$claimant_line" "$caveat"
   done <<EOM
 $dup_keys
 EOM

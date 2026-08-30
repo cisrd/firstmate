@@ -118,6 +118,21 @@ shown_path() {  # <recorded-path>
   ( cd "$1" 2>/dev/null && pwd -P ) || printf '%s\n' "$1"
 }
 
+# Mirrors fm_worktree_collision_line_safe: a string with no newline is
+# unchanged, one with a newline gets its backslashes doubled first and its
+# newlines turned into literal `\n`, so a test can predict the escaped form of
+# a resolved path without depending on the library's own implementation.
+line_safe() {  # <string>
+  local s=$1
+  case "$s" in
+    *$'\n'*)
+      s=${s//\\/\\\\}
+      printf '%s' "${s//$'\n'/\\n}"
+      ;;
+    *) printf '%s' "$s" ;;
+  esac
+}
+
 # A clean repo on `main` with one commit, ready to be a task's worktree.
 make_worktree() {  # <dir>
   local dir=$1
@@ -673,10 +688,13 @@ test_collision_lines_path_with_backslash_names_every_claimant() {
 
 # The grouping key is machine-generated (`pwd -P`), so nothing fm_meta_get
 # bounds constrains it: a symlinked pool prefix whose real target name holds a
-# newline used to split the line-based transport, and the collision printed
-# against a truncated path with no error either way.
+# newline must never split the line-based transport or truncate the printed
+# path. Both records here spell the path identically, so this pins the escape
+# path alone; test_collision_lines_groups_differently_spelled_newline_path
+# below is the one that requires the escaped form to be used AS the key, not
+# just as an over-cautious fallback.
 test_collision_lines_newline_in_resolved_path_is_still_reported() {
-  local state fakebin phys link out
+  local state fakebin phys link out expected
 
   state="$TMP_ROOT/newline-state"
   mkdir -p "$state"
@@ -692,15 +710,60 @@ test_collision_lines_newline_in_resolved_path_is_still_reported() {
   fm_write_meta "$state/fm-n-b.meta" "window=livesess:alive" "worktree=$link/wt" "harness=codex" "kind=ship"
 
   out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+  expected=$(line_safe "$phys/wt")
 
-  assert_contains "$out" "WORKTREE_COLLISION: live $link/wt claimed by fm-n-a (process alive, recorded $link/wt), fm-n-b (process alive, recorded $link/wt)" \
-    "a resolved path holding a newline must fall back to the recorded spelling rather than split the group"
+  assert_contains "$out" "WORKTREE_COLLISION: live $expected claimed by fm-n-a (process alive, recorded $link/wt), fm-n-b (process alive, recorded $link/wt)" \
+    "a resolved path holding a newline must print its escaped physically resolved form, naming each claimant's own recorded spelling"
   [ "$(printf '%s\n' "$out" | grep -c '^WORKTREE_COLLISION:')" = 1 ] \
     || fail "the collision must print exactly once, against a whole path, got:"$'\n'"$out"
   assert_not_contains "$out" "WORKTREE_COLLISION: live $TMP_ROOT/pool claimed" \
     "a collision must never be printed against a path truncated at a newline"
+  case "$out" in
+    *$'\n'*) fail "a raw newline must never reach the printed line, got:"$'\n'"$out" ;;
+  esac
 
-  pass "fm_worktree_collision_lines: a newline in the resolved path never splits or truncates a group"
+  pass "fm_worktree_collision_lines: a newline in the resolved path never splits, truncates, or breaks the printed line"
+}
+
+# The actual defect this pins: fm_worktree_collision_group_key's newline
+# fallback used to return each RECORDED string, not a canonical form of the
+# resolved path. Two records that spell the SAME newline-holding physical copy
+# differently through two valid symlink paths then keyed apart - the group
+# vanished and a real double registration went completely unreported, which is
+# the one guarantee this whole check exists to make.
+test_collision_lines_groups_differently_spelled_newline_path() {
+  local state fakebin phys link_a link_b out expected
+
+  state="$TMP_ROOT/newline-spelling-state"
+  mkdir -p "$state"
+  fakebin=$(make_collision_tmux "$TMP_ROOT/newline-spelling-tmux")
+
+  phys="$TMP_ROOT/pool2"$'\n'"real"
+  mkdir -p "$phys"
+  make_worktree "$phys/wt-9"
+  link_a="$TMP_ROOT/pool2-link-a"
+  link_b="$TMP_ROOT/pool2-link-b"
+  ln -s "$phys" "$link_a"
+  ln -s "$phys" "$link_b"
+
+  fm_write_meta "$state/fm-link-a2.meta" "window=livesess:alive" "worktree=$link_a/wt-9" "harness=claude" "kind=ship"
+  fm_write_meta "$state/fm-link-b2.meta" "window=livesess:ambig" "worktree=$link_b/wt-9" "harness=codex" "kind=ship"
+
+  out=$(PATH="$fakebin:$PATH" fm_worktree_collision_lines "$state")
+  expected=$(line_safe "$phys/wt-9")
+
+  [ -n "$out" ] \
+    || fail "two different valid spellings of the same newline-holding physical copy must still collide, got no output at all"
+  [ "$(printf '%s\n' "$out" | grep -c '^WORKTREE_COLLISION:')" = 1 ] \
+    || fail "one physical worktree spelled two ways must produce exactly one collision line, got:"$'\n'"$out"
+  assert_contains "$out" "WORKTREE_COLLISION: live $expected claimed by " \
+    "the path after the kind must be the shared physically resolved copy, escaped for the newline it holds"
+  assert_contains "$out" "fm-link-a2 (process alive, recorded $link_a/wt-9)" \
+    "the first valid spelling must be named with its own recorded spelling"
+  assert_contains "$out" "fm-link-b2 (process state unknown (backend=tmux reported ambiguous), recorded $link_b/wt-9)" \
+    "the second valid spelling must be named with its own recorded spelling"
+
+  pass "fm_worktree_collision_lines: two different spellings of one newline-holding copy still group into one collision"
 }
 
 # The internal id-to-path transport is tab-delimited, so a tab inside a
@@ -916,6 +979,7 @@ test_collision_lines_unresolvable_default_branch_names_the_missing_check
 test_collision_lines_path_with_backslash_names_every_claimant
 test_collision_lines_path_with_tab_is_still_reported
 test_collision_lines_newline_in_resolved_path_is_still_reported
+test_collision_lines_groups_differently_spelled_newline_path
 test_collision_lines_groups_symlinked_spellings_of_one_copy
 test_collision_lines_scaffolding_only_path_is_not_called_unlanded
 test_collision_lines_record_removed_mid_scan_is_dropped
