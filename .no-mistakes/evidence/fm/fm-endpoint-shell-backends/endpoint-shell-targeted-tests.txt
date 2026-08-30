@@ -1,0 +1,30 @@
+ok - a bare pane carrying fm-spawn's endpoint-shell marker classifies dead endpoint-shell on herdr, zellij, orca, and cmux
+ok - a relaunched endpoint's stale bare marked prompts never outrank the live harness below them
+ok - the endpoint-shell arm reuses a caller-supplied tail40 and captures only when it has none
+ok - the marker is never assumed: an unmarked or unreadable pane stays unknown missing
+ok - tmux is excluded from the endpoint-shell marker check
+ok - endpoint death is the only process-level override and yields dead, never busy
+ok - before: a bare herdr pane with no endpoint-shell marker stays the generic unknown
+ok - after: a herdr pane carrying fm-spawn's endpoint-shell marker names the agent-exited case specifically
+ok - fm-crew-state remote: alive endpoint falls through to the routed status log
+ok - fm-crew-state remote: an idle alive endpoint reads alive, never gone or dead
+ok - fm_composer_classify_content: a bare shell prompt glyph (>/$/%/#) reads unknown, never empty
+ok - fm_composer_classify_content: a bare shell prompt carrying a command is not empty
+ok - matrix: kimi's bordered shell-glyph box reads empty through the shared owner (spawn's fourth copy retired)
+ok - fm_composer_classify_screen: a lower dead shell invalidates only cursorless stale composers
+ok - fm_composer_endpoint_shell_present: detects the marker on its own
+ok - fm_composer_endpoint_shell_present: an exited agent's bare marked prompt is the endpoint shell
+ok - fm_composer_endpoint_shell_present: a marked prompt carrying a typed command is not an exited agent
+ok - fm_composer_endpoint_shell_present: the marker only counts as the leading content of a row
+ok - fm_composer_classify_screen: a marked endpoint-shell prompt invalidates a stale cursorless composer
+ok - fm_composer_endpoint_shell_present: only the bottom-most marked row decides, so stale bare prompts never outrank a live agent
+ok - fm_composer_endpoint_shell_backend: exactly herdr, zellij, orca, and cmux carry the marker
+ok - fm_composer_endpoint_shell_two_phase_send: only zellij and cmux can leave uncommitted residue
+ok - fm_composer_endpoint_shell_present: never fires on ordinary content lacking the exact marker
+ok - the marker still proves a dead endpoint shell once the agent exits
+ok - a marker send that leaves residue is cleared before the launch text, never pasted over
+ok - an unclearable marker residue refuses the launch with a named cause instead of corrupting it
+ok - residue wrapped across two rows of a narrow pane is still detected and refuses the launch
+ok - residue whose space is eaten at the wrap column is still detected and refuses the launch
+ok - residue wrapped across three rows with its space eaten is still detected and refuses the launch
+ok - a marker send that fails on a single-call backend leaves the marker absent and still launches the agent

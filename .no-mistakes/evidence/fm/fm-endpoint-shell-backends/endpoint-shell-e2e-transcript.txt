@@ -1,0 +1,59 @@
+firstmate endpoint-shell marker - end-to-end demo
+repo head: d190c07
+backend: zellij (CLI surface shimmed onto a real tmux server hosting a real bash pane)
+marker:  [fm-endpoint-shell]
+
+=== 1. fm-spawn.sh launches a task onto a real bash pane (backend=zellij) ===
+spawned demo-task harness=claude kind=ship mode=no-mistakes yolo=off window=fm-demo:1 worktree=/tmp/fm-es-e2e/run/panehome/.treehouse/project-f56bb7/1/project
+
+=== 2. HEALTHY endpoint - the agent is running in the pane ===
+  | 🌳 Entered worktree at ~/.treehouse/project-f56bb7/1/project. Type 'exit' to return.
+  | awilliam@v2202608403614505120:~/.treehouse/project-f56bb7/1/project$ printf '%s\n' '__FM_ZELLIJ_CWD_
+  | BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'
+  | __FM_ZELLIJ_CWD_BEGIN__
+  | /tmp/fm-es-e2e/run/panehome/.treehouse/project-f56bb7/1/project
+  | __FM_ZELLIJ_CWD_END__
+  | awilliam@v2202608403614505120:~/.treehouse/project-f56bb7/1/project$ printf '%s\n' '__FM_ZELLIJ_CWD_
+  | BEGIN__'; pwd; printf '%s\n' '__FM_ZELLIJ_CWD_END__'
+  | __FM_ZELLIJ_CWD_BEGIN__
+  | /tmp/fm-es-e2e/run/panehome/.treehouse/project-f56bb7/1/project
+  | __FM_ZELLIJ_CWD_END__
+  | awilliam@v2202608403614505120:~/.treehouse/project-f56bb7/1/project$ export GOTMPDIR=/tmp/fm-demo-ta
+  | sk/gotmp
+  | awilliam@v2202608403614505120:~/.treehouse/project-f56bb7/1/project$ PS1='[fm-endpoint-shell] '
+  | [fm-endpoint-shell] env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=fa
+  | lse claude --dangerously-skip-permissions "$('/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M
+  | 18N7NSYKKT3GVD4A7ZN7ZCG/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-es-e2e/run/home/
+  | data/demo-task/brief.md')"
+  | claude (demo harness) starting - model: opus
+  | > ready for the brief
+  fm_busy_classify -> unknown missing
+
+=== 3. the agent exits (Ctrl-C to the pane); that same shell prints its prompt ===
+  | [fm-endpoint-shell] env -u CURSOR_AGENT -u CURSOR_INVOKED_AS CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=fa
+  | lse claude --dangerously-skip-permissions "$('/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M
+  | 18N7NSYKKT3GVD4A7ZN7ZCG/bin/fm-operational-input.sh' encode launch-brief < '/tmp/fm-es-e2e/run/home/
+  | data/demo-task/brief.md')"
+  | claude (demo harness) starting - model: opus
+  | > ready for the brief
+  | ^Cclaude: session ended
+  | [fm-endpoint-shell]
+  fm_busy_classify -> dead endpoint-shell
+
+=== 4. operator surface: fm-crew-state.sh on that endpoint ===
+  (a) with the busy record fm-spawn just wrote:
+      state: working · source: pane · harness busy (fm-spawn)
+  (b) with NO busy record - the case the marker exists for (a hook that
+      was never armed, a torn wiring file); records removed:
+      state: unknown · source: pane · agent exited, endpoint is a bare firstmate shell
+
+=== 5. CONTROL - the SAME endpoint with no firstmate marker on its prompt ===
+  (sent an unmarked PS1 to the same live shell)
+  | data/demo-task/brief.md')"
+  | claude (demo harness) starting - model: opus
+  | > ready for the brief
+  | ^Cclaude: session ended
+  | [fm-endpoint-shell] PS1='captain@ship:~/project$ '
+  | captain@ship:~/project$
+  fm_busy_classify -> unknown missing
+  state: unknown · source: pane · harness state unavailable (unknown missing)
