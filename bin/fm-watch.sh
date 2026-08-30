@@ -952,7 +952,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
 clear_progress_tracking() {  # <window-key>
   local key=$1
   rm -f "$STATE/.progress-fp-$key" "$STATE/.progress-since-$key" \
-    "$STATE/.progress-counters-$key" "$STATE/.progress-moved-$key"
+    "$STATE/.progress-counters-$key"
 }
 
 # Everything this task can currently show as PROGRESS, on one line, cheap enough

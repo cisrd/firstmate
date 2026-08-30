@@ -3388,8 +3388,10 @@ test_busy_declared_wait_is_exempt_from_the_progress_report() {
   fi
   [ ! -e "$state/.progress-since-$key" ] \
     || fail "a declared wait kept a frozen-window timer running against it"
-  [ ! -e "$state/.progress-moved-$key" ] \
-    || fail "a declared wait kept its progress-measure bookkeeping"
+  # The frozen-window bookkeeping is per busy episode and goes; the proof that
+  # this window renders a real meter is the task's, and must outlive the wait.
+  [ -e "$state/.progress-moved-$key" ] \
+    || fail "a declared wait threw away the proof that this window has a real progress meter"
   reap "$pid"
   pass "a worker that declared its own external wait is never reported through the progress measure"
 }
@@ -3589,6 +3591,96 @@ PANE
   [ ! -s "$out" ] || fail "a healthy worker was reported off static transcript text: $(cat "$out")"
   reap "$pid"
   pass "counter-shaped text that never changes never arms the measure, so displayed content cannot report a healthy worker"
+}
+
+# Review finding, 2026-08-30: the proof that a window renders a REAL meter is
+# evidence about the TASK, not about one busy episode, and the incident's own
+# sequence crosses an episode boundary. A worker generates tokens in turn 1, the
+# turn completes, the pane sits idle for a poll, then turn 2 opens and the
+# harness hangs with its footer frozen on the count turn 1 left there. Nothing
+# in turn 2 can ever re-arm the measure - the numbers never move again - so if
+# the idle poll discarded turn 1's proof, this freeze would fall back to the
+# unmeasurable branch forever and sit unreported behind FM_BUSY_TURN_MAX_SECS,
+# which is exactly the class of freeze the measure was added for.
+test_arming_evidence_outlives_an_idle_poll() {
+  local dir state fakebin out capture_file window key sig pid
+  dir=$(make_case progress-armed-across-idle); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-progress-rearm"
+  busy_footer 61 2481 > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/progress-rearm.meta"
+  record_pi_busy "$state" progress-rearm
+  printf 'working: generating\n' > "$state/progress-rearm.status"
+  sig=$(seen_sig "$state/progress-rearm.status"); printf '%s' "$sig" > "$state/.seen-progress-rearm_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch "$state/progress-rearm.turn-ended"
+  prime_turnend_seen "$state/progress-rearm.turn-ended"
+
+  # Turn 1: the previous poll read a lower count, this one reads 2481, and that
+  # advance is the whole of the evidence this window has a real meter.
+  printf 'tok:n=2344 ' > "$state/.progress-counters-$key"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: pane · busy pane' \
+    FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_BUSY_NO_PROGRESS_SECS=999999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "the turn-1 arming cycle unexpectedly surfaced: $(cat "$out")"
+  fi
+  [ -e "$state/.progress-moved-$key" ] \
+    || { reap "$pid"; fail "a count that advanced between two readings did not arm the measure"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional turn-1 arming stop"
+
+  # The turn ends and the pane goes quiet for a poll: no busy verdict, new pane
+  # content. The per-episode reading is reset here, as it must be - a timer from
+  # the finished turn cannot be allowed to run against the next one.
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" progress-rearm idle --current-gen \
+    --source pi-ext --event agent-stop >/dev/null \
+    || fail "could not record the idle turn boundary"
+  printf 'turn complete - waiting for input\n' > "$capture_file"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: pane · busy pane' \
+    FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_BUSY_NO_PROGRESS_SECS=999999 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "the idle poll between turns unexpectedly surfaced: $(cat "$out")"
+  fi
+  # Both halves matter: without the reset this witness would prove nothing,
+  # because the timer alone could carry the report.
+  [ ! -e "$state/.progress-fp-$key" ] \
+    || { reap "$pid"; fail "an idle poll kept the finished turn's progress reading"; }
+  [ ! -e "$state/.progress-since-$key" ] \
+    || { reap "$pid"; fail "an idle poll kept the finished turn's frozen-window timer"; }
+  [ -e "$state/.progress-moved-$key" ] \
+    || { reap "$pid"; fail "an idle poll threw away the proof that this window has a real progress meter"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional idle-poll stop"
+
+  # Turn 2 opens and hangs at once. Its footer clock is not consulted and its
+  # count never moves off the value turn 1 left, so nothing here can re-arm the
+  # measure: the only thing that can still report this worker is turn 1's proof.
+  "$ROOT/bin/fm-busy-event.sh" apply "$state" progress-rearm busy --current-gen \
+    --source pi-ext --event agent-start >/dev/null \
+    || fail "could not record the start of the second turn"
+  busy_footer 1587 2481 > "$capture_file"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: pane · busy pane' \
+    FM_BUSY_TURN_MAX_SECS=999999 FM_STALE_ESCALATE_SECS=999999 FM_BUSY_NO_PROGRESS_SECS=1 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || { reap "$pid"; fail "a worker that froze at the start of its second turn was never reported (the arming evidence did not outlive the idle poll)"; }
+  grep -F "busy but no progress" "$out" >/dev/null \
+    || fail "the second turn's freeze was not reported through the progress path: $(cat "$out")"
+  grep -F 'busy progress unmeasurable' "$state/.watch-triage.log" >/dev/null \
+    && fail "an already-armed window was demoted to unmeasurable after an idle poll: $(cat "$state/.watch-triage.log")"
+  pass "a window proven to render a real meter stays trusted across an idle poll, so a freeze at the start of the next turn is still reported"
 }
 
 # An operator-supplied fuse that is zero, negative, or not a number must not
@@ -4554,6 +4646,7 @@ test_busy_run_step_is_exempt_from_progress_report
 test_counterless_harness_is_admitted_not_guessed
 test_busy_no_progress_default_is_1500s
 test_static_counter_shaped_content_never_arms_the_measure
+test_arming_evidence_outlives_an_idle_poll
 test_invalid_no_progress_fuse_falls_back_to_the_default
 test_busy_declared_pause_is_rechecked_not_wedge_escalated
 test_afk_busy_declared_pause_hands_off_plain_stale
