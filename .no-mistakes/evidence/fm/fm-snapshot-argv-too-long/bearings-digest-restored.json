@@ -1,0 +1,281 @@
+{
+  "schema": "fm-bearings.v1",
+  "home": "fm-e2e/grown-home",
+  "generated": "2026-09-03T22:22:09Z",
+  "prs": "not_requested (run: /bearings include PRs)",
+  "in_flight": [
+    {
+      "id": "task-live-01",
+      "kind": "ship",
+      "state": "parked",
+      "repo": "alpha",
+      "doing": "choose an API shape before the cutover"
+    },
+    {
+      "id": "task-live-02",
+      "kind": "ship",
+      "state": "working",
+      "repo": "alpha",
+      "doing": "harness busy (claude-hook)"
+    },
+    {
+      "id": "task-live-03",
+      "kind": "ship",
+      "state": "working",
+      "repo": "alpha",
+      "doing": "harness busy (claude-hook)"
+    },
+    {
+      "id": "task-live-04",
+      "kind": "ship",
+      "state": "working",
+      "repo": "alpha",
+      "doing": "harness busy (claude-hook)"
+    },
+    {
+      "id": "task-live-05",
+      "kind": "ship",
+      "state": "working",
+      "repo": "alpha",
+      "doing": "harness busy (claude-hook)"
+    },
+    {
+      "id": "task-live-06",
+      "kind": "ship",
+      "state": "working",
+      "repo": "alpha",
+      "doing": "harness busy (claude-hook)"
+    }
+  ],
+  "secondmates": [],
+  "secondmate_reconcile": [],
+  "decisions_open": [
+    {
+      "id": "decision-pending-api",
+      "key": "decision-pending-api",
+      "verb": "captain-hold",
+      "summary": "Captain call: pick the API shape before the cutover: Pick the API shape before the cutover…",
+      "owner": "(main)"
+    }
+  ],
+  "landed": [
+    {
+      "id": "task-done-15",
+      "what": "Landed work item 15: stabilise the nightly reconcile",
+      "artifact": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-done-11",
+      "what": "Landed work item 11: stabilise the nightly reconcile",
+      "artifact": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-done-07",
+      "what": "Landed work item 07: stabilise the nightly reconcile",
+      "artifact": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-done-03",
+      "what": "Landed work item 03: stabilise the nightly reconcile",
+      "artifact": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-done-14",
+      "what": "Landed work item 14: stabilise the nightly reconcile",
+      "artifact": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-done-10",
+      "what": "Landed work item 10: stabilise the nightly reconcile",
+      "artifact": "-",
+      "owner": "(main)"
+    }
+  ],
+  "gates": [
+    {
+      "id": "task-queued-01",
+      "title": "Queued work item 01: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-02",
+      "title": "Queued work item 02: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-03",
+      "title": "Queued work item 03: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-04",
+      "title": "Queued work item 04: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-05",
+      "title": "Queued work item 05: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-06",
+      "title": "Queued work item 06: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-07",
+      "title": "Queued work item 07: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-08",
+      "title": "Queued work item 08: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-09",
+      "title": "Queued work item 09: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-10",
+      "title": "Queued work item 10: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-11",
+      "title": "Queued work item 11: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-12",
+      "title": "Queued work item 12: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-13",
+      "title": "Queued work item 13: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-14",
+      "title": "Queued work item 14: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-15",
+      "title": "Queued work item 15: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-16",
+      "title": "Queued work item 16: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-17",
+      "title": "Queued work item 17: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-18",
+      "title": "Queued work item 18: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-19",
+      "title": "Queued work item 19: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    },
+    {
+      "id": "task-queued-20",
+      "title": "Queued work item 20: reconcile the duplicated palette lists",
+      "blocked_by": "-",
+      "reason": "-",
+      "owner": "(main)"
+    }
+  ],
+  "reports": [],
+  "recorded_prs": [],
+  "omitted": [
+    {
+      "surface": "backlog item bodies",
+      "reveal": "--fields bodies"
+    },
+    {
+      "surface": "task paths",
+      "reveal": "--fields paths"
+    },
+    {
+      "surface": "watch/steer actions",
+      "reveal": "--fields actions"
+    },
+    {
+      "surface": "healthy endpoint detail",
+      "reveal": "--fields endpoints"
+    },
+    {
+      "surface": "full scout-report inventory",
+      "reveal": "--all-reports"
+    },
+    {
+      "surface": "superseded or prose-deferred queued items",
+      "reveal": "--all-queued"
+    },
+    {
+      "surface": "landed per-home capped at 6 for 1 home(s)",
+      "reveal": "--all-landed"
+    },
+    {
+      "surface": "gates showing 20 of 29",
+      "reveal": "--all-queued"
+    },
+    {
+      "surface": "live PR discovery + checks",
+      "reveal": "--include-prs"
+    }
+  ]
+}

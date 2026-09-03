@@ -1,0 +1,27 @@
+Regression coverage added by this branch, run against BOTH trees.
+Each test was executed on its own so the run does not stop at the first failure.
+
+  base 75b2de2 (== origin/main): the four new tests are run against the old
+  bin/ by copying only the new test file into a checkout of the base commit.
+
+    test_large_backlog_bypasses_argv_limit                     rc=1  not ok - snapshot rejected a backlog larger than the argv limit
+    test_oversized_status_line_keeps_the_snapshot_whole        rc=1  not ok - an oversized status line shifted, truncated, or dropped task fields
+    test_oversized_home_summary_fields_keep_the_snapshot_whole rc=1  not ok - snapshot must survive a home-summary reason larger than the argv limit
+    test_oversized_status_pr_url_keeps_the_snapshot_whole      rc=1  not ok - an oversized status-log PR url shifted, truncated, or dropped task fields
+
+  949c479 (this branch), full suite tests/fm-fleet-snapshot-view.test.sh, rc=0:
+
+    ok - fleet and bearings snapshots accept backlog JSON larger than the argv limit
+    ok - oversized published home-summary strings still yield a complete secondmate record
+    ok - an oversized status line still yields one complete, correctly bound task record
+    ok - an oversized status-log PR url still yields a complete task record
+    (plus the 17 pre-existing snapshot/view tests, all ok)
+
+Malformed foreign input still fails safe rather than emitting a partial schema
+(registered secondmate whose published state/home-summary.json is not JSON):
+
+  $ FM_HOME=<home> bin/fm-fleet-snapshot.sh --json   -> exit 0, empty stderr
+  {"schema":"fm-fleet-snapshot.v1",
+   "secondmate_landed": <object, not null>,
+   "secondmate_current.records[0]": {"provenance":{"selected":"unknown"},
+     "current":{"reason":"structured home ledger is missing, unreadable, or invalid"}}}

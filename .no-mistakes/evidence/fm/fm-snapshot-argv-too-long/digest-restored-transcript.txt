@@ -1,0 +1,78 @@
+==============================================================================
+ The captain asks for a situation report (/bearings).
+ Captain home backlog: 52 items, 99884 bytes
+ - the same shape and size as the real home whose digest died on 2026-09-03.
+==============================================================================
+
+########  BEFORE - base 75b2de2 (identical on origin/main)  ##################
+
+$ FM_HOME=<captain-home> bash bin/fm-bearings-snapshot.sh --json
+/tmp/fm-e2e/base/bin/fm-fleet-snapshot.sh: line 658: /usr/bin/jq: Argument list too long
+fm-fleet-snapshot: main inventory summary failed
+[before] exit status = 1
+
+$ FM_HOME=<captain-home> bash bin/fm-fleet-view.sh
+/tmp/fm-e2e/base/bin/fm-fleet-snapshot.sh: line 658: /usr/bin/jq: Argument list too long
+fm-fleet-snapshot: main inventory summary failed
+[before] exit status = 1
+
+########  AFTER - 949c479 (this branch)  #####################################
+
+$ FM_HOME=<captain-home> bin/fm-bearings-snapshot.sh --json > digest.json
+[after] exit status = 0  (7148 bytes of digest JSON, stderr: 0 bytes)
+[after] valid, complete fm-bearings.v1 JSON
+
+--- the four sections the /bearings digest is composed from ---
+generated: 2026-09-03T22:22:09Z
+
+CAPTAIN'S CALL (decisions_open): 1
+  - decision-pending-api: Captain call: pick the API shape before the cutover: Pick the API shape before t
+
+UNDERWAY (in_flight): 6
+  - task-live-01 [parked] choose an API shape before the cutover
+  - task-live-02 [working] harness busy (claude-hook)
+  - task-live-03 [working] harness busy (claude-hook)
+  - task-live-04 [working] harness busy (claude-hook)
+  - task-live-05 [working] harness busy (claude-hook)
+  - task-live-06 [working] harness busy (claude-hook)
+
+RECENTLY LANDED: 6
+  - task-done-15: Landed work item 15: stabilise the nightly reconcile
+  - task-done-11: Landed work item 11: stabilise the nightly reconcile
+  - task-done-07: Landed work item 07: stabilise the nightly reconcile
+  - task-done-03: Landed work item 03: stabilise the nightly reconcile
+  - task-done-14: Landed work item 14: stabilise the nightly reconcile
+  - task-done-10: Landed work item 10: stabilise the nightly reconcile
+
+CHARTED NEXT (gates): 20
+  - task-queued-01: Queued work item 01: reconcile the duplicated palette lists
+  - task-queued-02: Queued work item 02: reconcile the duplicated palette lists
+  - task-queued-03: Queued work item 03: reconcile the duplicated palette lists
+  - task-queued-04: Queued work item 04: reconcile the duplicated palette lists
+  - task-queued-05: Queued work item 05: reconcile the duplicated palette lists
+  - task-queued-06: Queued work item 06: reconcile the duplicated palette lists
+  ... 14 more
+
+--- the human fleet view rendered over the same restored snapshot ---
+$ FM_HOME=<captain-home> bash bin/fm-fleet-view.sh
+# Fleet View
+
+Schema: fm-fleet-snapshot.v1
+Home: /tmp/fm-e2e/grown-home
+
+## Under Way
+| ID | Current | Kind | Repo/Project | Backend | Endpoint | Artifact | Path | Watch / return channel |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| task-live-01 | parked / status-log | ship | alpha | tmux | present | - | /tmp/fm-e2e/grown-home/projects/alpha-worktree-1 | bin/fm-peek.sh fm-task-live-01 |
+| task-live-02 | working / pane | ship | alpha | tmux | present | - | /tmp/fm-e2e/grown-home/projects/alpha-worktree-2 | bin/fm-peek.sh fm-task-live-02 |
+| task-live-03 | working / pane | ship | alpha | tmux | present | https://github.com/kunchenguid/firstmate/pull/9 | /tmp/fm-e2e/grown-home/projects/alpha-worktree-3 | bin/fm-peek.sh fm-task-live-03 |
+| task-live-04 | working / pane | ship | alpha | tmux | present | - | /tmp/fm-e2e/grown-home/projects/alpha-worktree-4 | bin/fm-peek.sh fm-task-live-04 |
+| task-live-05 | working / pane | ship | alpha | tmux | present | - | /tmp/fm-e2e/grown-home/projects/alpha-worktree-5 | bin/fm-peek.sh fm-task-live-05 |
+| task-live-06 | working / pane | ship | alpha | tmux | present | - | /tmp/fm-e2e/grown-home/projects/alpha-worktree-6 | bin/fm-peek.sh fm-task-live-06 |
+
+## Queued
+| ID | Title | Repo | Kind | Blocked By | Artifact |
+| --- | --- | --- | --- | --- | --- |
+| decision-pending-api | Captain call: pick the API shape before the cutover |
+[after] exit status = 0
+
