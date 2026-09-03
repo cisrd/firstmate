@@ -3,8 +3,10 @@
 #
 # Output contract: `--json` prints one object with schema
 # `fm-fleet-snapshot.v1`.
-# Internally assembled JSON is streamed into jq instead of crossing an exec
-# boundary in argv, so backlog growth cannot exceed the platform argument limit.
+# Assembled JSON, and every unbounded string derived from it - backlog rows,
+# status-log event text, a discovered PR url, and a secondmate's published home
+# summary - is streamed into jq instead of crossing an exec boundary in argv, so
+# growth in any of those inputs cannot exceed the platform argument limit.
 # The command does not acquire the session lock, drain wakes, arm watchers,
 # mutate backlog state, or write reports. Its default ledger collector may
 # atomically refresh parent-side cached copies of remote home summaries under
