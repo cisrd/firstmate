@@ -7,6 +7,7 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 SNAPSHOT="$ROOT/bin/fm-fleet-snapshot.sh"
+BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 VIEW="$ROOT/bin/fm-fleet-view.sh"
 TMP_ROOT=$(fm_test_tmproot fm-fleet-snapshot)
 
@@ -195,6 +196,42 @@ test_fixture_snapshot_json() {
     | .state == "done" and .pr_url == "https://github.com/kunchenguid/firstmate/pull/7"
   ' >/dev/null || fail "done backlog PR row missing"
   pass "fixture snapshot covers task rows, backlog rows, pointers, and stable ordering"
+}
+
+# Large parsed backlog JSON must cross jq process boundaries through stdin, not
+# argv, whose per-argument limit is commonly 128 KiB on Linux.
+test_large_backlog_bypasses_argv_limit() {
+  local home out summary bearings
+  home=$(make_home large-backlog)
+  {
+    printf '## In flight\n\n## Queued\n'
+    printf '%s' '- [ ] huge-task - Large body (repo: firstmate) (kind: ship)'
+    printf '\n  '
+    head -c 300000 /dev/zero | tr '\0' x
+    printf '\n\n## Done\n'
+  } > "$home/data/backlog.md"
+
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot rejected a backlog larger than the argv limit"
+  printf '%s' "$out" | jq -e '
+    .schema == "fm-fleet-snapshot.v1"
+      and .backlog.records[0].id == "huge-task"
+      and (.backlog.records[0].body_lines[0] | length) == 300000
+  ' >/dev/null || fail "large-backlog snapshot was not valid, complete JSON"
+
+  summary=$(FM_HOME="$home" "$SNAPSHOT" --secondmate-home-summary) \
+    || fail "home summary rejected a backlog larger than the argv limit"
+  printf '%s' "$summary" | jq -e '
+    .schema == "fm-secondmate-home-summary.v1"
+      and .valid == true
+      and .queued[0].id == "huge-task"
+  ' >/dev/null || fail "large-backlog home summary was not valid JSON"
+
+  bearings=$(FM_HOME="$home" "$BEARINGS" --json) \
+    || fail "bearings rejected a backlog larger than the argv limit"
+  printf '%s' "$bearings" | jq -e '.schema == "fm-bearings.v1"' >/dev/null \
+    || fail "large-backlog bearings output was not valid JSON"
+  pass "fleet and bearings snapshots accept backlog JSON larger than the argv limit"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
@@ -899,6 +936,7 @@ EOF
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
+test_large_backlog_bypasses_argv_limit
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state

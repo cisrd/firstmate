@@ -269,7 +269,7 @@ EOF
       cnt=$(printf '%s' "$repo_rows" | jq 'length')
       [ "$returned" -gt "$FM_BEARINGS_PR_LIMIT" ] && ncapped=$((ncapped + 1))
       npr=$((npr + cnt))
-      rows=$(jq -n --argjson a "$rows" --argjson b "$repo_rows" '$a + $b')
+      rows=$(printf '%s\n' "$rows" "$repo_rows" | jq -s '.[0] + .[1]')
     done
     PR_REPOS_SHOWN=$nrepos
     PR_ROWS_CAPPED=$ncapped
@@ -293,7 +293,7 @@ case "$BEARINGS_TODAY" in
   [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) : ;;
   *) BEARINGS_TODAY=$(date -u +%Y-%m-%d) ;;
 esac
-MODEL=$(printf '%s' "$SNAP" | jq \
+MODEL=$(printf '%s\n' "$SNAP" "$CANDIDATE_PRS" | jq -s \
   --arg home "$HOME_LABEL" \
   --arg now "$NOW" \
   --arg today "$BEARINGS_TODAY" \
@@ -320,9 +320,11 @@ MODEL=$(printf '%s' "$SNAP" | jq \
   --argjson pr_repos_total "$PR_REPOS_TOTAL" \
   --argjson pr_repos_shown "$PR_REPOS_SHOWN" \
   --argjson pr_rows_capped "$PR_ROWS_CAPPED" \
-  --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" \
-  --argjson candidate_prs "$CANDIDATE_PRS" '
-  def trunc($n): if . == null then null else
+  --argjson pr_rows_min_total "$PR_ROWS_MIN_TOTAL" '
+  .[0] as $snapshot
+  | .[1] as $candidate_prs
+  | $snapshot
+  | def trunc($n): if . == null then null else
     (tostring | gsub("\\s+"; " ") | if (length > $n) then (.[:$n] + "…") else . end) end;
   def round_robin_landed($n):
     . as $groups
