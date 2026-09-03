@@ -242,6 +242,7 @@ JQ_SLURP_2=$(jq_slurp_guard 2)
 JQ_SLURP_3=$(jq_slurp_guard 3)
 JQ_SLURP_6=$(jq_slurp_guard 6)
 JQ_SLURP_7=$(jq_slurp_guard 7)
+JQ_SLURP_8=$(jq_slurp_guard 8)
 
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
@@ -479,7 +480,7 @@ backlog_json() {  # [<backlog-path>] - defaults to this home's $BACKLOG
 task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects spawn_gen backend target status_log report_path
   local remote_host remote_root
-  local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
+  local pr pr_json pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
   local current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 
@@ -518,6 +519,7 @@ task_json_lines() {
     if [ -z "$pr" ]; then
       pr_source=absent
     fi
+    pr_json=$(printf '%s' "$pr" | jq -Rs '.')
 
     if [ -n "$remote_host" ]; then
       # Remote endpoint liveness belongs to supervision. The snapshot never
@@ -593,7 +595,7 @@ task_json_lines() {
 
     printf '%s\n' \
       "$current_json" "$meta_json" "$status_json" "$report_json" \
-      "$worktree_json" "$home_json" "$open_decisions_json" \
+      "$worktree_json" "$home_json" "$open_decisions_json" "$pr_json" \
       | jq -s \
         --arg id "$id" \
         --arg kind "$kind" \
@@ -609,7 +611,6 @@ task_json_lines() {
         --arg target "$target" \
         --arg remote_host "$remote_host" \
         --arg remote_root "$remote_root" \
-        --arg pr "$pr" \
         --arg pr_source "$pr_source" \
         --arg agent_alive "$agent_alive" \
         --arg observed_at "$SNAPSHOT_NOW" \
@@ -617,13 +618,14 @@ task_json_lines() {
         --argjson pending_decision "$(bool_json "$pending_decision")" \
         --argjson blocked_event "$(bool_json "$blocked_event")" \
         --argjson report_present "$(bool_json "$report_present")" \
-        "$JQ_SLURP_7"'.[0] as $current_state
+        "$JQ_SLURP_8"'.[0] as $current_state
         | .[1] as $meta_path
         | .[2] as $status_log
         | .[3] as $report
         | .[4] as $worktree_path
         | .[5] as $home_path
         | .[6] as $open_decisions
+        | .[7] as $pr
         | {
         id:$id,
         kind:$kind,
@@ -1416,8 +1418,8 @@ parent_evidence_reconciliation_json() {  # <summary-json> <activities-json> <dec
 secondmate_current_json() {  # <parent-tasks-json>
   local tasks=$1 registry union rows total_registered total shown truncated
   local row id home host remote registered registry_error task sampled_spawn_gen status_file event_raw event_note event_text event_epoch event_age
-  local activity_scan activities decisions reconciliation provenance freshness reason reason_json summary summary_sampled summary_valid summary_reason summary_invalidity state terminal terminal_contradiction contradiction
-  local summary_source summary_age summary_observed summary_freshness cache_path collection_status collection_slot
+  local activity_scan activities decisions reconciliation provenance freshness reason reason_json summary summary_sampled summary_valid summary_reason summary_invalidity terminal terminal_contradiction contradiction
+  local summary_source summary_age summary_freshness cache_path collection_status collection_slot
   local records='[]' seen_homes=''
   registry=$(registry_secondmates_json) || return 1
   union=$(printf '%s\n' "$registry" "$tasks" | jq -s "$JQ_SLURP_2"'
@@ -1501,7 +1503,6 @@ secondmate_current_json() {  # <parent-tasks-json>
     fi
     summary_source=
     summary_age=0
-    summary_observed=$SNAPSHOT_NOW
     summary_freshness=fresh
     if [ -z "$reason" ]; then
       if [ "$remote" = true ]; then
@@ -1530,7 +1531,6 @@ secondmate_current_json() {  # <parent-tasks-json>
       fi
       if [ -z "$reason" ]; then
         summary_age=$(snapshot_summary_age "$summary")
-        summary_observed=$(printf '%s' "$summary" | jq -r '.generated')
       fi
     fi
     # Failed command substitutions clear their assignment target. Keep the
@@ -1551,7 +1551,6 @@ secondmate_current_json() {  # <parent-tasks-json>
     fi
 
     if [ -z "$reason" ]; then
-      state=$(printf '%s' "$summary" | jq -r '.state')
       reconciliation=$(parent_evidence_reconciliation_json "$summary" "$activities" "$decisions")
       contradiction=$(printf '%s' "$reconciliation" | jq -r '.contradiction')
       terminal_contradiction=$(printf '%s\n' "$reconciliation" "$event_text" | jq -sr "$JQ_SLURP_2"'
@@ -1567,7 +1566,7 @@ secondmate_current_json() {  # <parent-tasks-json>
       record=$(printf '%s\n' \
         "$summary" "$decisions" "$activities" "$activity_scan" "$reconciliation" "$terminal" "$event_text" \
         | jq -s \
-          --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg state "$state" --arg observed "$summary_observed" \
+          --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" \
           --arg summary_source "$summary_source" --arg summary_freshness "$summary_freshness" --argjson summary_age "$summary_age" \
           --arg spawn_gen "$sampled_spawn_gen" \
           --argjson registered "$registered" --argjson summary_valid "$summary_valid" --argjson contradiction "$contradiction" \
@@ -1582,13 +1581,13 @@ secondmate_current_json() {  # <parent-tasks-json>
         | .[6] as $event_text
         | {id:$id,home:$home,host:($host | if . == "" then null else . end),remote:$remote,registered:$registered,
          spawn_gen:($spawn_gen | if . == "" then null else . end),
-         current:{state:$state,
+         current:{state:$summary.state,
            reason:(if $summary_valid == true then null
                    else "structured home state invalid: " + (($summary.reason // "unknown reason") | tostring) end)},invalidity:$summary.invalidity,
          reconcile_inventory:$summary.invalidity,
          provenance:{selected:"structured-home",structured_home:$home,summary_source:$summary_source,summary_valid:$summary_valid,
            trust:(if $summary_valid then "complete" else "partial-structured" end),parent_event_role:"historical-only"},
-         freshness:{status:$summary_freshness,observed_at:$observed,age_seconds:$summary_age},
+         freshness:{status:$summary_freshness,observed_at:$summary.generated,age_seconds:$summary_age},
          active_children:$summary.active_children,
          decisions_open:$summary.decisions_open,holds:$summary.holds,queued:$summary.queued,
          landed:$summary.landed,endpoints:$summary.endpoints,counts:$summary.counts,omitted:$summary.omitted,

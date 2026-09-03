@@ -276,12 +276,12 @@ test_oversized_status_line_keeps_the_snapshot_whole() {
 
 # A secondmate publishes its own home summary, so the parent treats that file as
 # foreign input bounded only by FM_SNAPSHOT_SECONDMATE_MAX_BYTES (256 KiB), twice
-# the platform's per-argument limit. The invalidity reason is the one string that
-# schema never truncates, so it has to reach jq on stdin like the rest.
-test_oversized_home_summary_reason_keeps_the_snapshot_whole() {
-  local home mate out
-  home=$(make_home oversized-summary-reason)
-  mate=$TMP_ROOT/oversized-summary-reason-mate
+# the platform's per-argument limit. Its reason, state, and generated fields are
+# the strings that schema never truncates, so each has to reach jq on stdin.
+test_oversized_home_summary_fields_keep_the_snapshot_whole() {
+  local home mate out field
+  home=$(make_home oversized-summary-fields)
+  mate=$TMP_ROOT/oversized-summary-fields-mate
   mkdir -p "$mate/state" "$mate/data" "$mate/projects" "$mate/config" "$mate/bin"
   printf '# Firstmate\n' > "$mate/AGENTS.md"
   printf 'mate\n' > "$mate/.fm-secondmate-home"
@@ -303,24 +303,63 @@ test_oversized_home_summary_reason_keeps_the_snapshot_whole() {
 
   FM_HOME="$mate" "$SNAPSHOT" --secondmate-home-summary > "$mate/state/published.json" \
     || fail "could not publish the secondmate home-summary fixture"
-  jq -c '.reason = ("in-flight backlog item has no child metadata: " + ("x" * 200000))' \
-    "$mate/state/published.json" > "$mate/state/home-summary.json" \
-    || fail "could not widen the published invalidity reason"
+
+  # One field at a time: 200 KB each keeps every fixture inside the 256 KiB cap
+  # the parent enforces before it will read a published summary at all.
+  for field in reason state generated; do
+    jq -c --arg f "$field" '.[$f] = ("x" * 200000)' \
+      "$mate/state/published.json" > "$mate/state/home-summary.json" \
+      || fail "could not widen the published $field"
+
+    out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+      || fail "snapshot must survive a home-summary $field larger than the argv limit"
+    printf '%s' "$out" | jq -e --arg home "$mate" --arg f "$field" '
+      .secondmate_current.records[0] as $r
+      | (if $f == "reason" then ($r.current.reason | ltrimstr("structured home state invalid: "))
+         elif $f == "state" then $r.current.state
+         else $r.freshness.observed_at end) as $widened
+      | .schema == "fm-fleet-snapshot.v1"
+        and (.secondmate_current.records | length) == 1
+        and $r.home == $home
+        and $r.provenance.selected == "structured-home"
+        and $r.invalidity.kind == "orphan_in_flight"
+        and ($widened | length) == 200000
+        and ($widened | startswith("xxx"))
+        and (.secondmate_landed | type) == "object"
+    ' >/dev/null || fail "an oversized published $field shifted, truncated, or dropped secondmate fields"
+  done
+  pass "oversized published home-summary strings still yield a complete secondmate record"
+}
+
+# A task's PR url is discovered by scanning its status log, so its length is
+# bounded only by the longest unbroken non-whitespace run an agent ever appends.
+# The discovered url is user-visible, so it must survive whole.
+test_oversized_status_pr_url_keeps_the_snapshot_whole() {
+  local home out pad
+  home=$(make_home oversized-pr-url)
+  mkdir -p "$home/projects/alpha-worktree"
+  fm_write_meta "$home/state/pr-task.meta" \
+    "window=firstmate:fm-pr-task" \
+    "worktree=$home/projects/alpha-worktree" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=ship"
+  pad=$(head -c 200000 /dev/zero | tr '\0' x)
+  printf 'done: https://github.com/kunchenguid/%s/pull/7 shipped\n' "$pad" > "$home/state/pr-task.status"
 
   out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
-    || fail "snapshot must survive a home-summary reason larger than the argv limit"
-  printf '%s' "$out" | jq -e --arg home "$mate" '
-    .schema == "fm-fleet-snapshot.v1"
-      and (.secondmate_current.records | length) == 1
-      and .secondmate_current.records[0].home == $home
-      and .secondmate_current.records[0].provenance.selected == "structured-home"
-      and .secondmate_current.records[0].invalidity.kind == "orphan_in_flight"
-      and (.secondmate_current.records[0].current.reason
-           | ltrimstr("structured home state invalid: in-flight backlog item has no child metadata: ")
-           | length) == 200000
-      and (.secondmate_landed | type) == "object"
-  ' >/dev/null || fail "an oversized summary reason shifted, truncated, or dropped secondmate fields"
-  pass "an oversized published home-summary reason still yields a complete secondmate record"
+    || fail "snapshot must survive a status-log PR url larger than the argv limit"
+  printf '%s' "$out" | jq -e '
+    (.tasks | length) == 1
+      and .tasks[0].id == "pr-task"
+      and .tasks[0].pr.source == "status_event"
+      and (.tasks[0].pr.url
+           | ltrimstr("https://github.com/kunchenguid/") | rtrimstr("/pull/7") | length) == 200000
+      and .tasks[0].paths.status_log.last_event.state == "done"
+      and .tasks[0].paths.home == {path:null,present:false}
+  ' >/dev/null || fail "an oversized status-log PR url shifted, truncated, or dropped task fields"
+  pass "an oversized status-log PR url still yields a complete task record"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
@@ -1026,8 +1065,9 @@ test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
 test_large_backlog_bypasses_argv_limit
-test_oversized_home_summary_reason_keeps_the_snapshot_whole
+test_oversized_home_summary_fields_keep_the_snapshot_whole
 test_oversized_status_line_keeps_the_snapshot_whole
+test_oversized_status_pr_url_keeps_the_snapshot_whole
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
