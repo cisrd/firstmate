@@ -240,7 +240,6 @@ jq_slurp_guard() {  # <expected-count>
 JQ_SLURP_1=$(jq_slurp_guard 1)
 JQ_SLURP_2=$(jq_slurp_guard 2)
 JQ_SLURP_3=$(jq_slurp_guard 3)
-JQ_SLURP_5=$(jq_slurp_guard 5)
 JQ_SLURP_6=$(jq_slurp_guard 6)
 JQ_SLURP_7=$(jq_slurp_guard 7)
 
@@ -295,8 +294,9 @@ crew_state_json() {  # <id>
       esac
       ;;
   esac
-  jq -n --arg raw "$raw" --arg state "$state" --arg source "$source" --arg detail "$detail" \
-    '{state:$state,source:$source,detail:$detail,raw:$raw}'
+  printf '%s\n%s\n%s\n%s\n' "$state" "$source" "$detail" "$raw" \
+    | jq -Rs 'split("\n") as $f
+      | {state:$f[0],source:$f[1],detail:$f[2],raw:$f[3]}'
 }
 
 status_event_json() {  # <status-log>
@@ -307,13 +307,13 @@ status_event_json() {  # <status-log>
     verb=$(status_line_verb "$raw")
     note=$(status_line_note "$raw")
   fi
-  jq -n \
-    --arg path "$log" \
-    --arg raw "$raw" \
-    --arg verb "$verb" \
-    --arg note "$note" \
-    --argjson present "$(bool_json "$present")" \
-    '{path:$path,present:$present,kind:"event_history",last_event:{state:$verb,note:$note,raw:$raw}}'
+  printf '%s\n%s\n%s\n' "$verb" "$note" "$raw" \
+    | jq -Rs \
+      --arg path "$log" \
+      --argjson present "$(bool_json "$present")" \
+      'split("\n") as $f
+       | {path:$path,present:$present,kind:"event_history",
+          last_event:{state:$f[0],note:$f[1],raw:$f[2]}}'
 }
 
 first_pr_url_in_file() {  # <file>
@@ -480,7 +480,7 @@ task_json_lines() {
   local meta id kind harness mode yolo project worktree home projects spawn_gen backend target status_log report_path
   local remote_host remote_root
   local pr pr_source event_json current_json endpoint_exists agent_alive meta_json status_json report_json worktree_json home_json
-  local last_event_raw current_state current_source pending_decision blocked_event report_present=0 pr_from_status
+  local current_state current_source pending_decision blocked_event report_present=0 pr_from_status
   local open_decisions_tsv open_decisions_json
 
   for meta in "$STATE"/*.meta; do
@@ -527,7 +527,6 @@ task_json_lines() {
       current_json=$(crew_state_json "$id")
     fi
     event_json=$(status_event_json "$status_log")
-    last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
     current_state=$(printf '%s' "$current_json" | jq -r '.state // ""')
     current_source=$(printf '%s' "$current_json" | jq -r '.source // ""')
 
@@ -614,7 +613,6 @@ task_json_lines() {
         --arg pr_source "$pr_source" \
         --arg agent_alive "$agent_alive" \
         --arg observed_at "$SNAPSHOT_NOW" \
-        --arg last_event_raw "$last_event_raw" \
         --argjson endpoint_exists "$endpoint_exists" \
         --argjson pending_decision "$(bool_json "$pending_decision")" \
         --argjson blocked_event "$(bool_json "$blocked_event")" \
@@ -656,7 +654,7 @@ task_json_lines() {
           blocked_event:$blocked_event,
           open_decisions:$open_decisions,
           scout_report_present:$report_present,
-          last_event_text:$last_event_raw
+          last_event_text:($status_log.last_event.raw // "")
         },
         actions:(
           if $kind == "secondmate" then
@@ -671,9 +669,11 @@ task_json_lines() {
       }' || exit 1
   done | jq -s 'sort_by(.id)'
   # The loop runs in the pipeline's subshell, so a rejected record would be
-  # dropped from the sorted stream while `jq -s` still exited 0. Report the
-  # producer's status instead of emitting an inventory that is silently short.
-  [ "${PIPESTATUS[0]}" -eq 0 ] || return 1
+  # dropped from the sorted stream while `jq -s` still exited 0. Both stages
+  # must report, or the caller emits an inventory that is silently short.
+  local pipe_status=("${PIPESTATUS[@]}")
+  [ "${pipe_status[0]}" -eq 0 ] || return 1
+  [ "${pipe_status[1]}" -eq 0 ] || return 1
 }
 
 # Main-home current-inventory validity: same orphan / unstructured-current checks
@@ -1415,7 +1415,7 @@ parent_evidence_reconciliation_json() {  # <summary-json> <activities-json> <dec
 
 secondmate_current_json() {  # <parent-tasks-json>
   local tasks=$1 registry union rows total_registered total shown truncated
-  local row id home host remote registered registry_error task sampled_spawn_gen status_file event_raw event_note event_epoch event_age
+  local row id home host remote registered registry_error task sampled_spawn_gen status_file event_raw event_note event_text event_epoch event_age
   local activity_scan activities decisions reconciliation provenance freshness reason summary summary_sampled summary_valid summary_reason summary_invalidity state current_reason terminal terminal_contradiction contradiction
   local summary_source summary_age summary_observed summary_freshness cache_path collection_status collection_slot
   local records='[]' seen_homes=''
@@ -1460,6 +1460,7 @@ secondmate_current_json() {  # <parent-tasks-json>
     status_file=$(printf '%s' "$task" | jq -r '.paths.status_log.path // ""')
     event_raw=$(printf '%s' "$task" | jq -r '.paths.status_log.last_event.raw // ""')
     event_note=$(printf '%s' "$task" | jq -r '.paths.status_log.last_event.note // ""')
+    event_text=$(printf '%s' "$task" | jq -c '{raw:(.paths.status_log.last_event.raw // ""),note:(.paths.status_log.last_event.note // "")}')
     activity_scan=$(bounded_parent_activities_json "$status_file")
     activities=$(printf '%s' "$activity_scan" | jq -c '.records')
     decisions=$(printf '%s' "$task" | jq -c '.hints.open_decisions // []')
@@ -1557,8 +1558,9 @@ secondmate_current_json() {  # <parent-tasks-json>
       fi
       reconciliation=$(parent_evidence_reconciliation_json "$summary" "$activities" "$decisions")
       contradiction=$(printf '%s' "$reconciliation" | jq -r '.contradiction')
-      terminal_contradiction=$(printf '%s' "$reconciliation" | jq -r --arg note "$event_note" '
-        any(.activities[]; .verdict == "contradicts" and .summary == $note)')
+      terminal_contradiction=$(printf '%s\n' "$reconciliation" "$event_text" | jq -sr "$JQ_SLURP_2"'
+        .[1].note as $note
+        | any(.[0].activities[]; .verdict == "contradicts" and .summary == $note)')
       if [ "$terminal_contradiction" = true ]; then
         terminal=$(terminal_evidence_json "$task" "$event_note" true)
       else
@@ -1567,20 +1569,21 @@ secondmate_current_json() {  # <parent-tasks-json>
       fi
       if printf '%s' "$terminal" | jq -e '.contradiction == true' >/dev/null; then contradiction=true; fi
       record=$(printf '%s\n' \
-        "$summary" "$decisions" "$activities" "$activity_scan" "$reconciliation" "$terminal" \
+        "$summary" "$decisions" "$activities" "$activity_scan" "$reconciliation" "$terminal" "$event_text" \
         | jq -s \
           --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg state "$state" --arg current_reason "$current_reason" --arg observed "$summary_observed" \
           --arg summary_source "$summary_source" --arg summary_freshness "$summary_freshness" --argjson summary_age "$summary_age" \
           --arg spawn_gen "$sampled_spawn_gen" \
           --argjson registered "$registered" --argjson summary_valid "$summary_valid" --argjson contradiction "$contradiction" \
-          --arg event_raw "$event_raw" --arg event_note "$event_note" --argjson event_age "$event_age" \
-          "$JQ_SLURP_6"'
+          --argjson event_age "$event_age" \
+          "$JQ_SLURP_7"'
         .[0] as $summary
         | .[1] as $decisions
         | .[2] as $activities
         | .[3] as $activity_scan
         | .[4] as $reconciliation
         | .[5] as $terminal
+        | .[6] as $event_text
         | {id:$id,home:$home,host:($host | if . == "" then null else . end),remote:$remote,registered:$registered,
          spawn_gen:($spawn_gen | if . == "" then null else . end),
          current:{state:$state,reason:($current_reason | if . == "" then null else . end)},invalidity:$summary.invalidity,
@@ -1591,7 +1594,7 @@ secondmate_current_json() {  # <parent-tasks-json>
          active_children:$summary.active_children,
          decisions_open:$summary.decisions_open,holds:$summary.holds,queued:$summary.queued,
          landed:$summary.landed,endpoints:$summary.endpoints,counts:$summary.counts,omitted:$summary.omitted,
-         parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan,reconciliation:$reconciliation},
+         parent_event:{raw:$event_text.raw,note:$event_text.note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan,reconciliation:$reconciliation},
          terminal_evidence:$terminal,contradiction:$contradiction}')
     else
       if [ -n "$event_raw" ]; then
@@ -1607,18 +1610,19 @@ secondmate_current_json() {  # <parent-tasks-json>
         terminal=$(jq -n --arg observed "$SNAPSHOT_NOW" \
           '{provenance:"parent-direct-report-terminal",trust:"untrusted-supplement",captured:false,observed_at:$observed,freshness:"not-collected",reason:"no parent event to compare",lines:0,bytes:0,event_note_seen:false,contradiction:false}')
       fi
-      record=$(printf '%s\n' "$activities" "$activity_scan" "$decisions" "$terminal" "$summary" \
+      record=$(printf '%s\n' "$activities" "$activity_scan" "$decisions" "$terminal" "$summary" "$event_text" \
         | jq -s \
           --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg reason "$reason" --arg observed "$SNAPSHOT_NOW" \
           --arg spawn_gen "$sampled_spawn_gen" \
-          --arg provenance "$provenance" --arg freshness "$freshness" --arg event_raw "$event_raw" --arg event_note "$event_note" \
+          --arg provenance "$provenance" --arg freshness "$freshness" \
           --argjson registered "$registered" --argjson event_age "$event_age" --argjson summary_sampled "$summary_sampled" \
-          "$JQ_SLURP_5"'
+          "$JQ_SLURP_6"'
         .[0] as $activities
         | .[1] as $activity_scan
         | .[2] as $decisions
         | .[3] as $terminal
         | .[4] as $summary
+        | .[5] as $event_text
         | {id:$id,home:($home | if . == "" then null else . end),host:($host | if . == "" then null else . end),remote:$remote,registered:$registered,
          spawn_gen:($spawn_gen | if . == "" then null else . end),
          current:{state:"unknown",reason:$reason},invalidity:null,
@@ -1626,7 +1630,7 @@ secondmate_current_json() {  # <parent-tasks-json>
          provenance:{selected:$provenance,structured_home:($home | if . == "" then null else . end),parent_event_role:"fallback-only-not-current"},
          freshness:{status:$freshness,observed_at:$observed,age_seconds:$event_age},
          active_children:[],decisions_open:[],holds:[],queued:[],landed:[],endpoints:[],counts:{active_children:0,decisions_open:0,holds:0,queued:0,landed:0,endpoints:0},omitted:[],
-         parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
+         parent_event:{raw:$event_text.raw,note:$event_text.note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
          terminal_evidence:$terminal,contradiction:false}')
     fi
     records=$(printf '%s\n' "$records" "$record" | jq -s "$JQ_SLURP_2"'.[0] + [.[1]]')

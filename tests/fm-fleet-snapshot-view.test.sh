@@ -234,14 +234,13 @@ test_large_backlog_bypasses_argv_limit() {
   pass "fleet and bearings snapshots accept backlog JSON larger than the argv limit"
 }
 
-# Assembled record JSON is slurped from stdin, and a slurped stream silently
-# drops an empty value. A producer that cannot run - the raw status line still
-# reaches its jq through argv, so an oversized event line makes that exec fail -
-# must therefore never leave the snapshot reporting one input's value under
-# another input's field.
-test_incomplete_record_input_never_shifts_bindings() {
-  local home out err
-  home=$(make_home short-record-input)
+# Agents append uncapped status lines, so the last event text is unbounded and
+# must reach jq on stdin like every other assembled payload. A status line past
+# the platform's per-argument limit must still produce one complete task record
+# whose fields are each bound to their own input.
+test_oversized_status_line_keeps_the_snapshot_whole() {
+  local home out big
+  home=$(make_home oversized-status-line)
   mkdir -p "$home/projects/alpha-worktree"
   fm_write_meta "$home/state/big-event.meta" \
     "window=firstmate:fm-big-event" \
@@ -250,25 +249,29 @@ test_incomplete_record_input_never_shifts_bindings() {
     "harness=codex" \
     "kind=ship" \
     "mode=ship"
-  {
-    printf 'needs-decision: '
-    head -c 300000 /dev/zero | tr '\0' x
-    printf '\n'
-  } > "$home/state/big-event.status"
+  big=$(head -c 300000 /dev/zero | tr '\0' x)
+  printf 'needs-decision: %s\n' "$big" > "$home/state/big-event.status"
 
-  err=$TMP_ROOT/short-record-input.err
-  if out=$(FM_HOME="$home" "$SNAPSHOT" --json 2>"$err"); then
-    printf '%s' "$out" | jq -e --arg log "$home/state/big-event.status" '
-      .tasks[0].paths.status_log.path == $log
-        and (.tasks[0].paths.home | type) == "object"
-        and (.tasks[0].hints.open_decisions | type) == "array"
-    ' >/dev/null || fail "snapshot exited 0 with task fields bound to the wrong input: $out"
-  else
-    assert_contains "$(cat "$err")" "assembled json inputs" \
-      "a rejected record input must name the incomplete assembled input"
-    [ -z "$out" ] || fail "a failed snapshot must not emit a partial schema: $out"
-  fi
-  pass "an incomplete assembled record input never shifts snapshot bindings"
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot must survive a status line larger than the argv limit"
+  printf '%s' "$out" | jq -e --arg log "$home/state/big-event.status" '
+    .schema == "fm-fleet-snapshot.v1"
+      and (.tasks | length) == 1
+      and .tasks[0].paths.status_log.path == $log
+      and .tasks[0].paths.status_log.kind == "event_history"
+      and .tasks[0].paths.status_log.last_event.state == "needs-decision"
+      and (.tasks[0].paths.status_log.last_event.note | length) == 300000
+      and (.tasks[0].paths.status_log.last_event.note | startswith("xxx"))
+      and (.tasks[0].paths.status_log.last_event.raw | length) == 300016
+      and .tasks[0].paths.home == {path:null,present:false}
+      and .tasks[0].paths.report.present == false
+      and .tasks[0].current_state.source == "none"
+      and .tasks[0].hints.pending_decision == true
+      and (.tasks[0].hints.open_decisions | length) == 1
+      and .tasks[0].hints.open_decisions[0].verb == "needs-decision"
+      and (.tasks[0].hints.last_event_text | length) == 300016
+  ' >/dev/null || fail "an oversized status line shifted, truncated, or dropped task fields"
+  pass "an oversized status line still yields one complete, correctly bound task record"
 }
 
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
@@ -973,8 +976,8 @@ EOF
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
-test_incomplete_record_input_never_shifts_bindings
 test_large_backlog_bypasses_argv_limit
+test_oversized_status_line_keeps_the_snapshot_whole
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
 test_event_hints_follow_reconciled_current_state
