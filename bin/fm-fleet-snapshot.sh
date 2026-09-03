@@ -1416,7 +1416,7 @@ parent_evidence_reconciliation_json() {  # <summary-json> <activities-json> <dec
 secondmate_current_json() {  # <parent-tasks-json>
   local tasks=$1 registry union rows total_registered total shown truncated
   local row id home host remote registered registry_error task sampled_spawn_gen status_file event_raw event_note event_text event_epoch event_age
-  local activity_scan activities decisions reconciliation provenance freshness reason summary summary_sampled summary_valid summary_reason summary_invalidity state current_reason terminal terminal_contradiction contradiction
+  local activity_scan activities decisions reconciliation provenance freshness reason reason_json summary summary_sampled summary_valid summary_reason summary_invalidity state terminal terminal_contradiction contradiction
   local summary_source summary_age summary_observed summary_freshness cache_path collection_status collection_slot
   local records='[]' seen_homes=''
   registry=$(registry_secondmates_json) || return 1
@@ -1552,10 +1552,6 @@ secondmate_current_json() {  # <parent-tasks-json>
 
     if [ -z "$reason" ]; then
       state=$(printf '%s' "$summary" | jq -r '.state')
-      current_reason=
-      if [ "$summary_valid" != true ]; then
-        current_reason="structured home state invalid: $(printf '%s' "$summary" | jq -r '.reason // "unknown reason"')"
-      fi
       reconciliation=$(parent_evidence_reconciliation_json "$summary" "$activities" "$decisions")
       contradiction=$(printf '%s' "$reconciliation" | jq -r '.contradiction')
       terminal_contradiction=$(printf '%s\n' "$reconciliation" "$event_text" | jq -sr "$JQ_SLURP_2"'
@@ -1571,7 +1567,7 @@ secondmate_current_json() {  # <parent-tasks-json>
       record=$(printf '%s\n' \
         "$summary" "$decisions" "$activities" "$activity_scan" "$reconciliation" "$terminal" "$event_text" \
         | jq -s \
-          --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg state "$state" --arg current_reason "$current_reason" --arg observed "$summary_observed" \
+          --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg state "$state" --arg observed "$summary_observed" \
           --arg summary_source "$summary_source" --arg summary_freshness "$summary_freshness" --argjson summary_age "$summary_age" \
           --arg spawn_gen "$sampled_spawn_gen" \
           --argjson registered "$registered" --argjson summary_valid "$summary_valid" --argjson contradiction "$contradiction" \
@@ -1586,7 +1582,9 @@ secondmate_current_json() {  # <parent-tasks-json>
         | .[6] as $event_text
         | {id:$id,home:$home,host:($host | if . == "" then null else . end),remote:$remote,registered:$registered,
          spawn_gen:($spawn_gen | if . == "" then null else . end),
-         current:{state:$state,reason:($current_reason | if . == "" then null else . end)},invalidity:$summary.invalidity,
+         current:{state:$state,
+           reason:(if $summary_valid == true then null
+                   else "structured home state invalid: " + (($summary.reason // "unknown reason") | tostring) end)},invalidity:$summary.invalidity,
          reconcile_inventory:$summary.invalidity,
          provenance:{selected:"structured-home",structured_home:$home,summary_source:$summary_source,summary_valid:$summary_valid,
            trust:(if $summary_valid then "complete" else "partial-structured" end),parent_event_role:"historical-only"},
@@ -1610,19 +1608,21 @@ secondmate_current_json() {  # <parent-tasks-json>
         terminal=$(jq -n --arg observed "$SNAPSHOT_NOW" \
           '{provenance:"parent-direct-report-terminal",trust:"untrusted-supplement",captured:false,observed_at:$observed,freshness:"not-collected",reason:"no parent event to compare",lines:0,bytes:0,event_note_seen:false,contradiction:false}')
       fi
-      record=$(printf '%s\n' "$activities" "$activity_scan" "$decisions" "$terminal" "$summary" "$event_text" \
+      reason_json=$(printf '%s' "$reason" | jq -Rs '.')
+      record=$(printf '%s\n' "$activities" "$activity_scan" "$decisions" "$terminal" "$summary" "$event_text" "$reason_json" \
         | jq -s \
-          --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg reason "$reason" --arg observed "$SNAPSHOT_NOW" \
+          --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg observed "$SNAPSHOT_NOW" \
           --arg spawn_gen "$sampled_spawn_gen" \
           --arg provenance "$provenance" --arg freshness "$freshness" \
           --argjson registered "$registered" --argjson event_age "$event_age" --argjson summary_sampled "$summary_sampled" \
-          "$JQ_SLURP_6"'
+          "$JQ_SLURP_7"'
         .[0] as $activities
         | .[1] as $activity_scan
         | .[2] as $decisions
         | .[3] as $terminal
         | .[4] as $summary
         | .[5] as $event_text
+        | .[6] as $reason
         | {id:$id,home:($home | if . == "" then null else . end),host:($host | if . == "" then null else . end),remote:$remote,registered:$registered,
          spawn_gen:($spawn_gen | if . == "" then null else . end),
          current:{state:"unknown",reason:$reason},invalidity:null,

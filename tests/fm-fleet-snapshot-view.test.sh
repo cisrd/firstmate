@@ -274,6 +274,55 @@ test_oversized_status_line_keeps_the_snapshot_whole() {
   pass "an oversized status line still yields one complete, correctly bound task record"
 }
 
+# A secondmate publishes its own home summary, so the parent treats that file as
+# foreign input bounded only by FM_SNAPSHOT_SECONDMATE_MAX_BYTES (256 KiB), twice
+# the platform's per-argument limit. The invalidity reason is the one string that
+# schema never truncates, so it has to reach jq on stdin like the rest.
+test_oversized_home_summary_reason_keeps_the_snapshot_whole() {
+  local home mate out
+  home=$(make_home oversized-summary-reason)
+  mate=$TMP_ROOT/oversized-summary-reason-mate
+  mkdir -p "$mate/state" "$mate/data" "$mate/projects" "$mate/config" "$mate/bin"
+  printf '# Firstmate\n' > "$mate/AGENTS.md"
+  printf 'mate\n' > "$mate/.fm-secondmate-home"
+  {
+    printf '## In flight\n'
+    printf -- '- [ ] orphan-task - Orphan (repo: alpha) (kind: ship)\n'
+    printf '\n## Queued\n\n## Done\n'
+  } > "$mate/data/backlog.md"
+  printf -- '- mate - fixture domain (home: %s; scope: fixture; projects: sample; added 2026-08-26)\n' \
+    "$mate" > "$home/data/secondmates.md"
+  fm_write_meta "$home/state/mate.meta" \
+    "window=firstmate:fm-mate" \
+    "kind=secondmate" \
+    "harness=claude" \
+    "backend=tmux" \
+    "spawn_gen=spawn-mate" \
+    "home=$mate" \
+    "worktree=$mate"
+
+  FM_HOME="$mate" "$SNAPSHOT" --secondmate-home-summary > "$mate/state/published.json" \
+    || fail "could not publish the secondmate home-summary fixture"
+  jq -c '.reason = ("in-flight backlog item has no child metadata: " + ("x" * 200000))' \
+    "$mate/state/published.json" > "$mate/state/home-summary.json" \
+    || fail "could not widen the published invalidity reason"
+
+  out=$(FM_HOME="$home" "$SNAPSHOT" --json) \
+    || fail "snapshot must survive a home-summary reason larger than the argv limit"
+  printf '%s' "$out" | jq -e --arg home "$mate" '
+    .schema == "fm-fleet-snapshot.v1"
+      and (.secondmate_current.records | length) == 1
+      and .secondmate_current.records[0].home == $home
+      and .secondmate_current.records[0].provenance.selected == "structured-home"
+      and .secondmate_current.records[0].invalidity.kind == "orphan_in_flight"
+      and (.secondmate_current.records[0].current.reason
+           | ltrimstr("structured home state invalid: in-flight backlog item has no child metadata: ")
+           | length) == 200000
+      and (.secondmate_landed | type) == "object"
+  ' >/dev/null || fail "an oversized summary reason shifted, truncated, or dropped secondmate fields"
+  pass "an oversized published home-summary reason still yields a complete secondmate record"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -977,6 +1026,7 @@ test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
 test_large_backlog_bypasses_argv_limit
+test_oversized_home_summary_reason_keeps_the_snapshot_whole
 test_oversized_status_line_keeps_the_snapshot_whole
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
