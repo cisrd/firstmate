@@ -227,6 +227,23 @@ esac
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
 
+# Assembled JSON reaches jq on stdin rather than in argv, so `jq -s` slurping is
+# what carries the validation --argjson used to enforce. A slurped stream drops
+# an empty input silently, which would shift every later positional binding one
+# slot and emit a structurally valid but wrong snapshot. Every slurping filter is
+# prefixed with this guard, so a missing, empty, or null input fails nonzero.
+jq_slurp_guard() {  # <expected-count>
+  printf 'if (length != %s) or any(.[]; . == null) then
+      error("fm-fleet-snapshot: expected %s non-null assembled json inputs, got \\(length) [\\([.[] | type] | join(","))]")
+    else . end | ' "$1" "$1"
+}
+JQ_SLURP_1=$(jq_slurp_guard 1)
+JQ_SLURP_2=$(jq_slurp_guard 2)
+JQ_SLURP_3=$(jq_slurp_guard 3)
+JQ_SLURP_5=$(jq_slurp_guard 5)
+JQ_SLURP_6=$(jq_slurp_guard 6)
+JQ_SLURP_7=$(jq_slurp_guard 7)
+
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
 }
@@ -602,7 +619,7 @@ task_json_lines() {
         --argjson pending_decision "$(bool_json "$pending_decision")" \
         --argjson blocked_event "$(bool_json "$blocked_event")" \
         --argjson report_present "$(bool_json "$report_present")" \
-        '.[0] as $current_state
+        "$JQ_SLURP_7"'.[0] as $current_state
         | .[1] as $meta_path
         | .[2] as $status_log
         | .[3] as $report
@@ -651,8 +668,12 @@ task_json_lines() {
              steer:"bin/fm-send.sh fm-\($id) \u0027<instruction>\u0027",
              return_channel_note:null}
           end)
-      }'
+      }' || exit 1
   done | jq -s 'sort_by(.id)'
+  # The loop runs in the pipeline's subshell, so a rejected record would be
+  # dropped from the sorted stream while `jq -s` still exited 0. Report the
+  # producer's status instead of emitting an inventory that is silently short.
+  [ "${PIPESTATUS[0]}" -eq 0 ] || return 1
 }
 
 # Main-home current-inventory validity: same orphan / unstructured-current checks
@@ -660,7 +681,7 @@ task_json_lines() {
 # Meta inventory remains the sole source of live workers; this object only
 # discloses backlog↔task inconsistency for renderers (Bearings omitted/gates).
 main_inventory_json() {  # <backlog-json> <tasks-json>
-  printf '%s\n' "$1" "$2" | jq -s '
+  printf '%s\n' "$1" "$2" | jq -s "$JQ_SLURP_2"'
     .[0] as $backlog
     | .[1] as $tasks
     |
@@ -696,7 +717,7 @@ secondmate_home_summary_json() {  # <backlog-json> <tasks-json>
     --argjson child_n "$FM_SNAPSHOT_SECONDMATE_CHILDREN" \
     --argjson queued_n "$FM_SNAPSHOT_SECONDMATE_QUEUED" \
     --argjson decisions_n "$FM_SNAPSHOT_SECONDMATE_DECISIONS" \
-    --argjson landed_n "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" '
+    --argjson landed_n "$FM_SNAPSHOT_SECONDMATE_LANDED_PER_HOME" "$JQ_SLURP_2"'
     .[0] as $backlog
     | .[1] as $tasks
     |
@@ -1329,7 +1350,7 @@ terminal_evidence_json() {  # <parent-task-json> <event-note> <evidence-contradi
 }
 
 parent_evidence_reconciliation_json() {  # <summary-json> <activities-json> <decisions-json>
-  printf '%s\n' "$1" "$2" "$3" | jq -s '
+  printf '%s\n' "$1" "$2" "$3" | jq -s "$JQ_SLURP_3"'
     .[0] as $summary
     | .[1] as $activities
     | .[2] as $decisions
@@ -1399,7 +1420,7 @@ secondmate_current_json() {  # <parent-tasks-json>
   local summary_source summary_age summary_observed summary_freshness cache_path collection_status collection_slot
   local records='[]' seen_homes=''
   registry=$(registry_secondmates_json) || return 1
-  union=$(printf '%s\n' "$registry" "$tasks" | jq -s '
+  union=$(printf '%s\n' "$registry" "$tasks" | jq -s "$JQ_SLURP_2"'
     .[0] as $registry
     | .[1] as $tasks
     |
@@ -1552,7 +1573,8 @@ secondmate_current_json() {  # <parent-tasks-json>
           --arg summary_source "$summary_source" --arg summary_freshness "$summary_freshness" --argjson summary_age "$summary_age" \
           --arg spawn_gen "$sampled_spawn_gen" \
           --argjson registered "$registered" --argjson summary_valid "$summary_valid" --argjson contradiction "$contradiction" \
-          --arg event_raw "$event_raw" --arg event_note "$event_note" --argjson event_age "$event_age" '
+          --arg event_raw "$event_raw" --arg event_note "$event_note" --argjson event_age "$event_age" \
+          "$JQ_SLURP_6"'
         .[0] as $summary
         | .[1] as $decisions
         | .[2] as $activities
@@ -1590,7 +1612,8 @@ secondmate_current_json() {  # <parent-tasks-json>
           --arg id "$id" --arg home "$home" --arg host "$host" --argjson remote "$remote" --arg reason "$reason" --arg observed "$SNAPSHOT_NOW" \
           --arg spawn_gen "$sampled_spawn_gen" \
           --arg provenance "$provenance" --arg freshness "$freshness" --arg event_raw "$event_raw" --arg event_note "$event_note" \
-          --argjson registered "$registered" --argjson event_age "$event_age" --argjson summary_sampled "$summary_sampled" '
+          --argjson registered "$registered" --argjson event_age "$event_age" --argjson summary_sampled "$summary_sampled" \
+          "$JQ_SLURP_5"'
         .[0] as $activities
         | .[1] as $activity_scan
         | .[2] as $decisions
@@ -1606,7 +1629,7 @@ secondmate_current_json() {  # <parent-tasks-json>
          parent_event:{raw:$event_raw,note:$event_note,age_seconds:$event_age,open_activities:$activities,open_decisions:$decisions,activity_scan:$activity_scan},
          terminal_evidence:$terminal,contradiction:false}')
     fi
-    records=$(printf '%s\n' "$records" "$record" | jq -s '.[0] + [.[1]]')
+    records=$(printf '%s\n' "$records" "$record" | jq -s "$JQ_SLURP_2"'.[0] + [.[1]]')
   done <<EOF
 $rows
 EOF
@@ -1617,14 +1640,14 @@ EOF
       --argjson total "$total" \
       --argjson shown "$shown" \
       --argjson truncated "$truncated" \
-      '.[0] as $registry
+      "$JQ_SLURP_2"'.[0] as $registry
       | .[1] as $records
       | {registry:$registry,records:$records,total_registered:$total_registered,total:$total,shown:$shown,truncated:$truncated}'
 }
 
 secondmate_landed_from_current_json() {  # <secondmate-current-json>
-  printf '%s\n' "$1" | jq '
-    . as $current
+  printf '%s\n' "$1" | jq -s "$JQ_SLURP_1"'
+    .[0] as $current
     |
     {records:[ $current.records[]
       | select(.provenance.selected == "structured-home") as $mate
@@ -1685,7 +1708,7 @@ printf '%s\n' \
     --arg data "$DATA" \
     --arg config "$CONFIG" \
     --arg projects "$PROJECTS" \
-    '.[0] as $backlog
+    "$JQ_SLURP_6"'.[0] as $backlog
    | .[1] as $tasks
    | .[2] as $main_inventory
    | .[3] as $scout_reports

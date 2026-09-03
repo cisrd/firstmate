@@ -234,6 +234,43 @@ test_large_backlog_bypasses_argv_limit() {
   pass "fleet and bearings snapshots accept backlog JSON larger than the argv limit"
 }
 
+# Assembled record JSON is slurped from stdin, and a slurped stream silently
+# drops an empty value. A producer that cannot run - the raw status line still
+# reaches its jq through argv, so an oversized event line makes that exec fail -
+# must therefore never leave the snapshot reporting one input's value under
+# another input's field.
+test_incomplete_record_input_never_shifts_bindings() {
+  local home out err
+  home=$(make_home short-record-input)
+  mkdir -p "$home/projects/alpha-worktree"
+  fm_write_meta "$home/state/big-event.meta" \
+    "window=firstmate:fm-big-event" \
+    "worktree=$home/projects/alpha-worktree" \
+    "project=alpha" \
+    "harness=codex" \
+    "kind=ship" \
+    "mode=ship"
+  {
+    printf 'needs-decision: '
+    head -c 300000 /dev/zero | tr '\0' x
+    printf '\n'
+  } > "$home/state/big-event.status"
+
+  err=$TMP_ROOT/short-record-input.err
+  if out=$(FM_HOME="$home" "$SNAPSHOT" --json 2>"$err"); then
+    printf '%s' "$out" | jq -e --arg log "$home/state/big-event.status" '
+      .tasks[0].paths.status_log.path == $log
+        and (.tasks[0].paths.home | type) == "object"
+        and (.tasks[0].hints.open_decisions | type) == "array"
+    ' >/dev/null || fail "snapshot exited 0 with task fields bound to the wrong input: $out"
+  else
+    assert_contains "$(cat "$err")" "assembled json inputs" \
+      "a rejected record input must name the incomplete assembled input"
+    [ -z "$out" ] || fail "a failed snapshot must not emit a partial schema: $out"
+  fi
+  pass "an incomplete assembled record input never shifts snapshot bindings"
+}
+
 # R1 owner contract: main_inventory discloses orphan in-flight and unstructured
 # current rows without inventing task rows.
 test_main_inventory_orphan_and_unstructured_disclosure() {
@@ -936,6 +973,7 @@ EOF
 test_empty_fleet_json
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
+test_incomplete_record_input_never_shifts_bindings
 test_large_backlog_bypasses_argv_limit
 test_main_inventory_orphan_and_unstructured_disclosure
 test_normalized_roles_and_plural_blocker_readiness
