@@ -204,7 +204,7 @@ write_meta() {
     "project=$case_dir/project" \
     "kind=$kind" \
     "mode=$mode" \
-    "spawn_gen=teardown-test-task-x1"
+    "spawn_gen=teardown-test-task-x1" \
     "owner_token=$TEARDOWN_FIXTURE_TOKEN"
 }
 
@@ -1464,6 +1464,11 @@ test_secondmate_home_teardown_delivers_final_line_or_refuses() {
   channel="$case_dir/parent/state/mate-x.status"
   write_meta "$case_dir" local-only ship
   mkdir -p "$case_dir/tasktmp"
+  # Stamped like every other ordinary allocation here: this case is about the
+  # undelivered parent line, so the temp root must not be the thing teardown
+  # refuses on first.
+  fm_wtproc_write_owner "$case_dir/tasktmp" tmp task-x1 "$TEARDOWN_FIXTURE_TOKEN" \
+    || fail "fixture: could not stamp the temp root"
   printf '!\n' > "$case_dir/state/task-x1.grok-turnend-token"
   printf '!\n' > "$case_dir/state/task-x1.kimi-turnend-token"
   printf 'tasktmp=%s\n' "$case_dir/tasktmp" >> "$case_dir/state/task-x1.meta"
@@ -2896,9 +2901,16 @@ test_a_recorded_root_under_projects_refuses_instead_of_signalling() {
   kill -0 "$pid" 2>/dev/null || fail "forbidden-root: the stand-in stack process did not start"
 
   set +e
+  # This case sets FM_HOME to the fake home so `projects/` sits where the guard
+  # expects it, which moves $DATA there too. Pin it back to the case dir for the
+  # reason run_teardown pins it: without it teardown stops on an unresolvable
+  # data directory and never reaches the signalling loop this case exists to
+  # prove, refusing for an unrelated reason and looking like it proved something
+  # - exactly the mistake the comment above this test warns about.
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_HOME="$home" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
     "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
@@ -2949,9 +2961,15 @@ test_a_copy_that_cannot_be_shown_to_be_this_tasks_refuses_teardown() {
   sleep 0.3
   kill -0 "$pid" 2>/dev/null || fail "unowned-copy: the stand-in process did not start"
 
+  # $DATA is pinned for the reason run_teardown pins it, and here it is what
+  # makes the case real: setting FM_HOME alone moves the data directory into the
+  # fake home, teardown stops on it, and all three arms below would take their
+  # non-zero exit from that instead of from the ownership check they exist to
+  # prove.
   set +e
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" \
-  FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
     "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -2977,7 +2995,8 @@ test_a_copy_that_cannot_be_shown_to_be_this_tasks_refuses_teardown() {
   # operator must not be able to insist on here.
   set +e
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" \
-  FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
     "$TEARDOWN" task-x1 --force > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -3002,7 +3021,8 @@ test_a_copy_that_cannot_be_shown_to_be_this_tasks_refuses_teardown() {
 
   set +e
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$case_dir/home" \
-  FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
     "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
@@ -3073,11 +3093,18 @@ test_teardown_never_signals_the_shell_it_was_started_from() {
   # teardown as its child: exactly the operator's position. It records that it
   # outlived the teardown; if teardown signals its own ancestor, the marker is
   # never written.
+  # The home and data directory are pinned like run_teardown pins them: left
+  # unset they resolve against whatever home the suite happens to run in, which
+  # is both why this case exited non-zero on an unresolvable data directory
+  # instead of proving anything, and a path by which a test could reach a real
+  # home's records.
   cat > "$case_dir/holder.sh" <<EOF
 #!/usr/bin/env bash
 cd "$case_dir/wt" || exit 1
 FM_ROOT_OVERRIDE="$ROOT" \
+FM_HOME="$case_dir/home" \
 FM_STATE_OVERRIDE="$case_dir/state" \
+FM_DATA_OVERRIDE="$case_dir/data" \
 FM_CONFIG_OVERRIDE="$case_dir/config" \
 PATH="$case_dir/fakebin:\${FM_TEARDOWN_TEST_PATH:-\$PATH}" \
   "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
