@@ -1736,10 +1736,6 @@ while :; do
           touch "$STATE/.last-check"
           wake "$reason"
         fi
-        if [ "$is_pr_poll" -eq 1 ]; then
-          triage_log "ignored non-canonical PR poll output for $id"
-          continue
-        fi
         fm_wake_append check "$c" "$reason" || exit 1
         touch "$STATE/.last-check"
         wake "$reason"

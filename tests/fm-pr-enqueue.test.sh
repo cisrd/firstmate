@@ -267,6 +267,86 @@ test_each_ejection_gets_its_own_automatic_attempt() {
   pass "each ejection gets one automatic attempt and no more"
 }
 
+test_automatic_attempts_stop_at_the_ceiling() {
+  local dir rc count eject
+  dir=$(make_case attempt-ceiling)
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 CI_FAILURE 2026-09-04T10:00:00Z
+  set +e
+  run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "the first ejection should requeue: $(cat "$dir/stdout")"
+
+  for eject in 11 12; do
+    write_dequeued_marker "$dir" github github.com o/r 1 CI_FAILURE "2026-09-04T${eject}:00:00Z"
+    set +e
+    run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "ejection at $eject:00 should requeue: $(cat "$dir/stdout")"
+  done
+  count=$(grep -c enqueuePullRequest "$dir/gh.log")
+  [ "$count" -eq 3 ] || fail "three ejections did not produce three requeues: $count"
+
+  write_dequeued_marker "$dir" github github.com o/r 1 CI_FAILURE 2026-09-04T13:00:00Z
+  set +e
+  run_enqueue "$dir" CI_FAILURE > "$dir/stdout4" 2> "$dir/stderr4"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "the fourth ejection should escalate"
+  [ "$(cat "$dir/stdout4")" = 'escalate: CI_FAILURE reached the automatic re-queue ceiling of 3 after 3 attempts on this pull request' ] \
+    || fail "the ceiling did not name itself and the attempts: $(cat "$dir/stdout4")"
+  count=$(grep -c enqueuePullRequest "$dir/gh.log")
+  [ "$count" -eq 3 ] || fail "the ceiling still called enqueuePullRequest again"
+  pass "a delivery ejected past the ceiling stops being requeued automatically"
+}
+
+test_attempt_ceiling_is_overridable() {
+  local dir rc count
+  dir=$(make_case attempt-ceiling-override)
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 CI_FAILURE 2026-09-04T10:00:00Z
+  set +e
+  FM_PR_ENQUEUE_ATTEMPT_CEILING=1 run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "the first ejection should requeue: $(cat "$dir/stdout")"
+
+  write_dequeued_marker "$dir" github github.com o/r 1 CI_FAILURE 2026-09-04T11:00:00Z
+  set +e
+  FM_PR_ENQUEUE_ATTEMPT_CEILING=1 run_enqueue "$dir" CI_FAILURE > "$dir/stdout2" 2> "$dir/stderr2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "a ceiling of one should escalate on the second ejection"
+  [ "$(cat "$dir/stdout2")" = 'escalate: CI_FAILURE reached the automatic re-queue ceiling of 1 after 1 attempts on this pull request' ] \
+    || fail "the configured ceiling was not honoured: $(cat "$dir/stdout2")"
+  count=$(grep -c enqueuePullRequest "$dir/gh.log")
+  [ "$count" -eq 1 ] || fail "a ceiling of one still requeued twice"
+  pass "the automatic attempt ceiling is environment-overridable"
+}
+
+test_a_new_delivery_starts_its_own_attempts() {
+  local dir rc count
+  dir=$(make_case ceiling-new-delivery)
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 CI_FAILURE 2026-09-04T10:00:00Z
+  set +e
+  FM_PR_ENQUEUE_ATTEMPT_CEILING=1 run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "the first delivery should requeue: $(cat "$dir/stdout")"
+
+  write_ready_meta "$dir" https://github.com/o/r/pull/2 CI_FAILURE 2026-09-04T11:00:00Z
+  set +e
+  FM_PR_ENQUEUE_ATTEMPT_CEILING=1 run_enqueue "$dir" CI_FAILURE > "$dir/stdout2" 2> "$dir/stderr2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a different pull request should get its own attempts: $(cat "$dir/stdout2")"
+  [ "$(cat "$dir/stdout2")" = 'queued: https://github.com/o/r/pull/2' ] \
+    || fail "a new delivery inherited the previous ceiling: $(cat "$dir/stdout2")"
+  count=$(grep -c enqueuePullRequest "$dir/gh.log")
+  [ "$count" -eq 2 ] || fail "the new delivery did not requeue: $count"
+  pass "the attempt ceiling is spent per pull request, not carried to the next one"
+}
+
 test_closed_pull_request_is_named_before_any_unknown_wait() {
   local dir rc reads
   dir=$(make_case closed-with-unknown)
@@ -404,10 +484,10 @@ test_persistent_unknown_mergeability_is_refused() {
   rc=$?
   set -e
   [ "$rc" -eq 2 ] || fail "persistent UNKNOWN should escalate"
-  [ "$(cat "$dir/stdout")" = 'escalate: failed_checks mergeable is UNKNOWN' ] \
-    || fail "persistent UNKNOWN did not stay closed: $(cat "$dir/stdout")"
+  [ "$(cat "$dir/stdout")" = 'escalate: failed_checks mergeable is UNKNOWN after 8 reads, short of the 60s budget' ] \
+    || fail "persistent UNKNOWN did not name the read ceiling: $(cat "$dir/stdout")"
   ! grep -q enqueuePullRequest "$dir/gh.log" || fail "persistent UNKNOWN called enqueuePullRequest"
-  pass "UNKNOWN mergeability that never recomputes is refused rather than assumed mergeable"
+  pass "UNKNOWN mergeability that never recomputes is refused, naming what ended the wait"
 }
 
 test_ejection_marker_mismatch_is_refused() {
@@ -483,3 +563,6 @@ test_reason_disagreeing_with_the_marker_is_refused
 test_each_ejection_gets_its_own_automatic_attempt
 test_closed_pull_request_is_named_before_any_unknown_wait
 test_queued_pull_request_is_reported_before_any_unknown_wait
+test_automatic_attempts_stop_at_the_ceiling
+test_attempt_ceiling_is_overridable
+test_a_new_delivery_starts_its_own_attempts

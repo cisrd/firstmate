@@ -9,10 +9,11 @@
 # in either the forge's or firstmate's spelling. Any other reason, including
 # merge_conflict, an ejection the forge left unlabelled, a reason no known
 # vocabulary covers, red checks, unresolved threads, an unreadable forge read,
-# or a second automatic attempt for the same ejection, prints escalate: and does
-# not enqueue.
+# a second automatic attempt for the same ejection, or a delivery that has
+# already spent its automatic attempts, prints escalate: and does not enqueue.
 # Re-queue is not a merge. The bound is one automatic enqueuePullRequest per
-# ejection, recorded in state/<id>.pr-poll-enqueued.
+# ejection, under a ceiling of FM_PR_ENQUEUE_ATTEMPT_CEILING attempts for the
+# armed PR identity as a whole, both recorded in state/<id>.pr-poll-enqueued.
 #
 # Eligibility is decided on the reason the ejection marker recorded from the
 # forge. The <reason> argument is only a cross-check that the caller answered
@@ -100,6 +101,19 @@ if fm_pr_poll_enqueued_already "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH
   escalate "$REASON already requeued once"
 fi
 
+# A delivery that fails deterministically inside the merge group is ejected
+# again on every attempt, and each attempt reads the pull request head rather
+# than the merge group, so the per-ejection bound alone would keep re-queueing
+# it. Past this ceiling the delivery stops being automated and goes to the
+# captain. An unreadable marker counts as no attempts; the write below is what
+# reports it.
+ATTEMPT_CEILING=${FM_PR_ENQUEUE_ATTEMPT_CEILING:-3}
+case "$ATTEMPT_CEILING" in ''|*[!0-9]*|0) ATTEMPT_CEILING=3 ;; esac
+fm_pr_poll_enqueued_attempts "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" \
+  || FM_PR_ENQUEUED_ATTEMPTS=0
+[ "$FM_PR_ENQUEUED_ATTEMPTS" -lt "$ATTEMPT_CEILING" ] \
+  || escalate "$REASON reached the automatic re-queue ceiling of $ATTEMPT_CEILING after $FM_PR_ENQUEUED_ATTEMPTS attempts on this pull request"
+
 # The forge spells its removal reasons in upper snake case, and firstmate's own
 # vocabulary is lower snake case, so both tokens are folded before they are
 # compared or matched, and a reason outside every known spelling is refused by
@@ -166,9 +180,12 @@ settled_state
 
 # GitHub's mergeability recompute after a merge-queue ejection routinely takes
 # longer than six seconds on a busy repository, so the default budget is sixty
-# seconds with backoff rather than six.
+# seconds with backoff rather than six. The budget is the authority on how long
+# to wait; the read ceiling only stops a loop whose delay never grows, and when
+# it is what ends the wait it says so instead of claiming the budget elapsed.
 unknown_budget=${FM_PR_ENQUEUE_UNKNOWN_BUDGET_SECS:-60}
 unknown_sleep=${FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS:-1}
+unknown_reads=8
 case "$unknown_budget" in ''|*[!0-9]*) unknown_budget=60 ;; esac
 case "$unknown_sleep" in ''|*[!0-9]*) unknown_sleep=1 ;; esac
 if [ "$mergeable" = UNKNOWN ]; then
@@ -177,7 +194,8 @@ if [ "$mergeable" = UNKNOWN ]; then
   unknown_delay=$unknown_sleep
   while [ "$mergeable" = UNKNOWN ]; do
     unknown_extra=$((unknown_extra + 1))
-    [ "$unknown_extra" -le 8 ] || escalate "$REASON mergeable is UNKNOWN"
+    [ "$unknown_extra" -le "$unknown_reads" ] \
+      || escalate "$REASON mergeable is UNKNOWN after $unknown_reads reads, short of the ${unknown_budget}s budget"
     [ $((SECONDS - unknown_started)) -lt "$unknown_budget" ] \
       || escalate "$REASON mergeable is UNKNOWN"
     sleep "$unknown_delay"
