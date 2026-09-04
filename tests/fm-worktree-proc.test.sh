@@ -2331,6 +2331,84 @@ test_a_cleanup_never_signals_the_shell_it_was_started_from() {
   pass "a cleanup started from inside the copy stops the leftovers and never the shell that started it"
 }
 
+# --- 13. the ownerless verdict and the stop are one transaction --------------
+#
+# The reading that authorises a stop is taken from the record and the endpoint;
+# the stop itself selects whatever is running under the roots at that moment.
+# A relaunch of the same task between the two reuses those exact roots for the
+# REPLACEMENT worker, so a reap that did not hold the task's lifecycle lock
+# would TERM and KILL the live incarnation it exists never to touch. This holds
+# the same lock bin/fm-control.sh's relaunch holds across stop-and-restart, from
+# a separate live process, and pins the reap refusing rather than signalling.
+
+test_a_lifecycle_action_in_flight_blocks_the_stop() {
+  local dir pid out rc lock holder i
+  dir="$TMP_ROOT/case-lifecycle-lock"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-lck
+  make_crew_state_stub "$dir"
+  # Every other gate open: the agent reads gone and both sources agree, so the
+  # only thing that can refuse this cleanup is the contended lock.
+  printf 'missing' > "$dir/agent"
+
+  pid=$(witness "$COPY")
+  write_task_meta lck "$COPY" "fmses:fm-lck"
+
+  lock="$HOME_DIR/state/.control-lck.lock"
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-wake-lib.sh"
+    fm_lock_try_acquire "$lock" || exit 1
+    sleep 30
+  ) &
+  holder=$!
+  i=0
+  while [ ! -e "$lock" ] && [ "$i" -lt 100 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -e "$lock" ] || {
+    kill "$holder" 2>/dev/null || true
+    fail "lifecycle-lock: could not stage a held control lock"
+  }
+
+  rc=0
+  out=$(run_orphan "$dir" reap lck) || rc=$?
+  if [ "$rc" = 0 ]; then
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    fail "lifecycle-lock: the reap ran while a lifecycle action held this task's lock: $out"
+  fi
+  case "$out" in
+    *"another lifecycle action is already running"*) ;;
+    *)
+      kill "$holder" 2>/dev/null || true
+      wait "$holder" 2>/dev/null || true
+      fail "lifecycle-lock: the refusal did not name the concurrent action: $out"
+      ;;
+  esac
+  sleep 0.3
+  alive "$pid" || {
+    kill "$holder" 2>/dev/null || true
+    wait "$holder" 2>/dev/null || true
+    fail "lifecycle-lock: a process was stopped while a relaunch could have owned it"
+  }
+
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+
+  # Same fixture, same process: only the contention is gone, so the case is
+  # proven to hinge on the lock and not on anything else in it.
+  out=$(run_orphan "$dir" reap lck) \
+    || fail "lifecycle-lock: the reap did not run once the lock was free: $out"
+  sleep 0.3
+  alive "$pid" && fail "lifecycle-lock: the leftover survived an uncontended cleanup"
+  [ ! -e "$lock" ] || fail "lifecycle-lock: the reap left this task's control lock behind"
+
+  rm -f "$HOME_DIR/state/lck.meta"
+  pass "a reap refuses while another lifecycle action holds the task's control lock, and releases it afterwards"
+}
+
 test_only_a_linked_worktree_is_a_disposable_copy
 test_the_projects_wall_follows_fm_projects_override
 test_a_process_in_a_disposable_copy_is_found_and_stopped
@@ -2375,3 +2453,4 @@ test_a_scan_from_inside_a_copy_never_reports_its_own_helpers
 test_a_scan_whose_last_entry_has_exited_still_reports_success
 test_the_resolver_self_test_is_not_repeated_for_every_root
 test_a_cleanup_never_signals_the_shell_it_was_started_from
+test_a_lifecycle_action_in_flight_blocks_the_stop
