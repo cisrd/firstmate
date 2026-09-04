@@ -356,6 +356,7 @@ scan_task() {  # <task-id> <verbose>
   SCAN_REFUSED_COPY=
   SCAN_REFUSED_COPY_REASON=
   SCAN_ROOTS_NAMED=
+  SCAN_LEFT_ALONE_WHY=
   SCAN_UNDETERMINED_WHY=
   SCAN_UNEXAMINED=0
   meta="$STATE/$id.meta"
@@ -408,9 +409,6 @@ scan_task() {  # <task-id> <verbose>
     SCAN_UNEXAMINED=1
     printf 'UNSCANNABLE: %s copy=%s (%s, so this copy was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
       "$id" "$copy_refused_path" "${copy_refused_reason:-the local-copy check refused it without stating a reason}"
-    if [ "${#roots[@]}" -eq 0 ]; then
-      return 3
-    fi
   fi
   # Reported on its own line, ahead of anything the remaining roots yield: a
   # root the record names and validation refuses was NOT examined, and that is a
@@ -422,7 +420,18 @@ scan_task() {  # <task-id> <verbose>
     printf 'UNSCANNABLE: %s tasktmp=%s (%s, so this recorded root was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
       "$id" "$refused_path" "${refused_reason:-the temp-root check refused it without stating a reason}"
   fi
-  [ "${#roots[@]}" -gt 0 ] || return 1
+  # The STATUS is decided only after BOTH refusals have been recorded and
+  # printed. Deciding it inside the copy branch returned before the temp root
+  # was ever looked at, so a record whose two roots were both refused reported
+  # one of them and sent the operator round the loop twice - correct the copy,
+  # rerun, meet the temp-root refusal for the first time. Two refusals are two
+  # facts, and the digest that reads this stdout has to carry both.
+  if [ "${#roots[@]}" -eq 0 ]; then
+    if [ -n "$copy_refused_path" ] || [ -n "$refused_path" ]; then
+      return 3
+    fi
+    return 1
+  fi
   # Cheapest question first: an empty copy needs no backend call at all, so a
   # healthy fleet costs one /proc pass per copy and nothing else.
   #
@@ -465,6 +474,7 @@ scan_task() {  # <task-id> <verbose>
       # The ONE positive reading of a living owner, and the only verdict that
       # licenses saying so. These processes belong to a worker that is running.
       [ "$verbose" = 1 ] && echo "task $id's agent reads 'alive'; its processes have a living owner and are left alone" >&2
+      SCAN_LEFT_ALONE_WHY="its agent reads 'alive', so the processes in it have a living owner"
       return 1
       ;;
     dead|missing) ;;
@@ -535,6 +545,7 @@ scan_task() {  # <task-id> <verbose>
         ;;
       *)
         [ "$verbose" = 1 ] && echo "task $id's endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}'; the two disagree, so nothing in its local copy is touched" >&2
+        SCAN_LEFT_ALONE_WHY="its endpoint reads '$verdict' but its current state reads '${FM_WTPROC_CREW_STATE:-unreadable}', and the two disagree"
         return 1
         ;;
     esac
@@ -714,10 +725,23 @@ cmd_reap() {  # <task-id>
       die "task $id was NOT examined in full - $(reap_unexamined_summary); nothing was stopped and nothing is known about what is running there. Correct the record in $STATE/$id.meta for a refused root, and inspect an unlistable one by hand"
       ;;
     *)
-      # Reached when the scan established that the roots it DID examine hold
-      # nothing. That is not the same as the task holding nothing, and saying so
-      # while a recorded root went unread is the one claim the unscannable arm
-      # exists to refuse to make.
+      # This arm covers two different scans, and only one of them found nothing.
+      # A living owner and a source disagreement both return here AFTER the
+      # collect found processes - they are decisions not to touch what was
+      # found, not reports of an empty copy - so the empty-roots wording is a
+      # plain untruth on those paths, and it buried the verdict that actually
+      # decided the outcome under an instruction to edit the record and rerun.
+      if [ -n "$SCAN_LEFT_ALONE_WHY" ]; then
+        if [ "$SCAN_UNEXAMINED" = 1 ]; then
+          die "nothing in task $id was stopped: $SCAN_LEFT_ALONE_WHY, so nothing there may be stopped on any path. Separately, its record names a root that was NOT examined - $(reap_unexamined_summary) - which still needs correcting in $STATE/$id.meta but is not why nothing was stopped"
+        fi
+        echo "nothing to stop for $id"
+        return 0
+      fi
+      # Genuinely empty: the roots that could be examined hold nothing. That is
+      # still not the same as the TASK holding nothing, and saying so while a
+      # recorded root went unread is the one claim the unscannable arm exists to
+      # refuse to make.
       if [ "$SCAN_UNEXAMINED" = 1 ]; then
         die "nothing was found in the roots of task $id that could be examined, but it was NOT examined in full - $(reap_unexamined_summary) - so whether anything is running there is unknown; nothing was stopped. Correct the record in $STATE/$id.meta for a refused root, and inspect an unlistable one by hand"
       fi
@@ -744,9 +768,16 @@ cmd_reap() {  # <task-id>
   esac
   if [ -n "$FM_WTPROC_REAPED" ]; then
     echo "stopped $id pids=$(printf '%s' "$FM_WTPROC_REAPED" | tr ' ' ',')"
-  else
-    echo "nothing to stop for $id"
+    return 0
   fi
+  # The selected processes exited on their own between the scan and the reap's
+  # own re-observation, so nothing was signalled. That is a fact about the roots
+  # that WERE read, and it closes the command - which is exactly where an
+  # unqualified clean claim does the damage the other two arms already refuse.
+  if [ "$SCAN_UNEXAMINED" = 1 ]; then
+    die "the processes task $id's examined roots held had already exited by the time they would have been signalled, so nothing was stopped - but it was NOT examined in full - $(reap_unexamined_summary) - so whether anything is running there is unknown"
+  fi
+  echo "nothing to stop for $id"
 }
 
 case "${1:-}" in

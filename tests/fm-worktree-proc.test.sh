@@ -1677,6 +1677,100 @@ test_a_reap_never_reports_clean_with_an_unexamined_root() {
   pass "a reap whose record names a root it never examined refuses instead of reporting the task clean"
 }
 
+# TWO REFUSALS ARE TWO FACTS TOO. The copy-refusal branch used to choose the
+# return status from inside itself, before the temp-root refusal had been
+# recorded or printed, so a record whose BOTH roots were refused reported only
+# the copy. bin/fm-session-start.sh captures this stdout for the digest, so the
+# second unexamined root never reached the operator at all; they corrected the
+# copy, reran, and met the temp-root refusal for the first time.
+test_two_refused_roots_are_both_reported() {
+  local dir clone foreign out rc
+  dir="$TMP_ROOT/case-both-refused"
+  clone="$TMP_ROOT/clone-both-refused"
+  foreign="$FM_TASK_TMP_ROOT/fm-NOTMINE"
+  mkdir -p "$dir" "$foreign"
+  git clone --quiet "$PRIMARY" "$clone" 2>/dev/null \
+    || fail "both-refused: could not build the ordinary-clone fixture"
+  make_backend_stub "$dir" fm-br
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  # Copy: an ordinary clone, refused by the linked-worktree proof.
+  # Temp root: exists, but is not THIS task's own, so its binding refuses it.
+  write_task_meta br "$clone" "fmses:fm-br" "$foreign"
+
+  rc=0
+  out=$(run_orphan "$dir" scan --task br) || rc=$?
+  [ "$rc" = 3 ] || fail "both-refused: a scan that examined nothing exited $rc: $out"
+  case "$out" in
+    *"UNSCANNABLE: br copy=$clone"*) ;;
+    *) fail "both-refused: the refused copy was not reported: $out" ;;
+  esac
+  # The assertion this case exists for.
+  case "$out" in
+    *"UNSCANNABLE: br tasktmp=$foreign"*) ;;
+    *) fail "both-refused: the second refused root never reached the report: $out" ;;
+  esac
+
+  rc=0
+  out=$(run_orphan "$dir" reap br) || rc=$?
+  [ "$rc" != 0 ] || fail "both-refused: a cleanup that examined nothing reported success: $out"
+  case "$out" in
+    *"copy=$clone"*) ;;
+    *) fail "both-refused: the cleanup did not name the refused copy: $out" ;;
+  esac
+  case "$out" in
+    *"tasktmp=$foreign"*) ;;
+    *) fail "both-refused: the cleanup did not name the refused temp root: $out" ;;
+  esac
+
+  rm -f "$HOME_DIR/state/br.meta"
+  rm -rf "$clone" "$foreign"
+  pass "a record whose two recorded roots are both refused reports both, not just the copy"
+}
+
+# A DECISION NOT TO TOUCH WHAT WAS FOUND IS NOT AN EMPTY COPY. The living-owner
+# path returns after the collect found processes, so telling the operator that
+# "nothing was found in the roots that could be examined" is false - and it
+# replaced the verdict that actually decided the outcome with an instruction to
+# edit the record and rerun, which changes nothing about a live worker.
+test_a_living_owner_is_not_reported_as_an_empty_copy() {
+  local dir foreign out rc pid
+  dir="$TMP_ROOT/case-alive-unexamined"
+  foreign="$FM_TASK_TMP_ROOT/fm-NOTMINE-ALIVE"
+  mkdir -p "$dir" "$foreign"
+  make_backend_stub "$dir" fm-al
+  make_crew_state_stub "$dir"
+  printf 'alive' > "$dir/agent"
+
+  pid=$(witness "$COPY")
+  # A valid copy holding a live process, plus a temp root the record names and
+  # validation refuses.
+  write_task_meta al "$COPY" "fmses:fm-al" "$foreign"
+
+  rc=0
+  out=$(run_orphan "$dir" reap al) || rc=$?
+  case "$out" in
+    *"nothing was found in the roots"*) fail "alive-unexamined: a copy holding live processes was reported as empty: $out" ;;
+  esac
+  case "$out" in
+    *"living owner"*) ;;
+    *) fail "alive-unexamined: the verdict that decided the outcome was not stated: $out" ;;
+  esac
+  # The unexamined root is still worth saying - as a separate fact, not the cause.
+  case "$out" in
+    *"tasktmp=$foreign"*) ;;
+    *) fail "alive-unexamined: the unexamined root stopped being reported: $out" ;;
+  esac
+
+  sleep 0.3
+  alive "$pid" || fail "alive-unexamined: a live worker's process was stopped"
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/al.meta"
+  rm -rf "$foreign"
+  pass "a task left alone because its worker is alive says so, instead of claiming its roots were empty"
+}
+
 # TWO UNEXAMINED ROOTS ARE TWO FACTS. A refused copy and a temp root this host
 # cannot list have different repairs - correct the record, versus inspect the
 # path by hand - so a message that reported only the first sent the operator to
@@ -2266,6 +2360,8 @@ test_a_refused_recorded_root_is_reported_rather_than_dropped
 test_an_unlistable_root_is_named_for_what_it_is
 test_a_reap_never_reports_clean_with_an_unexamined_root
 test_a_reap_names_every_root_it_could_not_examine
+test_two_refused_roots_are_both_reported
+test_a_living_owner_is_not_reported_as_an_empty_copy
 test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped
 test_a_record_that_names_no_copy_raises_no_alert
 test_a_recorded_copy_that_no_longer_exists_raises_no_alert
