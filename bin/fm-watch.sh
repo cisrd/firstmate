@@ -508,7 +508,7 @@ signal_turnend_panes_churned() {  # <file> ...
     base=${f##*/}
     case "$base" in
       *.status)     return 1 ;;
-      *.turn-ended) task=${base%.turn-ended}; kind=turn-ended ;;
+      *.turn-ended) task=${base%.turn-ended}; kind='turn-ended' ;;
       *)            return 1 ;;
     esac
     [ -n "$task" ] || return 1
