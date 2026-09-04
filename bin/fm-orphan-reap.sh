@@ -92,6 +92,10 @@
 #     naming it was refused. "I could not look" is never reported as "I looked
 #     and found nothing", because the only reader of an empty result - the
 #     session-start digest - would print "(none)" for a fleet nobody examined.
+#   - `reap` holds the task's lifecycle lock across both the reading that
+#     authorises the stop and the stop itself, exactly as bin/fm-control.sh's
+#     relaunch and bin/fm-teardown.sh do, so a replacement worker started into
+#     the same reused roots between the two can never be signalled.
 #   - Processes only. This script never removes a file, never touches git, and
 #     never tears a copy down.
 set -eu
@@ -695,6 +699,22 @@ cmd_reap() {  # <task-id>
   # are built from this string, so it is checked before either is, exactly as
   # every sibling entrypoint checks it.
   fm_task_id_path_safe "$id" || die "invalid task id '$id'"
+  # This task's lifecycle lock, held across BOTH the scan that authorises the
+  # stop and the stop itself - the same lock, taken the same way, as every other
+  # verb that signals a task's processes (bin/fm-control.sh's relaunch,
+  # bin/fm-teardown.sh). Without it the ownerless verdict is established against
+  # one incarnation and acted on against whatever occupies the roots later: a
+  # relaunch starting inside that window puts the REPLACEMENT worker's processes
+  # under the same reused roots, and fm_wtproc_reap selects the roots afresh, so
+  # it would TERM and KILL the live worker this command exists never to touch.
+  # Refusing rather than waiting is right here: a lifecycle action in flight is
+  # about to invalidate the reading this stop rests on anyway.
+  REAP_CONTROL_LOCK="$STATE/.control-$id.lock"
+  trap 'if [ -n "${REAP_CONTROL_LOCK:-}" ]; then fm_lock_release "$REAP_CONTROL_LOCK" || true; REAP_CONTROL_LOCK=; fi' EXIT
+  fm_lock_try_acquire "$REAP_CONTROL_LOCK" || {
+    REAP_CONTROL_LOCK=
+    die "another lifecycle action is already running for task $id; nothing was stopped. A relaunch or teardown in flight decides what runs in that copy, so retry once it has finished"
+  }
   # scan_task resets every one of these itself, on entry, so the reap reads
   # exactly what this call established and there is no second list here to fall
   # out of step with that one.
