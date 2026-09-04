@@ -1636,17 +1636,6 @@ conclude_task_no_mistakes_run() {  # <worktree>
   return 1
 }
 
-# Fix 2 (see script header): pids of every process whose CURRENT WORKING
-# DIRECTORY is exactly $1 or under it. bin/fm-worktree-proc-lib.sh owns that
-# question for every caller - /proc where the kernel exposes it, one bounded
-# `lsof -a -d cwd` scan otherwise - so teardown and the paths that reap a copy
-# without destroying it can never disagree about which processes are its own.
-# Empty output when nothing matches; failure means the scan could not establish
-# a safe result.
-pids_with_cwd_under() {  # <dir>
-  fm_wtproc_pids_under "$1"
-}
-
 task_process_identity() {  # <pid>
   local pid=$1 proc_root stat_line starttime value
   local -a stat_fields
@@ -1706,21 +1695,29 @@ task_pid_is_own_process_tree() {  # <pid> <ancestry>
   return 1
 }
 
+# Fix 2 (see script header): pids of every process whose CURRENT WORKING
+# DIRECTORY is one of these roots or under it. bin/fm-worktree-proc-lib.sh owns
+# that question for every caller - /proc where the kernel exposes it, one
+# bounded `lsof -a -d cwd` scan otherwise - so teardown and the paths that reap
+# a copy without destroying it can never disagree about which processes are its
+# own. Empty TASK_PIDS when nothing matches; failure means the scan could not
+# establish a safe result and names the root it broke on.
 task_pids_under_roots() {  # <dir>...
   TASK_PIDS=
   TASK_PIDS_FAILED_DIR=
   TASK_PIDS_SPARED_ANCESTORS=0
-  local dir dir_pids pids="" ancestry pid kept=""
-  for dir in "$@"; do
-    [ -n "$dir" ] || continue
-    if ! dir_pids=$(pids_with_cwd_under "$dir"); then
-      TASK_PIDS_FAILED_DIR=$dir
-      return 1
-    fi
-    pids="$pids
-$dir_pids"
-  done
-  pids=$(printf '%s\n' "$pids" | grep -E '^[0-9]+$' | sort -un || true)
+  local pids="" ancestry pid kept=""
+  # ONE machine listing for all of this task's roots, not one per root. The
+  # library already owns matching every root against a single listing taken in
+  # the caller's shell, and looping the roots here paid for a whole /proc walk
+  # each - times up to five scans a pass, times three passes - on exactly the
+  # saturated host this reap exists to clean up after. The dedup and the
+  # failed-root report are the same ones this loop used to do by hand.
+  if ! fm_wtproc_collect "$@"; then
+    TASK_PIDS_FAILED_DIR=$FM_WTPROC_FAILED_ROOT
+    return 1
+  fi
+  pids=$FM_WTPROC_PIDS
   [ -n "$pids" ] || { TASK_PIDS=; return 0; }
   # Read once, outside the loop: the chain is the same for every candidate.
   ancestry=$(fm_wtproc_ancestry)
