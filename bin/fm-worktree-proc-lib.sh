@@ -604,21 +604,25 @@ _fm_wtproc_refuse_sensitive_root() {  # <real-path> <fm-home> <what>
     echo "fm-worktree-proc: '$real' is the firstmate home itself" >&2
     return 1
   fi
-  # The SAME directory every other script resolves the primary clones through -
-  # bin/fm-spawn.sh, bin/fm-bootstrap.sh, bin/fm-fleet-sync.sh and the rest all
-  # read ${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}. Hardcoding $home/projects
-  # left the one setting that MOVES that tree outside the wall: on a home run
-  # with FM_PROJECTS_OVERRIDE=/srv/code, a recorded root naming /srv/code/<name>
-  # cleared every refusal here and became a legal kill root, which is precisely
-  # the harm this wall exists to prevent.
-  projects_dir=${FM_PROJECTS_OVERRIDE:-$home_real/projects}
-  projects_real=$(cd "$projects_dir" 2>/dev/null && pwd -P) || projects_real=$projects_dir
-  case "$real" in
-    "$projects_real"|"$projects_real"/*)
-      echo "fm-worktree-proc: '$real' is a primary clone, not a disposable copy" >&2
-      return 1
-      ;;
-  esac
+  # BOTH locations primary clones can sit in, never one instead of the other.
+  # $FM_HOME/projects is where they live by default; FM_PROJECTS_OVERRIDE is how
+  # a home puts them somewhere else, and every other script in the repo reads
+  # ${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects} to find them. Walling only the
+  # override is what a home that ADOPTED one after its clones were already at
+  # the default falls through: its records still name $FM_HOME/projects/<name>,
+  # and that tree is still on disk. The override adds a place clones can be, it
+  # does not move the old one out of harm's way, so a recorded root under either
+  # is refused. bin/fm-teardown.sh has only these shape refusals by design, so
+  # for teardown this wall is the whole protection.
+  for projects_dir in "$home_real/projects" ${FM_PROJECTS_OVERRIDE:+"$FM_PROJECTS_OVERRIDE"}; do
+    projects_real=$(cd "$projects_dir" 2>/dev/null && pwd -P) || projects_real=$projects_dir
+    case "$real" in
+      "$projects_real"|"$projects_real"/*)
+        echo "fm-worktree-proc: '$real' is a primary clone, not a disposable copy" >&2
+        return 1
+        ;;
+    esac
+  done
 }
 
 # fm_wtproc_signalling_root: resolve <dir> and apply the shape refusals that no

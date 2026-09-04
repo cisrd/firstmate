@@ -409,7 +409,6 @@ scan_task() {  # <task-id> <verbose>
     printf 'UNSCANNABLE: %s copy=%s (%s, so this copy was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
       "$id" "$copy_refused_path" "${copy_refused_reason:-the local-copy check refused it without stating a reason}"
     if [ "${#roots[@]}" -eq 0 ]; then
-      SCAN_UNSCANNABLE_ROOT="copy=$copy_refused_path"
       return 3
     fi
   fi
@@ -651,6 +650,23 @@ cmd_scan() {
   [ "$unscannable" = 0 ] || return 3
 }
 
+# Every recorded root this scan did NOT examine, each under its own label, or
+# empty when the task was covered in full. Two independent facts can be true at
+# once - a record naming a root the validator refused, and a host that could not
+# list another - so they are composed rather than raced: a caller that reported
+# only the first sent the operator to correct a record, and the rerun then hit
+# the unlistable root nobody had mentioned.
+reap_unexamined_summary() {
+  local out=""
+  [ -z "$SCAN_REFUSED_COPY" ] \
+    || out="copy=$SCAN_REFUSED_COPY (refused: ${SCAN_REFUSED_COPY_REASON:-no reason was stated})"
+  [ -z "$SCAN_REFUSED_ROOT" ] \
+    || out="${out:+$out; }tasktmp=$SCAN_REFUSED_ROOT (refused)"
+  [ -z "$SCAN_UNSCANNABLE_ROOT" ] \
+    || out="${out:+$out; }$SCAN_UNSCANNABLE_ROOT (could not be listed on this host)"
+  printf '%s' "$out"
+}
+
 cmd_reap() {  # <task-id>
   local id=${1:-} rc=0 scan_rc=0
   # `reap` signals another process's crewmate copy, so it is a fleet mutation
@@ -690,22 +706,29 @@ cmd_reap() {  # <task-id>
       die "task $id runs on a backend with no agent classifier, so whether its worker is still alive cannot be established at all; a stop needs positive evidence the worker is gone and none can be obtained here. Inspect its recorded roots and their processes by hand"
       ;;
     3)
-      # "Nothing to stop" would be a claim about the copy; all that is known
-      # here is that the copy could not be read. Which of the two ways it could
-      # not be read decides what an operator does next, so they are not merged
-      # into one message: a refused record is corrected, an unlistable host is
-      # inspected by hand.
-      if [ -n "$SCAN_REFUSED_COPY" ]; then
-        die "task $id's recorded local copy $SCAN_REFUSED_COPY was refused, so it was NOT examined (${SCAN_REFUSED_COPY_REASON:-the local-copy check refused it without stating a reason}); nothing was stopped and nothing is known about what is running there. Correct the worktree= line in $STATE/$id.meta so it names this task's own copy, or inspect that path by hand"
-      fi
-      die "the processes in the recorded roots of task $id could not be listed on this host (${SCAN_UNSCANNABLE_ROOT:-its recorded roots} could not be read); nothing was stopped and nothing is known about what is running there"
+      # "Nothing to stop" would be a claim about the task; all that is known here
+      # is that a root could not be read. EVERY such root is named, with what is
+      # wrong with it, because the repair differs per root - a refused record is
+      # corrected, an unlistable host is inspected by hand - and reporting only
+      # one of two sends the operator round the loop twice.
+      die "task $id was NOT examined in full - $(reap_unexamined_summary); nothing was stopped and nothing is known about what is running there. Correct the record in $STATE/$id.meta for a refused root, and inspect an unlistable one by hand"
       ;;
     *)
+      # Reached when the scan established that the roots it DID examine hold
+      # nothing. That is not the same as the task holding nothing, and saying so
+      # while a recorded root went unread is the one claim the unscannable arm
+      # exists to refuse to make.
+      if [ "$SCAN_UNEXAMINED" = 1 ]; then
+        die "nothing was found in the roots of task $id that could be examined, but it was NOT examined in full - $(reap_unexamined_summary) - so whether anything is running there is unknown; nothing was stopped. Correct the record in $STATE/$id.meta for a refused root, and inspect an unlistable one by hand"
+      fi
       echo "nothing to stop for $id"
       return 0
       ;;
   esac
   if [ -z "$SCAN_PIDS" ]; then
+    if [ "$SCAN_UNEXAMINED" = 1 ]; then
+      die "task $id was NOT examined in full - $(reap_unexamined_summary) - and in the roots that were examined $SCAN_SKIPPED_LEADERS session leader(s) were left alone because its endpoint shell could not be identified from the record; nothing was stopped. Inspect them by hand"
+    fi
     echo "nothing to stop for $id: $SCAN_SKIPPED_LEADERS session leader(s) in ${SCAN_ROOTS_NAMED:-its recorded roots} were left alone because its endpoint shell could not be identified from the record; inspect them by hand"
     return 0
   fi

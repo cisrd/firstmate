@@ -293,12 +293,25 @@ test_the_projects_wall_follows_fm_projects_override() {
     *) fail "projects-override: the refusal did not name its cause: $out" ;;
   esac
 
-  # The default location stays walled when no override is set, so this change
-  # moves the wall rather than trading one hole for another.
+  # The default location stays walled when no override is set ...
   rc=0
   out=$(fm_wtproc_signalling_root "$IN_PROJECTS" "a recorded root" "$HOME_DIR" 2>&1) || rc=$?
   [ "$rc" != 0 ] \
     || fail "projects-override: the default projects/ tree stopped being walled: $out"
+
+  # ... AND while one IS set. A home that adopted an override after its clones
+  # were already at $FM_HOME/projects still has records naming the default tree,
+  # and that tree is still on disk; the override adds a place primary clones can
+  # be, it does not move the old one out of harm's way.
+  rc=0
+  out=$(FM_PROJECTS_OVERRIDE="$moved" \
+    fm_wtproc_signalling_root "$IN_PROJECTS" "a recorded root" "$HOME_DIR" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "projects-override: setting an override unwalled the default projects/ tree: $out"
+  case "$out" in
+    *"is a primary clone"*) ;;
+    *) fail "projects-override: the default-tree refusal under an override did not name its cause: $out" ;;
+  esac
 
   # And a real disposable copy is still accepted, so the wall did not simply
   # start refusing everything.
@@ -1626,6 +1639,94 @@ test_a_report_line_names_the_root_it_describes() {
   pass "a task reported on its temp root alone names it tasktmp=, never copy="
 }
 
+# "NOTHING TO STOP" IS A CLAIM ABOUT THE WHOLE TASK, so it may not be made while
+# a recorded root went unexamined. The scan already refuses that claim when the
+# refused root is the ONLY one; with a second, valid root the reap fell through
+# to the same sentence and exited 0 - the copy was never read, and the operator
+# was told the task was clean.
+test_a_reap_never_reports_clean_with_an_unexamined_root() {
+  local dir clone tmproot out rc
+  dir="$TMP_ROOT/case-unexamined-clean"
+  clone="$TMP_ROOT/clone-unexamined-clean"
+  tmproot="$FM_TASK_TMP_ROOT/fm-unx"
+  mkdir -p "$dir" "$tmproot"
+  git clone --quiet "$PRIMARY" "$clone" 2>/dev/null \
+    || fail "unexamined-clean: could not build the ordinary-clone fixture"
+  make_backend_stub "$dir" fm-unx
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  # The copy is an ordinary clone (refused by the linked-worktree proof); the
+  # temp root is valid and holds nothing at all.
+  write_task_meta unx "$clone" "fmses:fm-unx" "$tmproot"
+
+  rc=0
+  out=$(run_orphan "$dir" reap unx) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "unexamined-clean: a cleanup that never read the copy reported success: $out"
+  case "$out" in
+    *"nothing to stop for unx"*) fail "unexamined-clean: a task with an unread root was reported as having nothing to stop: $out" ;;
+  esac
+  case "$out" in
+    *"copy=$clone"*) ;;
+    *) fail "unexamined-clean: the refusal did not name the root that was never examined: $out" ;;
+  esac
+
+  rm -f "$HOME_DIR/state/unx.meta"
+  rm -rf "$clone" "$tmproot"
+  pass "a reap whose record names a root it never examined refuses instead of reporting the task clean"
+}
+
+# TWO UNEXAMINED ROOTS ARE TWO FACTS. A refused copy and a temp root this host
+# cannot list have different repairs - correct the record, versus inspect the
+# path by hand - so a message that reported only the first sent the operator to
+# fix the record and hit the second, unrelated failure on the rerun.
+test_a_reap_names_every_root_it_could_not_examine() {
+  local dir clone tmproot out rc pid
+  dir="$TMP_ROOT/case-two-unexamined"
+  clone="$TMP_ROOT/clone-two-unexamined"
+  tmproot="$FM_TASK_TMP_ROOT/fm-two"
+  mkdir -p "$dir/fakebin" "$tmproot"
+  git clone --quiet "$PRIMARY" "$clone" 2>/dev/null \
+    || fail "two-unexamined: could not build the ordinary-clone fixture"
+  make_backend_stub "$dir" fm-two
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid=$(witness "$tmproot")
+  write_task_meta two "$clone" "fmses:fm-two" "$tmproot"
+
+  # The copy is refused, and no cwd source can list the temp root either.
+  cat > "$dir/fakebin/lsof" <<'SH'
+#!/usr/bin/env bash
+echo "lsof: synthetic failure" >&2
+exit 1
+SH
+  chmod +x "$dir/fakebin/lsof"
+  export FM_PROC_ROOT_OVERRIDE="$dir/no-proc"
+
+  rc=0
+  out=$(run_orphan "$dir" reap two) || rc=$?
+  [ "$rc" != 0 ] || fail "two-unexamined: a cleanup that examined nothing reported success: $out"
+  case "$out" in
+    *"copy=$clone"*) ;;
+    *) fail "two-unexamined: the refused copy was not named: $out" ;;
+  esac
+  case "$out" in
+    *"tasktmp=$tmproot"*) ;;
+    *) fail "two-unexamined: the root the host could not list was hidden behind the copy refusal: $out" ;;
+  esac
+
+  unset FM_PROC_ROOT_OVERRIDE
+  rm -f "$dir/fakebin/lsof"
+  sleep 0.3
+  alive "$pid" || fail "two-unexamined: a process was stopped by a cleanup that could not look"
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/two.meta"
+  rm -rf "$clone" "$tmproot"
+  pass "a reap that could not examine two roots names both, with what is wrong with each"
+}
+
 # THE ROOT A LISTING BROKE ON IS NAMED BY IDENTITY, NOT BY POSITION. The
 # collect-failure line used to take `roots[0]` and call it the copy. Once a copy
 # can be missing from that set - gone, or refused - the survivor is the temp
@@ -2163,6 +2264,8 @@ test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
 test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
 test_an_unlistable_root_is_named_for_what_it_is
+test_a_reap_never_reports_clean_with_an_unexamined_root
+test_a_reap_names_every_root_it_could_not_examine
 test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped
 test_a_record_that_names_no_copy_raises_no_alert
 test_a_recorded_copy_that_no_longer_exists_raises_no_alert
