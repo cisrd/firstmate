@@ -2868,6 +2868,26 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
+# Resolve the recorded roots HERE, ahead of every commitment below, because
+# this is a REFUSING step and nothing after this point can be taken back. It
+# signals nothing and removes nothing - it proves the recorded `worktree=` and
+# `tasktmp=` are paths teardown may look inside, and refuses the ones that are
+# never a task's own. The harvest that consumes what it resolved stays where it
+# belongs, after the refusals, further below.
+#
+# Ordering it later cost the operator the repair it was being handed. Past the
+# backlog close marker written below, a refusal leaves `state/<id>.backlog-close`
+# on disk; the next session start replays that marker, removes the task record
+# and closes the row, and the `fm-task-root.sh` line this refusal prints then
+# fails with "task record is unsafe or missing" - the record it needed is gone,
+# teardown can never run for that id again, and the leftover processes are never
+# reaped. The refusal is deterministic, so every rerun refuses again and the
+# window before the next session start was the only chance to use it. A refusal
+# must leave the task WHOLE: record intact, backlog unclosed, endpoint untouched.
+if [ "$KIND" != secondmate ]; then
+  validate_recorded_reap_roots
+fi
+
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
 # runs under the named-session presentation lock, acquired BEFORE anything is
@@ -2908,12 +2928,14 @@ else
   fi
 fi
 
-# Every refusal is now behind us - landed/discard work, the herdr presentation
-# lock, the backlog transition - and nothing above this point has signalled
-# anything. That ordering is the property that makes cleanup safe: a refusal
-# leaves the task whole and relaunchable, which a reap running ahead of it would
-# have already broken by stopping the very agent the operator is told to rerun
-# against. So there is exactly ONE harvest, and it is here.
+# Every refusal is now behind us - landed/discard work, the recorded roots, the
+# herdr presentation lock, the backlog transition - and nothing above this point
+# has signalled anything. That ordering is the property that makes cleanup safe:
+# a refusal leaves the task whole and relaunchable, which a reap running ahead of
+# it would have already broken by stopping the very agent the operator is told to
+# rerun against. So there is exactly ONE harvest, and it is here, consuming the
+# roots the validation above already resolved rather than the raw recorded
+# strings.
 #
 # Fix 1 and Fix 2 (see script header) run unconditionally on --force, and before
 # ANY destructive step below - a still-parked run or a leaked process can own
@@ -2922,9 +2944,6 @@ fi
 # firstmate-home removal machinery further below, not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
-  # The recorded roots are proven before they reach the signalling loop, and the
-  # loop receives what that proof RESOLVED, never the raw recorded strings.
-  validate_recorded_reap_roots
   # Always called, even with no roots left to scan. Its FIRST act, before any
   # root is looked at, is to route to the backend process-group reap on a host
   # that can answer the working-directory question from neither /proc nor lsof -

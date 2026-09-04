@@ -557,6 +557,37 @@ backlog_row_state() {
     sed -n 's/^  state: *//p' | head -1
 }
 
+# Replay whatever pending backlog-close records a teardown left behind, exactly
+# as bin/fm-bootstrap.sh does at every session start. This is the real consumer
+# of `state/<id>.backlog-close`, so a refusal that leaves one behind is observed
+# here as the record removal and row close it actually causes.
+replay_pending_backlog_closes() {  # <case-dir> <home>
+  local case_dir=$1 home=$2
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+  FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_TEST_ROOT="$ROOT" FM_TEST_CASE="$case_dir" \
+  PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
+    bash -c '
+      set -u
+      . "$FM_TEST_ROOT/bin/fm-tasks-axi-lib.sh"
+      . "$FM_TEST_ROOT/bin/fm-backlog-transition-lib.sh"
+      state="$FM_TEST_CASE/state"; data="$FM_TEST_CASE/data"
+      for marker in "$state"/*.backlog-close; do
+        [ -e "$marker" ] || continue
+        fm_backlog_close_marker_replay "$state" "$marker" "$data" || true
+      done
+    '
+}
+
+# Read one key out of a task record the way every consumer does: the LAST value.
+fm_meta_read() {  # <meta-file> <key>
+  FM_TEST_ROOT="$ROOT" bash -c '
+    set -u
+    . "$FM_TEST_ROOT/bin/fm-backend.sh"
+    fm_meta_get "$1" "$2"
+  ' _ "$1" "$2"
+}
+
 # Build the teardown test's executable search path without lsof, regardless of
 # whether the host installs it in /usr/bin, /usr/sbin, or a package-manager bin.
 make_path_without_lsof() {  # <case-dir>
@@ -2977,6 +3008,111 @@ test_a_recorded_root_under_projects_refuses_instead_of_signalling() {
   pass "a recorded root pointing into the operator's own projects tree refuses teardown instead of signalling into it"
 }
 
+# NO REFUSAL AFTER AN IRREVERSIBLE COMMITMENT. The root refusal advertises a
+# repair the operator runs against this task's record, so the refusal has to
+# leave that record - and the backlog row it belongs to - exactly as it found
+# them. Run past the backlog close-marker write, it did not: the marker survived
+# the refusal, the next session start replayed it, and the replay deleted the
+# very record the printed repair needs and closed the row. The refusal is
+# deterministic, so every rerun refused again; the window before the next session
+# start was the operator's only chance to use the repair, and after it teardown
+# could never run for that id and the leftover processes were never reaped.
+test_a_forbidden_recorded_root_refuses_before_the_backlog_is_committed() {
+  local case_dir rc home
+  case_dir=$(make_case forbidden-root-backlog-intact)
+  home="$case_dir/home"
+  mkdir -p "$home/projects/api-stack"
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' 'pr=https://github.com/example/repo/pull/7' >> "$case_dir/state/task-x1.meta"
+  land_shippable_commit "$case_dir"
+  printf '%s\n' "tasktmp=$home/projects/api-stack" >> "$case_dir/state/task-x1.meta"
+  seed_backlog_in_flight "$case_dir"
+  [ "$(backlog_row_state "$case_dir")" = in_flight ] \
+    || fail "forbidden-root-backlog: the fixture did not start with an open backlog row"
+
+  rc=0
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_HOME="$home" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
+    "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  expect_code 1 "$rc" "forbidden-root-backlog: teardown should refuse the recorded root"
+  assert_grep "REFUSED" "$case_dir/stderr" \
+    "forbidden-root-backlog: teardown did not report refusing the recorded root"
+
+  # The real consumer of whatever teardown left behind: the pending-close replay
+  # bin/fm-bootstrap.sh runs at every session start.
+  replay_pending_backlog_closes "$case_dir" "$home"
+
+  assert_present "$case_dir/state/task-x1.meta" \
+    "forbidden-root-backlog: a session-start replay erased the record the printed repair needs"
+  [ "$(backlog_row_state "$case_dir")" = in_flight ] \
+    || fail "forbidden-root-backlog: a refused teardown still closed its backlog row through the replay: $(backlog_row_state "$case_dir")"
+  pass "a recorded root refusal leaves the task record and its backlog row intact across a session-start replay"
+}
+
+# A repair that writes a value some other guard then refuses only moves the dead
+# end. bin/fm-orphan-reap.sh reads `tasktmp=` through fm_wtproc_task_tmp, which
+# binds it to the exact path bin/fm-spawn.sh builds, so a retarget anywhere else
+# buys a clean teardown at the price of an UNSCANNABLE line for that task at
+# every session start until it is gone.
+test_retargeting_tasktmp_off_the_canonical_path_is_refused() {
+  local case_dir rc home before
+  case_dir=$(make_case task-root-tasktmp-binding)
+  home="$case_dir/home"
+  mkdir -p "$home" "$case_dir/tmproot/fm-task-x1" "$case_dir/somewhere-else"
+  write_meta "$case_dir" no-mistakes ship
+  printf '%s\n' "tasktmp=$case_dir/tasktmp" >> "$case_dir/state/task-x1.meta"
+  before=$(cat "$case_dir/state/task-x1.meta")
+
+  rc=0
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_TASK_TMP_ROOT="$case_dir/tmproot" \
+    "$ROOT/bin/fm-task-root.sh" task-x1 tasktmp "$case_dir/somewhere-else" \
+    > "$case_dir/out" 2> "$case_dir/err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "task-root-tasktmp-binding: a tasktmp off the canonical path was accepted"
+  assert_grep "$case_dir/tmproot/fm-task-x1" "$case_dir/err" \
+    "task-root-tasktmp-binding: the refusal did not name the path it would accept"
+  [ "$(cat "$case_dir/state/task-x1.meta")" = "$before" ] \
+    || fail "task-root-tasktmp-binding: a refused retarget still wrote to the record"
+
+  rc=0
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_TASK_TMP_ROOT="$case_dir/tmproot" \
+    "$ROOT/bin/fm-task-root.sh" task-x1 tasktmp "$case_dir/tmproot/fm-task-x1" \
+    > "$case_dir/out2" 2> "$case_dir/err2" || rc=$?
+  expect_code 0 "$rc" "task-root-tasktmp-binding: the canonical temp root should be accepted: $(cat "$case_dir/err2")"
+  [ "$(fm_meta_read "$case_dir/state/task-x1.meta" tasktmp)" = "$case_dir/tmproot/fm-task-x1" ] \
+    || fail "task-root-tasktmp-binding: the accepted retarget did not land in the record"
+  pass "the retarget binds tasktmp to the task's own canonical temp root and refuses anything else without writing"
+}
+
+# Existence is not what makes a path safe. A replacement under projects/ that has
+# not been created yet must be refused now, not accepted and turned back into the
+# same dead-end refusal the day someone creates it.
+test_retargeting_onto_an_absent_forbidden_path_is_refused() {
+  local case_dir rc home before
+  case_dir=$(make_case task-root-absent-forbidden)
+  home="$case_dir/home"
+  mkdir -p "$home/projects"
+  write_meta "$case_dir" no-mistakes ship
+  before=$(cat "$case_dir/state/task-x1.meta")
+
+  rc=0
+  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
+    "$ROOT/bin/fm-task-root.sh" task-x1 worktree "$home/projects/ghost" \
+    > "$case_dir/out" 2> "$case_dir/err" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "task-root-absent-forbidden: an absent path under projects/ was recorded anyway"
+  [ "$(cat "$case_dir/state/task-x1.meta")" = "$before" ] \
+    || fail "task-root-absent-forbidden: a refused retarget still wrote to the record"
+  [ ! -e "$home/projects/ghost" ] \
+    || fail "task-root-absent-forbidden: the refused retarget created the path it was refusing"
+  pass "a replacement root that does not exist yet still clears the projects/ wall before it can be recorded"
+}
+
 # THE WALL MUST HAVE A DOOR, AND THE DOOR MUST NOT BE --force. Forcing a reap
 # under the firstmate home's projects/ tree would stop the captain's own stack -
 # the exact harm the wall exists to prevent - so the escape cannot be to weaken
@@ -2988,7 +3124,11 @@ test_a_forbidden_recorded_root_prints_a_repair_that_actually_works() {
   local case_dir rc stack_pid leftover_pid home real_tmp
   case_dir=$(make_case forbidden-root-repair)
   home="$case_dir/home"
-  real_tmp="$case_dir/real-tasktmp"
+  # The canonical temp root for this task: the exact path bin/fm-spawn.sh builds
+  # from $FM_TASK_TMP_ROOT. Retargeting anywhere else writes a value teardown
+  # tolerates but bin/fm-orphan-reap.sh refuses, so the repair is required to
+  # produce this one.
+  real_tmp="$case_dir/tmproot/fm-task-x1"
   mkdir -p "$home/projects/api-stack" "$real_tmp"
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
@@ -3024,6 +3164,7 @@ test_a_forbidden_recorded_root_prints_a_repair_that_actually_works() {
 
   # Run the repair the refusal advertises. It must touch neither path.
   FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_TASK_TMP_ROOT="$case_dir/tmproot" \
     "$ROOT/bin/fm-task-root.sh" task-x1 tasktmp "$real_tmp" \
     > "$case_dir/repair.out" 2> "$case_dir/repair.err" \
     || fail "forbidden-root-repair: the advertised repair command failed: $(cat "$case_dir/repair.err")"
@@ -3630,6 +3771,9 @@ test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_a_recorded_root_under_projects_refuses_instead_of_signalling
 test_a_forbidden_recorded_root_prints_a_repair_that_actually_works
+test_a_forbidden_recorded_root_refuses_before_the_backlog_is_committed
+test_retargeting_tasktmp_off_the_canonical_path_is_refused
+test_retargeting_onto_an_absent_forbidden_path_is_refused
 test_teardown_never_signals_the_shell_it_was_started_from
 test_no_cwd_source_reaps_tmux_process_group
 test_no_cwd_source_still_reaps_the_group_when_both_roots_are_absent

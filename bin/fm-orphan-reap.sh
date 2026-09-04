@@ -114,6 +114,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-backend.sh"
 # shellcheck source=bin/fm-worktree-proc-lib.sh
 . "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
+# shellcheck source=bin/fm-gate-refuse-lib.sh
+. "$SCRIPT_DIR/fm-gate-refuse-lib.sh"
 
 die() {  # <message>
   echo "error: $1" >&2
@@ -517,6 +519,16 @@ cmd_scan() {
 
 cmd_reap() {  # <task-id>
   local id=${1:-} rc=0 scan_rc=0
+  # `reap` signals another process's crewmate copy, so it is a fleet mutation
+  # and a confused no-mistakes gate agent is kept out of it exactly as it is
+  # kept out of fm-spawn, fm-send and fm-teardown (bin/fm-gate-refuse-lib.sh).
+  # The hazard is concrete here: `scan` prints this command for every leftover
+  # it finds and bin/fm-session-start.sh runs that scan in the digest, so it is
+  # the most discoverable fleet verb such an agent could reach for, and a `dead`
+  # verdict it acted on has already once been wrong about a live worker. Only
+  # this verb refuses; `scan` reads and reports nothing away, so the digest
+  # keeps working from inside a gate.
+  fm_refuse_if_gate_agent
   [ -n "$id" ] || { usage >&2; exit 2; }
   # scan_task resets every one of these itself, on entry, so the reap reads
   # exactly what this call established and there is no second list here to fall
