@@ -43,14 +43,6 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   exit 1
 fi
 
-# A poll-program refresh interrupted mid-flight left its armed artifacts set
-# aside under a receipt. Put them back before publishing a replacement poll, so
-# a later recovery can never restore them over the poll armed here.
-fm_pr_poll_preserve_recover_one "$STATE" "$ID" || {
-  echo "error: pending PR poll preservation could not be validated" >&2
-  exit 1
-}
-
 # A prior exact merged result may have queued its durable wake immediately
 # before interruption.
 # Finish only its identity-bound receipt before publishing a replacement poll.
@@ -150,6 +142,15 @@ META_LOCK_HELD=0
 POLL_LOCK=$(fm_pr_poll_lock_path "$STATE" "$ID") || exit 1
 fm_lock_acquire_wait "$POLL_LOCK"
 POLL_LOCK_HELD=1
+# A poll-program refresh interrupted mid-flight left its armed artifacts set
+# aside under a receipt. Put them back before publishing a replacement poll, so
+# a later recovery can never restore them over the poll armed here. The watcher
+# sets those same artifacts aside under this lock, so recovering them under it
+# is what keeps a half-finished set-aside from being recovered underneath it.
+fm_pr_poll_preserve_recover_one "$STATE" "$ID" || {
+  echo "error: pending PR poll preservation could not be validated" >&2
+  exit 1
+}
 fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1

@@ -140,6 +140,19 @@ case "${1:-} ${2:-}" in
     case " $* " in
       *REMOVED_FROM_MERGE_QUEUE_EVENT*|*RemovedFromMergeQueueEvent*)
         [ "${FM_TEST_GH_GRAPHQL_FAIL:-0}" = 0 ] || exit 1
+        # gh's -F converts JSON literals and integers, so a String! variable
+        # sent that way is rejected by the forge exactly as it is here.
+        prev=
+        for arg in "$@"; do
+          if [ "$prev" = -F ]; then
+            case "$arg" in
+              owner=true|owner=false|owner=null|name=true|name=false|name=null|owner=[0-9]*|name=[0-9]*)
+                exit 1
+                ;;
+            esac
+          fi
+          prev=$arg
+        done
         if [ -n "${FM_TEST_GH_TIMELINE_JSON:-}" ]; then
           # Reproduce gh's own -q handling, so a case that supplies a forge
           # response exercises the poll's real filter instead of a fixture of
@@ -693,10 +706,11 @@ test_rejected_metacharacter_bytes_are_inert() {
 }
 
 make_poll_fixture() {
-  local dir=$1
+  local dir=$1 owner=${2:-o} repo=${3:-r} number=${4:-1}
   cp "$POLL" "$dir/home/state/task-a.check.sh"
   printf '%s\n%s\n%s\n%s\n%s\n' \
-    github https://github.com/o/r/pull/1 github.com o/r 1 > "$dir/home/state/task-a.pr-poll"
+    github "https://github.com/$owner/$repo/pull/$number" github.com "$owner/$repo" "$number" \
+    > "$dir/home/state/task-a.pr-poll"
   chmod 0600 "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll"
 }
 
@@ -710,6 +724,21 @@ run_poll() {
   FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
     PATH="$dir/fakebin:$BASE_PATH" \
     bash "$dir/home/state/task-a.check.sh"
+}
+
+test_static_poll_reports_ejection_for_json_literal_names() {
+  local dir out
+  dir=$(make_case poll-json-literal-names)
+  # An owner and a repository name the forge allows and JSON reads as a literal
+  # or a number.
+  make_poll_fixture "$dir" true 2048
+  ln -sf "$REAL_JQ" "$dir/fakebin/jq"
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_TIMELINE_JSON="$(ejected_response '"CI_FAILURE"')" \
+    run_poll "$dir")
+  [ "$out" = 'dequeued:CI_FAILURE:2026-09-04T10:00:00Z' ] \
+    || fail "an ejection went silent for a JSON-literal owner or repository name: $out"
+  rm -f "$dir/fakebin/jq"
+  pass "an ejection is reported for owner and repository names that read as JSON literals"
 }
 
 test_static_poll_contract() {
@@ -2681,6 +2710,7 @@ test_edited_poll_program_is_never_refreshed() {
 test_parser_matrix
 test_gitlab_merge_watch
 test_merged_poll_retires_once
+test_static_poll_reports_ejection_for_json_literal_names
 test_dequeued_poll_wakes_with_reason
 test_dequeued_poll_new_ejection_wakes_again
 test_updated_poll_program_keeps_armed_polls_working

@@ -111,7 +111,7 @@ state/               runtime records and signals; gitignored
   <id>.pr-poll-retirement  private identity-bound crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire
   <id>.pr-poll-merge-notified  canonical PR identity of the last merge outcome delivered for this task; bin/fm-pr-lib.sh owns the marker format and identity mechanics, while bin/fm-merge-outcome-lib.sh owns locked publication, duplicate suppression, and replacement
   <id>.pr-poll-dequeued  identity of the last merge-queue ejection the watcher already woke; bin/fm-pr-lib.sh owns the marker so the same ejection does not re-wake every poll
-  <id>.pr-poll-enqueued  automatic enqueuePullRequest count for this armed PR identity; bin/fm-pr-lib.sh owns the marker and bin/fm-pr-enqueue.sh is the only writer
+  <id>.pr-poll-enqueued  automatic enqueuePullRequest count for the one ejection it names, armed PR identity plus that ejection instant; bin/fm-pr-lib.sh owns the marker and bin/fm-pr-enqueue.sh is the only writer
   <id>.pr-poll-preserve  durable set-aside receipt for a poll-program refresh interrupted mid-flight; bin/fm-pr-lib.sh owns the format and recovery
   <id>.pr-poll-preserve-check <id>.pr-poll-preserve-registration <id>.pr-poll-preserve-data  the armed artifacts that receipt names; recovered or reported, never dropped in silence
   .pr-poll-<id>.lock     per-task poll-publication lock shared by arming and refresh so a slow metadata wait cannot stall every other poll; bin/fm-pr-lib.sh owns the path

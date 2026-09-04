@@ -75,7 +75,8 @@ write_dequeued_marker() {
 }
 
 write_ready_meta() {
-  local dir=$1 url=${2:-https://github.com/o/r/pull/1}
+  local dir=$1 url=${2:-https://github.com/o/r/pull/1} reason=${3:-failed_checks}
+  local created=${4:-2026-09-04T10:00:00Z}
   fm_write_meta "$dir/home/state/task-a.meta" \
     "window=firstmate:fm-task-a" \
     "endpoint_task_id=task-a" \
@@ -85,7 +86,8 @@ write_ready_meta() {
     "mode=no-mistakes" \
     "pr=$url"
   fm_pr_url_parse "$url" || fail "ready-meta fixture URL was invalid"
-  write_dequeued_marker "$dir" "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER"
+  write_dequeued_marker "$dir" "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER" \
+    "$reason" "$created"
 }
 
 run_enqueue() {
@@ -126,7 +128,7 @@ test_green_failed_checks_requeues_once() {
 test_merge_conflict_escalates_without_enqueue() {
   local dir rc
   dir=$(make_case conflict)
-  write_ready_meta "$dir"
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 merge_conflict
   set +e
   run_enqueue "$dir" merge_conflict > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
@@ -158,7 +160,7 @@ test_red_checks_escalate() {
 test_unresolved_threads_escalate() {
   local dir rc
   dir=$(make_case unresolved)
-  write_ready_meta "$dir"
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 checks_timed_out
   set +e
   FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t2' \
     run_enqueue "$dir" checks_timed_out > "$dir/stdout" 2> "$dir/stderr"
@@ -192,7 +194,7 @@ test_already_queued_is_idempotent() {
 test_forge_spelled_reason_requeues() {
   local dir rc
   dir=$(make_case forge-spelling)
-  write_ready_meta "$dir"
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 CI_FAILURE
   set +e
   run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
@@ -203,7 +205,7 @@ test_forge_spelled_reason_requeues() {
   grep -q enqueuePullRequest "$dir/gh.log" || fail "CI_FAILURE did not call enqueuePullRequest"
 
   dir=$(make_case forge-spelling-timeout)
-  write_ready_meta "$dir"
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 CI_TIMEOUT
   set +e
   run_enqueue "$dir" ci_timeout > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
@@ -214,10 +216,99 @@ test_forge_spelled_reason_requeues() {
   pass "a transient check failure requeues in the forge's spelling and in firstmate's"
 }
 
+test_reason_disagreeing_with_the_marker_is_refused() {
+  local dir rc
+  dir=$(make_case reason-disagrees)
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 merge_conflict
+  set +e
+  run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "a reason that contradicts the marker should escalate"
+  [ "$(cat "$dir/stdout")" = 'escalate: CI_FAILURE does not match the recorded ejection reason merge_conflict' ] \
+    || fail "the contradiction did not name both reasons: $(cat "$dir/stdout")"
+  ! grep -q enqueuePullRequest "$dir/gh.log" \
+    || fail "a contradicted reason called enqueuePullRequest"
+  [ ! -e "$dir/home/state/task-a.pr-poll-enqueued" ] \
+    || fail "a contradicted reason recorded an attempt"
+  pass "a typed reason that contradicts the recorded ejection reason is refused with both values"
+}
+
+test_each_ejection_gets_its_own_automatic_attempt() {
+  local dir rc count
+  dir=$(make_case per-ejection-bound)
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 checks_timed_out 2026-09-04T10:00:00Z
+  set +e
+  run_enqueue "$dir" checks_timed_out > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "the first ejection should requeue: $(cat "$dir/stdout")"
+
+  write_dequeued_marker "$dir" github github.com o/r 1 checks_timed_out 2026-09-04T11:00:00Z
+  set +e
+  run_enqueue "$dir" checks_timed_out > "$dir/stdout2" 2> "$dir/stderr2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a second ejection should requeue again: $(cat "$dir/stdout2")"
+  [ "$(cat "$dir/stdout2")" = 'queued: https://github.com/o/r/pull/1' ] \
+    || fail "the second ejection did not requeue: $(cat "$dir/stdout2")"
+  count=$(grep -c enqueuePullRequest "$dir/gh.log")
+  [ "$count" -eq 2 ] || fail "the second ejection did not get its own attempt: $count"
+
+  set +e
+  run_enqueue "$dir" checks_timed_out > "$dir/stdout3" 2> "$dir/stderr3"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "a repeat of the second ejection should escalate"
+  [ "$(cat "$dir/stdout3")" = 'escalate: checks_timed_out already requeued once' ] \
+    || fail "the per-ejection bound did not hold: $(cat "$dir/stdout3")"
+  count=$(grep -c enqueuePullRequest "$dir/gh.log")
+  [ "$count" -eq 2 ] || fail "the bound still called enqueuePullRequest again"
+  pass "each ejection gets one automatic attempt and no more"
+}
+
+test_closed_pull_request_is_named_before_any_unknown_wait() {
+  local dir rc reads
+  dir=$(make_case closed-with-unknown)
+  write_ready_meta "$dir"
+  set +e
+  FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 \
+    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tCLOSED\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0' \
+    run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "a closed pull request should escalate"
+  [ "$(cat "$dir/stdout")" = 'escalate: failed_checks pull request is not open' ] \
+    || fail "a closed pull request was reported as unmergeable: $(cat "$dir/stdout")"
+  reads=$(grep -c reviewThreads "$dir/gh.log")
+  [ "$reads" -eq 1 ] || fail "a closed pull request was waited on for mergeability: $reads"
+  ! grep -q enqueuePullRequest "$dir/gh.log" || fail "a closed pull request called enqueuePullRequest"
+  pass "a settled pull request is named on the first read instead of waiting on UNKNOWN"
+}
+
+test_queued_pull_request_is_reported_before_any_unknown_wait() {
+  local dir rc reads
+  dir=$(make_case queued-with-unknown)
+  write_ready_meta "$dir"
+  set +e
+  FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 \
+    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\ttrue\tUNKNOWN\t\tSUCCESS\t0' \
+    run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a pull request back in the queue should succeed: $(cat "$dir/stdout")"
+  [ "$(cat "$dir/stdout")" = 'queued: https://github.com/o/r/pull/1' ] \
+    || fail "a queued pull request with UNKNOWN mergeability escalated: $(cat "$dir/stdout")"
+  reads=$(grep -c reviewThreads "$dir/gh.log")
+  [ "$reads" -eq 1 ] || fail "a queued pull request was waited on for mergeability: $reads"
+  ! grep -q enqueuePullRequest "$dir/gh.log" || fail "a queued pull request still mutated"
+  pass "a pull request already back in the queue is reported queued whatever mergeability says"
+}
+
 test_unknown_reason_is_refused_by_name() {
   local dir rc
   dir=$(make_case unknown-reason)
-  write_ready_meta "$dir"
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 flurbed_by_kraken
   set +e
   run_enqueue "$dir" flurbed_by_kraken > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
@@ -233,7 +324,7 @@ test_unlabelled_ejection_escalates() {
   local dir rc reason
   for reason in unreported unreadable; do
     dir=$(make_case "unlabelled-$reason")
-    write_ready_meta "$dir"
+    write_ready_meta "$dir" https://github.com/o/r/pull/1 "$reason"
     set +e
     run_enqueue "$dir" "$reason" > "$dir/stdout" 2> "$dir/stderr"
     rc=$?
@@ -388,3 +479,7 @@ test_persistent_unknown_mergeability_is_refused
 test_ejection_marker_mismatch_is_refused
 test_absent_rollup_is_named_not_called_red
 test_graphql_string_fields_are_sent_raw
+test_reason_disagreeing_with_the_marker_is_refused
+test_each_ejection_gets_its_own_automatic_attempt
+test_closed_pull_request_is_named_before_any_unknown_wait
+test_queued_pull_request_is_reported_before_any_unknown_wait

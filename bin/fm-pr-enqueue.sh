@@ -9,10 +9,15 @@
 # in either the forge's or firstmate's spelling. Any other reason, including
 # merge_conflict, an ejection the forge left unlabelled, a reason no known
 # vocabulary covers, red checks, unresolved threads, an unreadable forge read,
-# or a second automatic attempt for the same armed PR identity, prints
-# escalate: and does not enqueue.
+# or a second automatic attempt for the same ejection, prints escalate: and does
+# not enqueue.
 # Re-queue is not a merge. The bound is one automatic enqueuePullRequest per
-# armed PR identity, recorded in state/<id>.pr-poll-enqueued.
+# ejection, recorded in state/<id>.pr-poll-enqueued.
+#
+# Eligibility is decided on the reason the ejection marker recorded from the
+# forge. The <reason> argument is only a cross-check that the caller answered
+# this ejection: a reason that disagrees with the recorded one is refused with
+# both values rather than either being preferred in silence.
 #
 # The target identity is the pull request recorded in the ejection marker, not
 # the pull request currently named in task metadata. If those two disagree, this
@@ -90,16 +95,20 @@ NUMBER=$FM_PR_DEQUEUED_NUMBER
 OWNER=${PROJECT_PATH%%/*}
 REPO=${PROJECT_PATH#*/}
 
-if fm_pr_poll_enqueued_already "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER"; then
+if fm_pr_poll_enqueued_already "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" \
+  "$FM_PR_DEQUEUED_AT"; then
   escalate "$REASON already requeued once"
 fi
 
 # The forge spells its removal reasons in upper snake case, and firstmate's own
-# vocabulary is lower snake case, so the token is folded before it is matched
-# and a reason outside every known spelling is refused by name rather than
-# silently treated as ineligible.
+# vocabulary is lower snake case, so both tokens are folded before they are
+# compared or matched, and a reason outside every known spelling is refused by
+# name rather than silently treated as ineligible.
 REASON_TOKEN=$(printf '%s\n' "$REASON" | tr '[:lower:]' '[:upper:]')
-case "$REASON_TOKEN" in
+MARKER_TOKEN=$(printf '%s\n' "$FM_PR_DEQUEUED_REASON" | tr '[:lower:]' '[:upper:]')
+[ "$REASON_TOKEN" = "$MARKER_TOKEN" ] \
+  || escalate "$REASON does not match the recorded ejection reason $FM_PR_DEQUEUED_REASON"
+case "$MARKER_TOKEN" in
   CI_FAILURE|CI_TIMEOUT|FAILED_CHECKS|CHECKS_TIMED_OUT) ;;
   UNREPORTED|UNREADABLE)
     escalate "$REASON the forge reported no usable ejection reason" ;;
@@ -139,8 +148,21 @@ parse_pr_state() {
   [[ "$pr_id" =~ ^[A-Za-z0-9_=-]+$ ]] || return 1
 }
 
+# The forge answers these three whatever mergeability says, and it never
+# recomputes mergeability for a pull request it has already settled, so they are
+# read on every read and answered before any wait on UNKNOWN.
+settled_state() {
+  if [ "$in_queue" = true ]; then
+    printf 'queued: %s\n' "$URL"
+    exit 0
+  fi
+  [ "$pr_state" = OPEN ] || escalate "$REASON pull request is not open"
+  [ "$is_draft" = false ] || escalate "$REASON pull request is a draft"
+}
+
 raw=$(read_pr_state) || escalate "$REASON forge state could not be read"
 parse_pr_state "$raw" || escalate "$REASON forge state could not be read"
+settled_state
 
 # GitHub's mergeability recompute after a merge-queue ejection routinely takes
 # longer than six seconds on a busy repository, so the default budget is sixty
@@ -161,6 +183,7 @@ if [ "$mergeable" = UNKNOWN ]; then
     sleep "$unknown_delay"
     raw=$(read_pr_state) || escalate "$REASON forge state could not be read"
     parse_pr_state "$raw" || escalate "$REASON forge state could not be read"
+    settled_state
     if [ "$unknown_delay" -gt 0 ]; then
       unknown_delay=$((unknown_delay * 2))
       [ "$unknown_delay" -gt 30 ] && unknown_delay=30
@@ -168,12 +191,6 @@ if [ "$mergeable" = UNKNOWN ]; then
   done
 fi
 
-if [ "$in_queue" = true ]; then
-  printf 'queued: %s\n' "$URL"
-  exit 0
-fi
-[ "$pr_state" = OPEN ] || escalate "$REASON pull request is not open"
-[ "$is_draft" = false ] || escalate "$REASON pull request is a draft"
 [ "$mergeable" = MERGEABLE ] || escalate "$REASON mergeable is $mergeable"
 [ "$review_decision" != CHANGES_REQUESTED ] || escalate "$REASON changes requested"
 if [ -z "$check_state" ]; then
@@ -195,7 +212,8 @@ esac
 # A marker that could not be written only loses the one-attempt bound, and
 # saying the re-queue failed would send the captain after a pull request that is
 # in fact back in the queue.
-if ! fm_pr_poll_enqueued_mark "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" "$REASON"; then
+if ! fm_pr_poll_enqueued_mark "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" \
+  "$FM_PR_DEQUEUED_AT" "$FM_PR_DEQUEUED_REASON"; then
   printf 'queued: %s\n' "$URL"
   escalate "$REASON pull request was requeued but the attempt could not be recorded"
 fi

@@ -83,7 +83,7 @@ case "$provider" in
     gql_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue timelineItems(last:20,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'
     # shellcheck disable=SC2016 # jq owns every $ expression in this filter.
     gql_filter='.data.repository.pullRequest as $pr | if $pr == null then empty elif $pr.isInMergeQueue != false then empty else (($pr.timelineItems.nodes // []) | map(select(. != null and .createdAt != null)) | last) as $ev | if $ev.__typename == "RemovedFromMergeQueueEvent" then ((($ev.reason // "") | tostring) as $r | (if ($r | test("^[A-Za-z0-9_]+$")) then $r elif $r == "" then "unreported" else "unreadable" end) as $t | "\($t)\t\($ev.createdAt)") else empty end end'
-    raw=$(gh api graphql -f query="$gql_query" -F owner="$owner" -F name="$repo" -F number="$number" -q "$gql_filter" 2>/dev/null) || exit 0
+    raw=$(gh api graphql -f query="$gql_query" -f owner="$owner" -f name="$repo" -F number="$number" -q "$gql_filter" 2>/dev/null) || exit 0
     [ -n "$raw" ] || exit 0
     case "$raw" in
       *$'\n'*) exit 0 ;;
