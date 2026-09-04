@@ -271,6 +271,46 @@ test_only_a_linked_worktree_is_a_disposable_copy() {
   pass "only a linked worktree outside the home's own clones is accepted as a disposable copy"
 }
 
+# THE WALL FOLLOWS THE TREE WHEN THE TREE MOVES. FM_PROJECTS_OVERRIDE is how a
+# home puts its primary clones somewhere other than $FM_HOME/projects, and every
+# other script in the repo resolves them through it. A wall hardcoded to
+# $FM_HOME/projects therefore missed exactly the homes that use it: a recorded
+# root naming a clone under the override cleared every refusal and became a
+# legal kill root. bin/fm-teardown.sh has only these shape refusals by design -
+# no linked-worktree proof - so for teardown this wall is the whole protection.
+test_the_projects_wall_follows_fm_projects_override() {
+  local moved out rc
+  moved="$TMP_ROOT/srv-code"
+  mkdir -p "$moved/api-stack"
+
+  rc=0
+  out=$(FM_PROJECTS_OVERRIDE="$moved" \
+    fm_wtproc_signalling_root "$moved/api-stack" "a recorded root" "$HOME_DIR" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "projects-override: a primary clone under FM_PROJECTS_OVERRIDE was accepted as a signalling root: $out"
+  case "$out" in
+    *"is a primary clone"*) ;;
+    *) fail "projects-override: the refusal did not name its cause: $out" ;;
+  esac
+
+  # The default location stays walled when no override is set, so this change
+  # moves the wall rather than trading one hole for another.
+  rc=0
+  out=$(fm_wtproc_signalling_root "$IN_PROJECTS" "a recorded root" "$HOME_DIR" 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "projects-override: the default projects/ tree stopped being walled: $out"
+
+  # And a real disposable copy is still accepted, so the wall did not simply
+  # start refusing everything.
+  out=$(FM_PROJECTS_OVERRIDE="$moved" \
+    fm_wtproc_signalling_root "$COPY" "a recorded root" "$HOME_DIR" 2>&1) \
+    || fail "projects-override: a genuine task copy was refused: $out"
+  [ "$out" = "$COPY" ] || fail "projects-override: expected $COPY, got $out"
+
+  rm -rf "$moved"
+  pass "the primary-clone wall follows FM_PROJECTS_OVERRIDE instead of assuming \$FM_HOME/projects"
+}
+
 # --- 2. attribution and the reap -------------------------------------------
 
 test_a_process_in_a_disposable_copy_is_found_and_stopped() {
@@ -1586,6 +1626,63 @@ test_a_report_line_names_the_root_it_describes() {
   pass "a task reported on its temp root alone names it tasktmp=, never copy="
 }
 
+# THE ROOT A LISTING BROKE ON IS NAMED BY IDENTITY, NOT BY POSITION. The
+# collect-failure line used to take `roots[0]` and call it the copy. Once a copy
+# can be missing from that set - gone, or refused - the survivor is the temp
+# root, so a host that cannot list anything reported `copy=/tmp/fm-<id>` for a
+# task with no copy on disk at all, sending the operator to inspect a directory
+# that is not what the line said it was.
+test_an_unlistable_root_is_named_for_what_it_is() {
+  local dir tmproot out rc pid
+  dir="$TMP_ROOT/case-failed-root-label"
+  tmproot="$FM_TASK_TMP_ROOT/fm-flr"
+  mkdir -p "$dir/fakebin" "$tmproot"
+  make_backend_stub "$dir" fm-flr
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid=$(witness "$tmproot")
+  # The copy is gone, so the temp root is the only entry in the collected set.
+  write_task_meta flr "$TMP_ROOT/copy-gone-for-failed-label" "fmses:fm-flr" "$tmproot"
+
+  # Neither cwd source can answer, so the listing itself fails.
+  cat > "$dir/fakebin/lsof" <<'SH'
+#!/usr/bin/env bash
+echo "lsof: synthetic failure" >&2
+exit 1
+SH
+  chmod +x "$dir/fakebin/lsof"
+  export FM_PROC_ROOT_OVERRIDE="$dir/no-proc"
+
+  rc=0
+  out=$(run_orphan "$dir" scan --task flr) || rc=$?
+  [ "$rc" = 3 ] || fail "failed-root-label: an unlistable root did not exit 3: $out"
+  case "$out" in
+    *"copy=$tmproot"*) fail "failed-root-label: the temp root was reported under a copy= label: $out" ;;
+  esac
+  case "$out" in
+    *"UNSCANNABLE: flr tasktmp=$tmproot"*) ;;
+    *) fail "failed-root-label: the unlistable temp root was not named as a temp root: $out" ;;
+  esac
+
+  rc=0
+  out=$(run_orphan "$dir" reap flr) || rc=$?
+  [ "$rc" != 0 ] || fail "failed-root-label: a cleanup that could not look reported success: $out"
+  case "$out" in
+    *"tasktmp=$tmproot"*) ;;
+    *) fail "failed-root-label: the cleanup refusal did not name the root it could not read: $out" ;;
+  esac
+
+  unset FM_PROC_ROOT_OVERRIDE
+  rm -f "$dir/fakebin/lsof"
+  sleep 0.3
+  alive "$pid" || fail "failed-root-label: a process was stopped by a scan that could not resolve anything"
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/flr.meta"
+  rm -rf "$tmproot"
+  pass "the root a listing broke on is named for what it is, never as the copy by position"
+}
+
 # A REFUSAL NARROWS THE REPORT, NEVER THE SCAN - the rule the temp-root side has
 # always kept, applied to the copy. A refused copy used to abandon the whole root
 # set, so a temp root that passed the strictest validator in the library, and held
@@ -1963,6 +2060,16 @@ test_a_refused_recorded_root_is_reported_rather_than_dropped() {
     *"UNSCANNABLE: rr"*"$elsewhere"*) ;;
     *) fail "refused-root: a refused recorded root was dropped without a trace: $out" ;;
   esac
+  # It is the TEMP root that was refused, and the line has to say so: the legend
+  # this report prints tells the reader copy= is the task's local copy, and this
+  # task's copy is a different path that scanned fine.
+  case "$out" in
+    *"copy=$elsewhere"*) fail "refused-root: the refused temp root was reported under a copy= label: $out" ;;
+  esac
+  case "$out" in
+    *"tasktmp=$elsewhere"*) ;;
+    *) fail "refused-root: the refused temp root was not named as a temp root: $out" ;;
+  esac
   [ "$rc" = 3 ] \
     || fail "refused-root: a scan with an unexamined root exited $rc, so a caller reading only the status sees a clean fleet"
   case "$out" in
@@ -2030,6 +2137,7 @@ test_a_cleanup_never_signals_the_shell_it_was_started_from() {
 }
 
 test_only_a_linked_worktree_is_a_disposable_copy
+test_the_projects_wall_follows_fm_projects_override
 test_a_process_in_a_disposable_copy_is_found_and_stopped
 test_a_primary_checkout_is_never_a_target
 test_a_live_workers_processes_are_never_stopped
@@ -2054,6 +2162,7 @@ test_a_listing_that_cannot_be_produced_is_never_an_empty_machine
 test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
 test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
+test_an_unlistable_root_is_named_for_what_it_is
 test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped
 test_a_record_that_names_no_copy_raises_no_alert
 test_a_recorded_copy_that_no_longer_exists_raises_no_alert
