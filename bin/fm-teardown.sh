@@ -205,10 +205,6 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-registry-lib.sh"
 # shellcheck source=bin/fm-secondmate-parent-lib.sh
 . "$SCRIPT_DIR/fm-secondmate-parent-lib.sh"
-# shellcheck source=bin/fm-wake-lib.sh
-. "$SCRIPT_DIR/fm-wake-lib.sh"
-# shellcheck source=bin/fm-worktree-proc-lib.sh
-. "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
 # shellcheck source=bin/fm-pending-reply-lib.sh
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-nm-run-lib.sh
@@ -223,8 +219,13 @@ fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: teardown refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
 }
+# Both of these create state on the way in - fm-wake-lib.sh makes $STATE at
+# source time - so neither may load before the guard above has had its look at
+# an unmounted or mistyped state directory.
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-worktree-proc-lib.sh
+. "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
 # Supervision lease guard: post-landing cleanup is overlap territory between
 # the two Pi supervision actors; refuse while the OTHER actor holds this
 # task's live lease (contract: bin/fm-lease-lib.sh; no-op in homes without
@@ -1815,6 +1816,22 @@ reap_task_backend_process_group() {  # <label>
 # linked-worktree proof: this command supports a task copy that is an ordinary
 # clone, which its own suite pins, so that proof would refuse a shape teardown
 # is required to handle. The half kept is the half that names the harm.
+#
+# The refusal is a REPAIRABLE one, and it says how. There is no --force escape
+# and there must not be: forcing a reap under the firstmate home's projects/
+# tree would stop the captain's own stack, which is the single outcome this wall
+# exists to prevent, so --force cannot be the answer. The answer is to correct
+# the RECORD, and the operator is handed the exact command that does it -
+# bin/fm-task-root.sh, which rewrites that one field through the same wall and
+# signals nothing. Nobody is told to hand-edit a state file.
+
+# A repair command an operator can paste has to name the home it applies to
+# whenever that is not the one the tool would default to on its own.
+fm_teardown_home_prefix() {
+  [ "$FM_HOME" != "$FM_ROOT" ] || return 0
+  printf 'FM_HOME=%s ' "$(printf '%q' "$FM_HOME")"
+}
+
 REAP_ROOTS=()
 validate_recorded_reap_roots() {
   local real rc pair label dir
@@ -1832,7 +1849,9 @@ validate_recorded_reap_roots() {
       # alarm.
       2) ;;
       *)
-        echo "REFUSED: task $ID's recorded $label '$dir' is not a path this may ever signal into (${real:-the check refused it without stating a reason}); nothing was signalled and nothing was removed. Correct the record, or inspect that path by hand." >&2
+        echo "REFUSED: task $ID's recorded $label '$dir' is not a path this may ever signal into (${real:-the check refused it without stating a reason}); nothing was signalled and nothing was removed." >&2
+        echo "Point the record at this task's real disposable copy and rerun this teardown:" >&2
+        echo "  $(fm_teardown_home_prefix)$SCRIPT_DIR/fm-task-root.sh $ID $label <path-to-the-real-copy>" >&2
         exit 1
         ;;
     esac
@@ -2849,30 +2868,6 @@ if [ -d "$WT" ] && [ "$FORCE" != "--force" ]; then
   fi
 fi
 
-# Every landed/discard-work refusal above has now passed (or --force skipped
-# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
-# --force, and before ANY destructive step below - a still-parked run or a
-# leaked process can own live work in this exact worktree. Not for
-# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
-# dedicated process-event and firstmate-home removal machinery further below,
-# not by task-worktree cleanup.
-if [ "$KIND" != secondmate ]; then
-  conclude_task_no_mistakes_run "$WT"
-  validate_recorded_reap_roots
-  # Always called, even with no roots left to scan. Its FIRST act, before any
-  # root is looked at, is to route to the backend process-group reap on a host
-  # that can answer the working-directory question from neither /proc nor lsof -
-  # and that fallback is the only cleanup such a host has. Skipping the call
-  # when both recorded roots turned out to be absent made it unreachable in
-  # exactly that case. With no roots and a working source, the scan simply finds
-  # nothing and returns.
-  reap_task_worktree_processes worktree ${REAP_ROOTS[@]+"${REAP_ROOTS[@]}"}
-fi
-
-# Fix 3 (see script header): sweep remote job workers abandoned by an already
-# pruned code root. Best effort - a sweep failure never blocks this teardown.
-"$SCRIPT_DIR/fm-remote-job-reap-orphans.sh" >&2 || true
-
 # A Herdr close may reposition shared workspace order, so the whole
 # destructive sequence below (worktree return, pane close, record removal)
 # runs under the named-session presentation lock, acquired BEFORE anything is
@@ -2913,16 +2908,31 @@ else
   fi
 fi
 
-# Every landed/discard-work refusal above has now passed (or --force skipped
-# them). Fix 1 and Fix 2 (see script header) run here, unconditionally on
-# --force, and before ANY destructive step below - a still-parked run or a
-# leaked process can own live work in this exact worktree. Not for
-# kind=secondmate: a secondmate home's own runtime lifecycle is owned by the
-# dedicated process-event and firstmate-home removal machinery further below,
-# not by task-worktree cleanup.
+# Every refusal is now behind us - landed/discard work, the herdr presentation
+# lock, the backlog transition - and nothing above this point has signalled
+# anything. That ordering is the property that makes cleanup safe: a refusal
+# leaves the task whole and relaunchable, which a reap running ahead of it would
+# have already broken by stopping the very agent the operator is told to rerun
+# against. So there is exactly ONE harvest, and it is here.
+#
+# Fix 1 and Fix 2 (see script header) run unconditionally on --force, and before
+# ANY destructive step below - a still-parked run or a leaked process can own
+# live work in this exact worktree. Not for kind=secondmate: a secondmate home's
+# own runtime lifecycle is owned by the dedicated process-event and
+# firstmate-home removal machinery further below, not by task-worktree cleanup.
 if [ "$KIND" != secondmate ]; then
   conclude_task_no_mistakes_run "$WT"
-  reap_task_worktree_processes worktree "$WT" "$TASK_TMP"
+  # The recorded roots are proven before they reach the signalling loop, and the
+  # loop receives what that proof RESOLVED, never the raw recorded strings.
+  validate_recorded_reap_roots
+  # Always called, even with no roots left to scan. Its FIRST act, before any
+  # root is looked at, is to route to the backend process-group reap on a host
+  # that can answer the working-directory question from neither /proc nor lsof -
+  # and that fallback is the only cleanup such a host has. Skipping the call
+  # when both recorded roots turned out to be absent made it unreachable in
+  # exactly that case. With no roots and a working source, the scan simply finds
+  # nothing and returns.
+  reap_task_worktree_processes worktree ${REAP_ROOTS[@]+"${REAP_ROOTS[@]}"}
 fi
 
 # Fix 3 (see script header): sweep remote job workers abandoned by an already
