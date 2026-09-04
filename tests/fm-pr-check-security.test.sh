@@ -2311,6 +2311,93 @@ test_updated_poll_program_keeps_armed_polls_working() {
   pass "a poll armed before a poll-program update keeps polling across it"
 }
 
+# A transient publication fault: the first rename onto the faulted destination
+# lands wrong bytes, and every later rename onto it - including the restore of a
+# poll a failed refresh set aside - is clean, so a case can prove both the
+# refusal and the recovery that follows it.
+install_one_shot_publication_fault() {  # <dir>
+  local dir=$1
+  cat > "$dir/fakebin/mv" <<'SH'
+#!/usr/bin/env bash
+last=${!#}
+"${FM_TEST_REAL_MV:?}" "$@" || exit $?
+[ "$last" = "${FM_TEST_FAULT_PATH:?}" ] || exit 0
+[ ! -e "${FM_TEST_FAULT_GATE:?}" ] || exit 0
+: > "$FM_TEST_FAULT_GATE"
+printf 'faulted publication bytes\n' > "$last"
+SH
+  chmod +x "$dir/fakebin/mv"
+}
+
+poll_artifact_identity_snapshot() {  # <state> <id>
+  local state=$1 id=$2 suffix path
+  for suffix in check.sh pr-poll pr-poll-registration; do
+    path="$state/$id.$suffix"
+    if [ ! -f "$path" ] || [ -L "$path" ]; then
+      printf 'absent %s\n' "$suffix"
+      continue
+    fi
+    printf 'file %s %s %s ' "$suffix" "$(file_mode "$path")" "$(fm_pr_file_identity "$path")"
+    shasum -a 256 "$path" | awk '{print $1}'
+  done
+}
+
+test_failed_poll_refresh_keeps_the_armed_poll() {
+  local faulted dir state old_template fault_path before after rc
+  for faulted in data check; do
+    dir=$(make_case "poll-refresh-fault-$faulted")
+    state="$dir/home/state"
+    old_template="$dir/previous-fm-pr-poll.sh"
+    cp "$POLL" "$old_template"
+    printf '# bytes shipped by a previous release of this poll program\n' >> "$old_template"
+    write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+    seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1 "$old_template"
+    case "$faulted" in
+      data) fault_path="$state/task-a.pr-poll" ;;
+      check) fault_path="$state/task-a.check.sh" ;;
+    esac
+    before=$(poll_artifact_identity_snapshot "$state" task-a)
+    install_one_shot_publication_fault "$dir"
+
+    set +e
+    FM_TEST_FAULT_PATH="$fault_path" FM_TEST_FAULT_GATE="$dir/publication-fault" \
+      FM_TEST_REAL_MV="$REAL_MV" FM_TEST_GH_STATE=OPEN \
+      FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+      run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "faulted $faulted refresh watcher failed: $(cat "$dir/watch-1.err")"
+    [ -e "$dir/publication-fault" ] || fail "the $faulted publication fault never fired"
+    case "$(cat "$dir/watch-1.out")" in
+      *"rejected unauthenticated state checks"*task-a.check.sh*) ;;
+      *) fail "a refused $faulted refresh went unreported: $(cat "$dir/watch-1.out")" ;;
+    esac
+    after=$(poll_artifact_identity_snapshot "$state" task-a)
+    [ "$before" = "$after" ] \
+      || fail "a refused $faulted refresh disarmed the poll: $before -> $after"
+    fm_pr_poll_artifacts_valid "$state" task-a "$old_template" \
+      || fail "a refused $faulted refresh left the poll inconsistent with its own program"
+
+    ack_watcher_cycle "$state" || fail "refused $faulted refresh acknowledgement failed"
+    rm -f "$state/.last-check"
+    set +e
+    FM_TEST_FAULT_PATH="$fault_path" FM_TEST_FAULT_GATE="$dir/publication-fault" \
+      FM_TEST_REAL_MV="$REAL_MV" FM_TEST_GH_STATE=OPEN \
+      FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+      run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "recovery watcher after a faulted $faulted refresh failed: $(cat "$dir/watch-2.err")"
+    case "$(cat "$dir/watch-2.out")" in
+      check:*task-a.check.sh:*dequeued:failed_checks:2026-09-04T10:00:00Z) ;;
+      *) fail "the preserved poll stayed blind after a refused $faulted refresh: $(cat "$dir/watch-2.out")" ;;
+    esac
+    cmp -s "$POLL" "$state/task-a.check.sh" \
+      || fail "the preserved poll was not refreshed onto the current program on retry"
+  done
+  pass "a refused poll-program refresh keeps the poll armed, audible and refreshable"
+}
+
 test_edited_poll_program_is_never_refreshed() {
   local dir state rc
   dir=$(make_case poll-program-edited)
@@ -2343,6 +2430,7 @@ test_merged_poll_retires_once
 test_dequeued_poll_wakes_with_reason
 test_dequeued_poll_new_ejection_wakes_again
 test_updated_poll_program_keeps_armed_polls_working
+test_failed_poll_refresh_keeps_the_armed_poll
 test_edited_poll_program_is_never_refreshed
 test_merged_poll_reregistration_after_notification_is_absorbed
 test_merged_poll_retries_a_failed_upward_report

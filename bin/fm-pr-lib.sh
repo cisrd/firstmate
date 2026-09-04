@@ -100,6 +100,9 @@ FM_PR_POLL_STALE_URL=
 FM_PR_POLL_STALE_HOST=
 FM_PR_POLL_STALE_PATH=
 FM_PR_POLL_STALE_NUMBER=
+FM_PR_POLL_PRESERVED_CHECK=
+FM_PR_POLL_PRESERVED_DATA=
+FM_PR_POLL_PRESERVED_REG=
 FM_PR_ENQUEUED_COUNT=
 FM_PR_ENQUEUED_REASON=
 FM_PR_ENQUEUED_PROVIDER=
@@ -714,10 +717,96 @@ fm_pr_poll_template_stale() {  # <state> <id> <template>
   FM_PR_POLL_STALE_NUMBER=$FM_PR_DATA_NUMBER
 }
 
+# The publication a refresh drives revokes every name it touched as soon as any
+# step fails, which is right for an initial arm - nothing was armed before it -
+# but would turn a refused refresh into a disarmed poll: the task would lose the
+# check the watcher reports, and its merge or ejection would then sleep with
+# nobody to wake. The artifacts a refresh is about to replace are therefore set
+# aside first and put back if the refresh does not complete. They are set aside
+# and put back by rename, so what returns is the exact inode the registration
+# recorded rather than an equal-looking copy, and the restored poll is armed on
+# its previous program, reported by its caller, and refreshable again next time.
+fm_pr_poll_preserved_clear() {
+  FM_PR_POLL_PRESERVED_CHECK=
+  FM_PR_POLL_PRESERVED_DATA=
+  FM_PR_POLL_PRESERVED_REG=
+}
+
+fm_pr_poll_preserved_discard() {
+  [ -z "$FM_PR_POLL_PRESERVED_CHECK" ] || rm -f -- "$FM_PR_POLL_PRESERVED_CHECK"
+  [ -z "$FM_PR_POLL_PRESERVED_REG" ] || rm -f -- "$FM_PR_POLL_PRESERVED_REG"
+  [ -z "$FM_PR_POLL_PRESERVED_DATA" ] || rm -f -- "$FM_PR_POLL_PRESERVED_DATA"
+  fm_pr_poll_preserved_clear
+}
+
+# A name that could not be put back keeps its set-aside copy on disk rather than
+# losing it, so a failed restore never destroys the poll it was protecting.
+fm_pr_poll_preserved_restore() {  # <state> <id>
+  local state=$1 id=$2 failed=0
+  if [ -n "$FM_PR_POLL_PRESERVED_DATA" ]; then
+    if mv -f -- "$FM_PR_POLL_PRESERVED_DATA" "$state/$id.pr-poll"; then
+      FM_PR_POLL_PRESERVED_DATA=
+    else
+      failed=1
+    fi
+  fi
+  if [ -n "$FM_PR_POLL_PRESERVED_REG" ]; then
+    if mv -f -- "$FM_PR_POLL_PRESERVED_REG" "$state/$id.pr-poll-registration"; then
+      FM_PR_POLL_PRESERVED_REG=
+    else
+      failed=1
+    fi
+  fi
+  # The runnable name comes back last, and only once the state a run of it reads
+  # is back, so a half-restored poll is never executable.
+  if [ "$failed" -eq 0 ] && [ -n "$FM_PR_POLL_PRESERVED_CHECK" ]; then
+    if mv -f -- "$FM_PR_POLL_PRESERVED_CHECK" "$state/$id.check.sh"; then
+      FM_PR_POLL_PRESERVED_CHECK=
+    else
+      failed=1
+    fi
+  fi
+  return "$failed"
+}
+
+fm_pr_poll_preserved_save() {  # <state> <id>
+  local state=$1 id=$2 tmp
+  fm_pr_poll_preserved_clear
+  # Withdrawn in the order a revocation uses: the runnable name first, so no run
+  # of the check can observe state that is on its way out.
+  tmp=$(mktemp "$state/.fm-pr-poll-preserved-check.XXXXXX") || return 1
+  if ! mv -f -- "$state/$id.check.sh" "$tmp"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  FM_PR_POLL_PRESERVED_CHECK=$tmp
+  if ! tmp=$(mktemp "$state/.fm-pr-poll-preserved-registration.XXXXXX"); then
+    fm_pr_poll_preserved_restore "$state" "$id" || true
+    return 1
+  fi
+  if ! mv -f -- "$state/$id.pr-poll-registration" "$tmp"; then
+    rm -f -- "$tmp"
+    fm_pr_poll_preserved_restore "$state" "$id" || true
+    return 1
+  fi
+  FM_PR_POLL_PRESERVED_REG=$tmp
+  if ! tmp=$(mktemp "$state/.fm-pr-poll-preserved-data.XXXXXX"); then
+    fm_pr_poll_preserved_restore "$state" "$id" || true
+    return 1
+  fi
+  if ! mv -f -- "$state/$id.pr-poll" "$tmp"; then
+    rm -f -- "$tmp"
+    fm_pr_poll_preserved_restore "$state" "$id" || true
+    return 1
+  fi
+  FM_PR_POLL_PRESERVED_DATA=$tmp
+}
+
 # Re-arm a stale poll on the identity it already carries, through the same
 # transactional publication an initial arm uses, so a partial refresh revokes
 # rather than leaving a half-updated poll. A caller that cannot re-arm still
-# reports the check, so a refused refresh is loud rather than silent.
+# reports the check, so a refused refresh is loud rather than silent, and the
+# poll it refused to refresh is left armed on the program it already carried.
 fm_pr_poll_template_refresh() {  # <state> <id> <template>
   local state=$1 id=$2 template=$3 previous_umask rc=0
   fm_pr_poll_template_stale "$state" "$id" "$template" || return 1
@@ -725,10 +814,17 @@ fm_pr_poll_template_refresh() {  # <state> <id> <template>
   fm_pr_poll_prepare "$state" "$id" "$FM_PR_POLL_STALE_PROVIDER" "$FM_PR_POLL_STALE_URL" \
     "$FM_PR_POLL_STALE_HOST" "$FM_PR_POLL_STALE_PATH" "$FM_PR_POLL_STALE_NUMBER" "$template" \
     || rc=1
+  # Nothing is set aside until the replacement is fully staged, so a refresh
+  # that cannot even prepare leaves the armed poll untouched.
+  [ "$rc" -ne 0 ] || fm_pr_poll_preserved_save "$state" "$id" || rc=1
   [ "$rc" -ne 0 ] || fm_pr_poll_publish_prepared || rc=1
   umask "$previous_umask"
-  [ "$rc" -eq 0 ] || return 1
-  fm_pr_poll_artifacts_valid "$state" "$id" "$template"
+  if [ "$rc" -eq 0 ] && fm_pr_poll_artifacts_valid "$state" "$id" "$template"; then
+    fm_pr_poll_preserved_discard
+    return 0
+  fi
+  fm_pr_poll_preserved_restore "$state" "$id" || true
+  return 1
 }
 
 fm_pr_poll_snapshot_matches() {
