@@ -296,7 +296,7 @@ test_a_process_in_a_disposable_copy_is_found_and_stopped() {
 # --- 3. a primary checkout is never reachable, even when a record names it ---
 
 test_a_primary_checkout_is_never_a_target() {
-  local dir stack_pid copy_pid out
+  local dir stack_pid copy_pid out rc
   dir="$TMP_ROOT/case-primary"
   mkdir -p "$dir"
   make_backend_stub "$dir" fm-stack
@@ -322,10 +322,18 @@ test_a_primary_checkout_is_never_a_target() {
     *"LEFTOVER: stack"*) fail "primary-checkout: a checkout was reported as a task copy: $out" ;;
   esac
 
-  out=$(run_orphan "$dir" reap stack)
+  rc=0
+  out=$(run_orphan "$dir" reap stack) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "primary-checkout: an explicit cleanup of a checkout reported success: $out"
   case "$out" in
-    *"nothing to stop"*) ;;
+    *"was refused"*) ;;
     *) fail "primary-checkout: an explicit cleanup did not refuse the checkout: $out" ;;
+  esac
+  # The checkout was never examined, so the cleanup may not say anything about
+  # what is or is not running in it.
+  case "$out" in
+    *"nothing to stop"*) fail "primary-checkout: a copy that was never read was called empty: $out" ;;
   esac
   sleep 0.3
   alive "$stack_pid" || fail "primary-checkout: a process in a checkout was stopped"
@@ -1436,6 +1444,130 @@ test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back() {
 # every scan for as long as the stale path stays in the record, and a report
 # that raises contentless alarms is one people stop reading.
 
+# The COPY half of the same contract the temp root already keeps. A record that
+# names a local copy the shape wall refuses had nothing examined at all, yet the
+# whole task vanished from the report: the fleet scan exited 0 with no line for
+# it, so bin/fm-session-start.sh's digest printed "(none)" for a copy holding a
+# live process, and `reap` answered "nothing to stop" - the one claim its own
+# unscannable arm exists to refuse to make.
+#
+# An ordinary clone is the reachable shape, not a contrived one: bin/fm-teardown.sh
+# deliberately supports a task copy that is a plain clone rather than a linked
+# worktree, and that copy fails the linked-worktree proof used here.
+test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped() {
+  local dir clone out rc pid
+  dir="$TMP_ROOT/case-refused-copy"
+  clone="$TMP_ROOT/ordinary-clone"
+  mkdir -p "$dir"
+  git clone --quiet "$PRIMARY" "$clone" 2>/dev/null \
+    || fail "refused-copy: could not build the ordinary-clone fixture"
+  make_backend_stub "$dir" fm-rc
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid=$(witness "$clone")
+  write_task_meta rc "$clone" "fmses:fm-rc"
+
+  # The fleet-wide sweep, which is what the session-start digest actually runs.
+  rc=0
+  out=$(run_orphan "$dir" scan) || rc=$?
+  case "$out" in
+    *"UNSCANNABLE: rc"*"$clone"*) ;;
+    *) fail "refused-copy: a refused local copy left no trace in the fleet scan: $out" ;;
+  esac
+  [ "$rc" = 3 ] \
+    || fail "refused-copy: a scan with an unexamined copy exited $rc, so the digest would present it as a clean fleet"
+  case "$out" in
+    *"LEFTOVER: rc"*) fail "refused-copy: an unexamined copy was reported as leaking: $out" ;;
+  esac
+
+  rc=0
+  out=$(run_orphan "$dir" reap rc) || rc=$?
+  [ "$rc" != 0 ] || fail "refused-copy: a cleanup that examined nothing reported success: $out"
+  case "$out" in
+    *"nothing to stop"*) fail "refused-copy: a copy that was never read was reported as having nothing to stop: $out" ;;
+  esac
+  case "$out" in
+    *"was refused"*) ;;
+    *) fail "refused-copy: the refusal did not say the recorded copy was refused: $out" ;;
+  esac
+
+  sleep 0.3
+  alive "$pid" || fail "refused-copy: a process in a copy that was never validated was stopped"
+  kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$HOME_DIR/state/rc.meta"
+  rm -rf "$clone"
+  pass "a recorded local copy the wall refuses is reported as unexamined instead of vanishing from the report"
+}
+
+# The other half of the split: an absence is not a refusal. A record that names
+# no copy at all named nothing that went unexamined, so it must stay silent -
+# alerting on it would put every such record into the digest at every session
+# start, which is how a report stops being read.
+test_a_record_that_names_no_copy_raises_no_alert() {
+  local dir out rc
+  dir="$TMP_ROOT/case-no-copy"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-nc
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+  write_task_meta nc "" "fmses:fm-nc"
+
+  rc=0
+  out=$(run_orphan "$dir" scan --task nc) || rc=$?
+  case "$out" in
+    *UNSCANNABLE*) fail "no-copy: a record that names no local copy raised an unexamined-root alert: $out" ;;
+  esac
+  [ "$rc" = 0 ] || fail "no-copy: a record with no copy exited $rc rather than reporting nothing"
+  rm -f "$HOME_DIR/state/nc.meta"
+  pass "a record that names no local copy stays silent instead of alerting on an absence"
+}
+
+# A mistyped or unmounted FM_HOME must refuse, not be created and then reported
+# as an examined, clean fleet. bin/fm-wake-lib.sh runs mkdir -p "$STATE" at
+# source time, so the guard has to stand in front of the sources, not after.
+test_a_missing_state_directory_refuses_instead_of_being_created() {
+  local missing out rc
+  missing="$TMP_ROOT/never-mounted/state"
+  rm -rf "$TMP_ROOT/never-mounted"
+
+  rc=0
+  out=$(env PATH="$PATH" FM_HOME="$TMP_ROOT/never-mounted" \
+    FM_STATE_OVERRIDE="$missing" "$ORPHAN" scan 2>&1) || rc=$?
+  [ "$rc" != 0 ] \
+    || fail "missing-state: a scan of a home that does not exist reported a clean fleet: $out"
+  case "$out" in
+    *"state directory"*) ;;
+    *) fail "missing-state: the refusal did not name the missing state directory: $out" ;;
+  esac
+  [ ! -e "$missing" ] \
+    || fail "missing-state: the scan created the state directory it was supposed to refuse"
+  pass "a state directory that is not there refuses the scan instead of being created and called clean"
+}
+
+# $STATE/<id>.meta and $FM_TASK_TMP_ROOT/fm-<id> are both built from the task id,
+# so it is checked before either is - the one input check this verb was missing
+# relative to every sibling entrypoint.
+test_a_task_id_that_escapes_the_home_is_refused() {
+  local out rc
+  rc=0
+  out=$(run_orphan "$TMP_ROOT" reap "../../elsewhere/t1") || rc=$?
+  [ "$rc" != 0 ] || fail "bad-id: a traversing task id was accepted: $out"
+  case "$out" in
+    *"invalid task id"*) ;;
+    *) fail "bad-id: the refusal did not name the invalid task id: $out" ;;
+  esac
+
+  rc=0
+  out=$(run_orphan "$TMP_ROOT" scan --task "../../elsewhere/t1") || rc=$?
+  [ "$rc" != 0 ] || fail "bad-id: a traversing task id was accepted by scan: $out"
+  case "$out" in
+    *"invalid task id"*) ;;
+    *) fail "bad-id: the scan refusal did not name the invalid task id: $out" ;;
+  esac
+  pass "a task id that would escape the home is refused before any path is built from it"
+}
+
 test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable() {
   local dir copy out rc pid_in_copy gone
   dir="$TMP_ROOT/case-gone-tmp"
@@ -1790,6 +1922,10 @@ test_a_listing_that_cannot_be_produced_is_never_an_empty_machine
 test_a_reap_that_never_selects_reports_nothing_from_the_copy_before_it
 test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
+test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped
+test_a_record_that_names_no_copy_raises_no_alert
+test_a_missing_state_directory_refuses_instead_of_being_created
+test_a_task_id_that_escapes_the_home_is_refused
 test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable
 test_liveness_asks_whether_a_pid_exists_not_whether_it_may_be_signalled
 test_a_scan_from_inside_a_copy_never_reports_its_own_helpers
