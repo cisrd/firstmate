@@ -124,7 +124,7 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # directory it just made, and the whole point of this command inverts: the
 # session-start digest prints "(none)" for a fleet nobody examined, which is the
 # exact "I could not look" reported as "I looked and found nothing" that the
-# UNSCANNABLE line exists to remove. The two siblings this command sits beside -
+# UNSCANNABLE line exists to remove. The sibling this command sits beside -
 # bin/fm-teardown.sh - takes the same guard, in the same position, for the same
 # reason.
 fm_backlog_directory_present "$STATE" "state directory" || {
