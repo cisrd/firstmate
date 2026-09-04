@@ -14,6 +14,10 @@
 # Re-queue is not a merge. The bound is one automatic enqueuePullRequest per
 # armed PR identity, recorded in state/<id>.pr-poll-enqueued.
 #
+# The target identity is the pull request recorded in the ejection marker, not
+# the pull request currently named in task metadata. If those two disagree, this
+# script refuses rather than choosing.
+#
 # GitHub's merge-queue mutation is GraphQL-only. gh-axi has no enqueue verb, and
 # gh-axi pr merge --auto can land a merge when no queue is required, so this
 # script uses gh api graphql for the authorized enqueuePullRequest mutation
@@ -53,11 +57,33 @@ fm_pr_metadata_identity_parse "$META" || {
   echo "error: task metadata is unavailable" >&2
   exit 1
 }
+
+MARKER="$STATE/$ID.pr-poll-dequeued"
+if [ ! -f "$MARKER" ] || [ -L "$MARKER" ] || [ "$(fm_pr_file_link_count "$MARKER")" != 1 ]; then
+  echo "error: ejection identity is unavailable" >&2
+  exit 1
+fi
+STATE_DEVICE=$(fm_pr_file_device "$STATE") || {
+  echo "error: ejection identity is unavailable" >&2
+  exit 1
+}
+fm_pr_poll_dequeued_identity_parse "$MARKER" "$STATE_DEVICE" || {
+  echo "error: ejection identity is unavailable" >&2
+  exit 1
+}
+
+if [ "$FM_PR_DEQUEUED_PROVIDER" != "$FM_PR_META_PROVIDER" ] \
+  || [ "$FM_PR_DEQUEUED_HOST" != "$FM_PR_META_HOST" ] \
+  || [ "$FM_PR_DEQUEUED_PATH" != "$FM_PR_META_PATH" ] \
+  || [ "$FM_PR_DEQUEUED_NUMBER" != "$FM_PR_META_NUMBER" ]; then
+  escalate "$REASON ejection identity does not match task metadata"
+fi
+
 URL=$FM_PR_META_URL
-PROVIDER=$FM_PR_META_PROVIDER
-HOST=$FM_PR_META_HOST
-PROJECT_PATH=$FM_PR_META_PATH
-NUMBER=$FM_PR_META_NUMBER
+PROVIDER=$FM_PR_DEQUEUED_PROVIDER
+HOST=$FM_PR_DEQUEUED_HOST
+PROJECT_PATH=$FM_PR_DEQUEUED_PATH
+NUMBER=$FM_PR_DEQUEUED_NUMBER
 [ "$PROVIDER" = github ] || escalate "$REASON gitlab merge queue is not supported"
 [ "$HOST" = github.com ] || escalate "$REASON host is not github.com"
 
@@ -88,23 +114,59 @@ esac
 gql_read='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id state isDraft isInMergeQueue mergeable reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviewThreads(first:100){nodes{isResolved isOutdated}}}}}'
 # shellcheck disable=SC2016 # jq owns every $ expression in this filter.
 gql_read_filter='.data.repository.pullRequest as $pr | if $pr == null then empty else [($pr.id // ""), ($pr.state // ""), (if $pr.isDraft == true then "true" else "false" end), (if $pr.isInMergeQueue == true then "true" else "false" end), ($pr.mergeable // ""), ($pr.reviewDecision // ""), ((($pr.commits.nodes // []) | last | .commit.statusCheckRollup.state) // ""), ([($pr.reviewThreads.nodes // [])[] | select(.isResolved == false and .isOutdated != true)] | length | tostring)] | @tsv end'
-raw=$(gh api graphql -f query="$gql_read" -F owner="$OWNER" -F name="$REPO" -F number="$NUMBER" -q "$gql_read_filter" 2>/dev/null) || escalate "$REASON forge state could not be read"
-[ -n "$raw" ] || escalate "$REASON forge state could not be read"
-case "$raw" in
-  *$'\n'*) escalate "$REASON forge state could not be read" ;;
-esac
-[ "$(printf '%s\n' "$raw" | awk -F '\t' '{print NF}')" = 8 ] \
-  || escalate "$REASON forge state could not be read"
-pr_id=$(printf '%s\n' "$raw" | awk -F '\t' '{print $1}')
-pr_state=$(printf '%s\n' "$raw" | awk -F '\t' '{print $2}')
-is_draft=$(printf '%s\n' "$raw" | awk -F '\t' '{print $3}')
-in_queue=$(printf '%s\n' "$raw" | awk -F '\t' '{print $4}')
-mergeable=$(printf '%s\n' "$raw" | awk -F '\t' '{print $5}')
-review_decision=$(printf '%s\n' "$raw" | awk -F '\t' '{print $6}')
-check_state=$(printf '%s\n' "$raw" | awk -F '\t' '{print $7}')
-unresolved=$(printf '%s\n' "$raw" | awk -F '\t' '{print $8}')
-[ -n "$pr_id" ] || escalate "$REASON forge state could not be read"
-[[ "$pr_id" =~ ^[A-Za-z0-9_=-]+$ ]] || escalate "$REASON forge state could not be read"
+
+read_pr_state() {
+  gh api graphql -f query="$gql_read" -f owner="$OWNER" -f name="$REPO" -F number="$NUMBER" \
+    -q "$gql_read_filter" 2>/dev/null
+}
+
+parse_pr_state() {
+  local raw=$1
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    *$'\n'*) return 1 ;;
+  esac
+  [ "$(printf '%s\n' "$raw" | awk -F '\t' '{print NF}')" = 8 ] || return 1
+  pr_id=$(printf '%s\n' "$raw" | awk -F '\t' '{print $1}')
+  pr_state=$(printf '%s\n' "$raw" | awk -F '\t' '{print $2}')
+  is_draft=$(printf '%s\n' "$raw" | awk -F '\t' '{print $3}')
+  in_queue=$(printf '%s\n' "$raw" | awk -F '\t' '{print $4}')
+  mergeable=$(printf '%s\n' "$raw" | awk -F '\t' '{print $5}')
+  review_decision=$(printf '%s\n' "$raw" | awk -F '\t' '{print $6}')
+  check_state=$(printf '%s\n' "$raw" | awk -F '\t' '{print $7}')
+  unresolved=$(printf '%s\n' "$raw" | awk -F '\t' '{print $8}')
+  [ -n "$pr_id" ] || return 1
+  [[ "$pr_id" =~ ^[A-Za-z0-9_=-]+$ ]] || return 1
+}
+
+raw=$(read_pr_state) || escalate "$REASON forge state could not be read"
+parse_pr_state "$raw" || escalate "$REASON forge state could not be read"
+
+# GitHub's mergeability recompute after a merge-queue ejection routinely takes
+# longer than six seconds on a busy repository, so the default budget is sixty
+# seconds with backoff rather than six.
+unknown_budget=${FM_PR_ENQUEUE_UNKNOWN_BUDGET_SECS:-60}
+unknown_sleep=${FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS:-1}
+case "$unknown_budget" in ''|*[!0-9]*) unknown_budget=60 ;; esac
+case "$unknown_sleep" in ''|*[!0-9]*) unknown_sleep=1 ;; esac
+if [ "$mergeable" = UNKNOWN ]; then
+  unknown_started=$SECONDS
+  unknown_extra=0
+  unknown_delay=$unknown_sleep
+  while [ "$mergeable" = UNKNOWN ]; do
+    unknown_extra=$((unknown_extra + 1))
+    [ "$unknown_extra" -le 8 ] || escalate "$REASON mergeable is UNKNOWN"
+    [ $((SECONDS - unknown_started)) -lt "$unknown_budget" ] \
+      || escalate "$REASON mergeable is UNKNOWN"
+    sleep "$unknown_delay"
+    raw=$(read_pr_state) || escalate "$REASON forge state could not be read"
+    parse_pr_state "$raw" || escalate "$REASON forge state could not be read"
+    if [ "$unknown_delay" -gt 0 ]; then
+      unknown_delay=$((unknown_delay * 2))
+      [ "$unknown_delay" -gt 30 ] && unknown_delay=30
+    fi
+  done
+fi
 
 if [ "$in_queue" = true ]; then
   printf 'queued: %s\n' "$URL"
@@ -114,6 +176,9 @@ fi
 [ "$is_draft" = false ] || escalate "$REASON pull request is a draft"
 [ "$mergeable" = MERGEABLE ] || escalate "$REASON mergeable is $mergeable"
 [ "$review_decision" != CHANGES_REQUESTED ] || escalate "$REASON changes requested"
+if [ -z "$check_state" ]; then
+  escalate "$REASON no checks on the head commit"
+fi
 [ "$check_state" = SUCCESS ] || escalate "$REASON checks are not green"
 [ "$unresolved" = 0 ] || escalate "$REASON unresolved review threads"
 

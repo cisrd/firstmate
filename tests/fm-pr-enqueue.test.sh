@@ -29,6 +29,24 @@ case "${1:-} ${2:-}" in
         ;;
       *reviewThreads*)
         [ "${FM_TEST_GH_READ_FAIL:-0}" = 0 ] || exit 1
+        prev=
+        for arg in "$@"; do
+          if [ "$prev" = -F ]; then
+            case "$arg" in
+              owner=true|owner=false|owner=null|name=true|name=false|name=null|owner=[0-9]*|name=[0-9]*)
+                exit 1
+                ;;
+            esac
+          fi
+          prev=$arg
+        done
+        if [ -n "${FM_TEST_GH_PR_READ_FILE:-}" ] && [ -f "$FM_TEST_GH_PR_READ_FILE" ]; then
+          line=$(head -n 1 "$FM_TEST_GH_PR_READ_FILE")
+          tail -n +2 "$FM_TEST_GH_PR_READ_FILE" > "$FM_TEST_GH_PR_READ_FILE.next"
+          mv "$FM_TEST_GH_PR_READ_FILE.next" "$FM_TEST_GH_PR_READ_FILE"
+          printf '%s\n' "$line"
+          exit 0
+        fi
         if [ -n "${FM_TEST_GH_PR_READ+x}" ]; then
           printf '%s\n' "$FM_TEST_GH_PR_READ"
         else
@@ -48,8 +66,16 @@ SH
   printf '%s\n' "$dir"
 }
 
+write_dequeued_marker() {
+  local dir=$1 provider=${2:-github} host=${3:-github.com} path=${4:-o/r}
+  local number=${5:-1} reason=${6:-failed_checks} created=${7:-2026-09-04T10:00:00Z}
+  fm_pr_poll_dequeued_mark_notified "$dir/home/state" task-a \
+    "$provider" "$host" "$path" "$number" "$reason" "$created" \
+    || fail "could not write the ejection marker"
+}
+
 write_ready_meta() {
-  local dir=$1
+  local dir=$1 url=${2:-https://github.com/o/r/pull/1}
   fm_write_meta "$dir/home/state/task-a.meta" \
     "window=firstmate:fm-task-a" \
     "endpoint_task_id=task-a" \
@@ -57,7 +83,9 @@ write_ready_meta() {
     "project=$dir/project" \
     "kind=ship" \
     "mode=no-mistakes" \
-    "pr=https://github.com/o/r/pull/1"
+    "pr=$url"
+  fm_pr_url_parse "$url" || fail "ready-meta fixture URL was invalid"
+  write_dequeued_marker "$dir" "$FM_PR_PROVIDER" "$FM_PR_HOST" "$FM_PR_PATH" "$FM_PR_NUMBER"
 }
 
 run_enqueue() {
@@ -252,6 +280,99 @@ test_unreadable_state_escalates() {
   pass "an unreadable forge read escalates instead of enqueueing"
 }
 
+test_unknown_then_mergeable_requeues() {
+  local dir rc reads
+  dir=$(make_case unknown-then-mergeable)
+  write_ready_meta "$dir"
+  printf '%s\n%s\n' \
+    $'PR_kwDOabc\tOPEN\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0' \
+    $'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t0' \
+    > "$dir/pr-reads"
+  set +e
+  FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 FM_TEST_GH_PR_READ_FILE="$dir/pr-reads" \
+    run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "UNKNOWN then MERGEABLE should requeue: $(cat "$dir/stdout") $(cat "$dir/stderr")"
+  [ "$(cat "$dir/stdout")" = 'queued: https://github.com/o/r/pull/1' ] \
+    || fail "UNKNOWN then MERGEABLE did not requeue: $(cat "$dir/stdout")"
+  grep -q enqueuePullRequest "$dir/gh.log" || fail "UNKNOWN then MERGEABLE did not call enqueuePullRequest"
+  reads=$(grep -c reviewThreads "$dir/gh.log")
+  [ "$reads" -eq 2 ] || fail "UNKNOWN then MERGEABLE did not re-read: $reads"
+  pass "transient UNKNOWN mergeability is re-read until MERGEABLE"
+}
+
+test_persistent_unknown_mergeability_is_refused() {
+  local dir rc
+  dir=$(make_case persistent-unknown)
+  write_ready_meta "$dir"
+  set +e
+  FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 FM_PR_ENQUEUE_UNKNOWN_BUDGET_SECS=60 \
+    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0' \
+    run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "persistent UNKNOWN should escalate"
+  [ "$(cat "$dir/stdout")" = 'escalate: failed_checks mergeable is UNKNOWN' ] \
+    || fail "persistent UNKNOWN did not stay closed: $(cat "$dir/stdout")"
+  ! grep -q enqueuePullRequest "$dir/gh.log" || fail "persistent UNKNOWN called enqueuePullRequest"
+  pass "UNKNOWN mergeability that never recomputes is refused rather than assumed mergeable"
+}
+
+test_ejection_marker_mismatch_is_refused() {
+  local dir rc
+  dir=$(make_case marker-mismatch)
+  write_ready_meta "$dir"
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    "window=firstmate:fm-task-a" \
+    "endpoint_task_id=task-a" \
+    "worktree=$dir/wt" \
+    "project=$dir/project" \
+    "kind=ship" \
+    "mode=no-mistakes" \
+    "pr=https://github.com/o/r/pull/2"
+  set +e
+  run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "a marker/metadata mismatch should escalate"
+  [ "$(cat "$dir/stdout")" = 'escalate: failed_checks ejection identity does not match task metadata' ] \
+    || fail "mismatch did not refuse: $(cat "$dir/stdout")"
+  ! grep -q enqueuePullRequest "$dir/gh.log" || fail "mismatch called enqueuePullRequest"
+  pass "enqueue refuses when the ejection marker and task metadata name different pull requests"
+}
+
+test_absent_rollup_is_named_not_called_red() {
+  local dir rc
+  dir=$(make_case absent-rollup)
+  write_ready_meta "$dir"
+  set +e
+  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\t\t0' \
+    run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "an absent rollup should escalate"
+  [ "$(cat "$dir/stdout")" = 'escalate: failed_checks no checks on the head commit' ] \
+    || fail "an absent rollup was labelled as red checks: $(cat "$dir/stdout")"
+  ! grep -q enqueuePullRequest "$dir/gh.log" || fail "an absent rollup called enqueuePullRequest"
+  pass "an absent check rollup is refused as missing checks, not as red checks"
+}
+
+test_graphql_string_fields_are_sent_raw() {
+  local dir rc
+  dir=$(make_case graphql-string-vars)
+  write_ready_meta "$dir" https://github.com/true/true/pull/1
+  set +e
+  run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a JSON-looking repo name should still requeue: $(cat "$dir/stdout") $(cat "$dir/stderr")"
+  [ "$(cat "$dir/stdout")" = 'queued: https://github.com/true/true/pull/1' ] \
+    || fail "JSON-looking repo name did not requeue: $(cat "$dir/stdout")"
+  grep -q enqueuePullRequest "$dir/gh.log" || fail "JSON-looking repo name did not call enqueuePullRequest"
+  pass "GraphQL owner and name are sent as strings even when they look like JSON literals"
+}
+
 test_green_failed_checks_requeues_once
 test_merge_conflict_escalates_without_enqueue
 test_red_checks_escalate
@@ -262,3 +383,8 @@ test_forge_spelled_reason_requeues
 test_unknown_reason_is_refused_by_name
 test_unlabelled_ejection_escalates
 test_unrecorded_requeue_is_reported_as_queued
+test_unknown_then_mergeable_requeues
+test_persistent_unknown_mergeability_is_refused
+test_ejection_marker_mismatch_is_refused
+test_absent_rollup_is_named_not_called_red
+test_graphql_string_fields_are_sent_raw

@@ -643,6 +643,7 @@ run_watcher_bounded() {
   shift 2
   perl -e 'my $pid=fork; die unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 }; alarm 10; waitpid $pid, 0; alarm 0; exit($? >> 8)' \
     env FM_HOME="$home" FM_ROOT_OVERRIDE="$watch_root" FM_CHECK_INTERVAL="$check_interval" FM_CHECK_TIMEOUT=1 \
+      FM_PR_POLL_LOCK_TIMEOUT="${FM_PR_POLL_LOCK_TIMEOUT:-1}" \
       FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 PATH="$fakebin:$BASE_PATH" "$WATCH" "$@"
 }
 
@@ -2517,7 +2518,7 @@ test_unusable_set_aside_keeps_reporting_every_cycle() {
   set -e
   [ "$rc" -eq 0 ] || fail "unusable set-aside watcher failed: $(cat "$dir/watch-1.err")"
   case "$(cat "$dir/watch-1.out")" in
-    *"rejected unauthenticated PR poll preserve receipts"*task-a.pr-poll-preserve*) ;;
+    *"rejected unauthenticated state checks"*task-a.pr-poll-preserve*) ;;
     *) fail "an unusable set-aside went unreported: $(cat "$dir/watch-1.out")" ;;
   esac
   [ -f "$state/task-a.pr-poll-preserve" ] \
@@ -2531,10 +2532,124 @@ test_unusable_set_aside_keeps_reporting_every_cycle() {
   set -e
   [ "$rc" -eq 0 ] || fail "second unusable set-aside watcher failed: $(cat "$dir/watch-2.err")"
   case "$(cat "$dir/watch-2.out")" in
-    *"rejected unauthenticated PR poll preserve receipts"*task-a.pr-poll-preserve*) ;;
+    *"rejected unauthenticated state checks"*task-a.pr-poll-preserve*) ;;
     *) fail "an unusable set-aside fell silent on a later cycle: $(cat "$dir/watch-2.out")" ;;
   esac
   pass "a set-aside that cannot be put back is reported on every cycle, never dropped"
+}
+
+test_unusable_set_aside_does_not_starve_a_neighbor_poll() {
+  local dir state rc
+  dir=$(make_case poll-refresh-unusable-set-aside-neighbor)
+  state="$dir/home/state"
+  seed_stale_poll "$dir" task-a https://github.com/o/r/pull/1
+  interrupt_poll_refresh_after_set_aside "$dir" task-a https://github.com/o/r/pull/1
+  printf 'tampered set-aside bytes\n' > "$state/task-a.pr-poll-preserve-check"
+  chmod 0600 "$state/task-a.pr-poll-preserve-check"
+  write_poll_meta "$state" task-b https://github.com/o/r/pull/2
+  seed_canonical_poll "$dir" task-b https://github.com/o/r/pull/2
+
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "neighbor poll watcher failed: $(cat "$dir/watch.err")"
+  case "$(cat "$dir/watch.out")" in
+    check:*task-b.check.sh:*dequeued:failed_checks:2026-09-04T10:00:00Z) ;;
+    *) fail "an unusable set-aside starved a neighbor poll: $(cat "$dir/watch.out")" ;;
+  esac
+  [ -f "$state/task-a.pr-poll-preserve" ] \
+    || fail "an unusable set-aside was dropped while the neighbor was polled"
+  pass "an unusable set-aside is kept for repair without starving a neighbor poll"
+}
+
+hold_poll_lock() {  # <state> <lock> <ready-file>
+  local state=$1 lock=$2 ready=$3
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_try_acquire "$2" || exit 1
+    printf ready > "$3"
+    while kill -0 "$PPID" 2>/dev/null; do sleep 0.05; done
+    fm_lock_release "$2" || true
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" "$ready" &
+}
+
+test_poll_lock_timeout_falls_through_to_rejected_checks() {
+  local dir state rc lock ready holder
+  dir=$(make_case poll-lock-timeout-neighbor)
+  state="$dir/home/state"
+  seed_stale_poll "$dir" task-a https://github.com/o/r/pull/1
+  write_poll_meta "$state" task-b https://github.com/o/r/pull/2
+  seed_canonical_poll "$dir" task-b https://github.com/o/r/pull/2
+  lock=$(fm_pr_poll_lock_path "$state" task-a) || fail "could not name task-a's poll lock"
+  ready="$dir/lock-ready"
+  hold_poll_lock "$state" "$lock" "$ready"
+  holder=$!
+  i=0
+  while [ "$i" -lt 50 ]; do
+    [ -f "$ready" ] && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -f "$ready" ] || fail "the poll-lock holder never acquired"
+
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  [ "$rc" -eq 0 ] || fail "a contended poll lock wedged the watcher: rc=$rc $(cat "$dir/watch.err")"
+  case "$(cat "$dir/watch.out")" in
+    check:*task-b.check.sh:*dequeued:failed_checks:2026-09-04T10:00:00Z) ;;
+    *) fail "a live poll-lock holder starved a neighbor poll: $(cat "$dir/watch.out")" ;;
+  esac
+  pass "a bounded poll-lock wait falls through so a neighbor poll still runs"
+}
+
+test_pr_check_writes_meta_before_waiting_on_poll_lock() {
+  local dir state lock ready holder meta_ok=0 i checker
+  dir=$(make_case pr-check-meta-before-poll-lock)
+  state="$dir/home/state"
+  write_task_meta "$dir"
+  lock=$(fm_pr_poll_lock_path "$state" task-a) || fail "could not name the poll lock"
+  ready="$dir/lock-ready"
+  hold_poll_lock "$state" "$lock" "$ready"
+  holder=$!
+  i=0
+  while [ "$i" -lt 50 ]; do
+    [ -f "$ready" ] && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -f "$ready" ] || fail "the poll-lock holder never acquired"
+
+  set +e
+  run_check_entry "$dir" task-a https://github.com/o/r/pull/1 \
+    > "$dir/check.out" 2> "$dir/check.err" &
+  checker=$!
+  set -e
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if grep -q '^pr=https://github.com/o/r/pull/1$' "$state/task-a.meta" 2>/dev/null; then
+      meta_ok=1
+      break
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$meta_ok" = 1 ] || fail "metadata was not written while the poll lock was held"
+  [ ! -e "$state/task-a.check.sh" ] \
+    || fail "the poll was published while its lock was still held"
+  kill "$checker" 2>/dev/null || true
+  wait "$checker" 2>/dev/null || true
+  kill "$holder" 2>/dev/null || true
+  wait "$holder" 2>/dev/null || true
+  pass "arming writes metadata before waiting on the poll lock"
 }
 
 test_edited_poll_program_is_never_refreshed() {
@@ -2572,6 +2687,9 @@ test_updated_poll_program_keeps_armed_polls_working
 test_failed_poll_refresh_keeps_the_armed_poll
 test_interrupted_poll_refresh_is_recovered_by_the_next_cycle
 test_unusable_set_aside_keeps_reporting_every_cycle
+test_unusable_set_aside_does_not_starve_a_neighbor_poll
+test_poll_lock_timeout_falls_through_to_rejected_checks
+test_pr_check_writes_meta_before_waiting_on_poll_lock
 test_edited_poll_program_is_never_refreshed
 test_merged_poll_reregistration_after_notification_is_absorbed
 test_merged_poll_retries_a_failed_upward_report

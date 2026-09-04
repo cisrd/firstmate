@@ -95,6 +95,10 @@ FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_POLL_RETIREMENT_REJECTED=
 FM_PR_DEQUEUED_REASON=
 FM_PR_DEQUEUED_AT=
+FM_PR_DEQUEUED_PROVIDER=
+FM_PR_DEQUEUED_HOST=
+FM_PR_DEQUEUED_PATH=
+FM_PR_DEQUEUED_NUMBER=
 FM_PR_POLL_STALE_PROVIDER=
 FM_PR_POLL_STALE_URL=
 FM_PR_POLL_STALE_HOST=
@@ -1396,6 +1400,55 @@ fm_pr_poll_dequeued_line_parse() {  # <line>
   FM_PR_DEQUEUED_AT=${rest#*:}
   [[ "$FM_PR_DEQUEUED_REASON" =~ ^[A-Za-z0-9_]+$ ]] || return 1
   [[ "$FM_PR_DEQUEUED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || return 1
+}
+
+fm_pr_poll_lock_path() {  # <state> <id>
+  local state=$1 id=$2
+  fm_pr_task_id_valid "$id" || return 1
+  [ -n "$state" ] || return 1
+  case "$state" in *$'\n'*) return 1 ;; esac
+  printf '%s/.pr-poll-%s.lock\n' "$state" "$id"
+}
+
+fm_pr_poll_dequeued_identity_parse() {  # <marker> <device>
+  local marker=$1 device=$2 version provider host path number reason created
+  FM_PR_DEQUEUED_PROVIDER=
+  FM_PR_DEQUEUED_HOST=
+  FM_PR_DEQUEUED_PATH=
+  FM_PR_DEQUEUED_NUMBER=
+  FM_PR_DEQUEUED_REASON=
+  FM_PR_DEQUEUED_AT=
+  fm_pr_private_file_valid "$marker" 600 "$device" || return 1
+  exec 8< "$marker" || return 1
+  IFS= read -r version <&8 || { exec 8<&-; return 1; }
+  IFS= read -r provider <&8 || { exec 8<&-; return 1; }
+  IFS= read -r host <&8 || { exec 8<&-; return 1; }
+  IFS= read -r path <&8 || { exec 8<&-; return 1; }
+  IFS= read -r number <&8 || { exec 8<&-; return 1; }
+  IFS= read -r reason <&8 || { exec 8<&-; return 1; }
+  IFS= read -r created <&8 || { exec 8<&-; return 1; }
+  if IFS= read -r _extra <&8; then
+    exec 8<&-
+    return 1
+  fi
+  exec 8<&-
+  [ "$version" = fm-pr-poll-dequeued-v1 ] || return 1
+  [ "$provider" = github ] || [ "$provider" = gitlab ] || return 1
+  [ -n "$host" ] && [ -n "$path" ] || return 1
+  [[ "$number" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$reason" =~ ^[A-Za-z0-9_]+$ ]] || return 1
+  [[ "$created" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || return 1
+  # Consumed by bin/fm-pr-enqueue.sh after sourcing this library.
+  # shellcheck disable=SC2034
+  FM_PR_DEQUEUED_PROVIDER=$provider
+  # shellcheck disable=SC2034
+  FM_PR_DEQUEUED_HOST=$host
+  # shellcheck disable=SC2034
+  FM_PR_DEQUEUED_PATH=$path
+  # shellcheck disable=SC2034
+  FM_PR_DEQUEUED_NUMBER=$number
+  FM_PR_DEQUEUED_REASON=$reason
+  FM_PR_DEQUEUED_AT=$created
 }
 
 fm_pr_poll_dequeued_marker_matches() {  # <marker> <device> <provider> <host> <path> <number> <reason> <created>
