@@ -64,8 +64,11 @@
 #                          successful attempts never wake firstmate
 #                          (bin/fm-task-inbox-lib.sh owns the ladder policy)
 #   check: <script>: <out> authenticated check output, always actionable.
-#                          A PR poll emits merged or dequeued:<reason>:<time>;
-#                          any other PR-poll output is ignored rather than woken.
+#                          A PR poll emits merged or dequeued:<reason>:<time>,
+#                          where reason is the forge's own token or the
+#                          unreported/unreadable sentinel for an ejection it
+#                          did not label usably; any other PR-poll output is
+#                          ignored rather than woken.
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
@@ -1639,7 +1642,20 @@ while :; do
         fi
       else
         id=$(basename "$c" .check.sh)
+        # A poll armed before the current bin/fm-pr-poll.sh shipped still holds
+        # the exact copy its registration recorded, so it is refreshed onto the
+        # current program instead of being reported as an unauthenticated check
+        # and left blind until a human re-arms it. A refusal falls through to
+        # the rejected-check wake below, so the poll is never quietly dropped.
+        pr_poll_armed=0
         if fm_pr_poll_snapshot_capture "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+          pr_poll_armed=1
+        elif fm_pr_poll_template_refresh "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
+          && fm_pr_poll_snapshot_capture "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh"; then
+          pr_poll_armed=1
+          triage_log "re-armed PR poll for $id onto the updated poll program"
+        fi
+        if [ "$pr_poll_armed" -eq 1 ]; then
           is_pr_poll=1
           provider=$FM_PR_POLL_SNAPSHOT_PROVIDER
           url=$FM_PR_POLL_SNAPSHOT_URL

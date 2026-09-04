@@ -73,13 +73,16 @@ case "$provider" in
     fi
     # An OPEN pull request that left the merge queue is still blocked, but the
     # merge read above is silent on OPEN. The forge's RemovedFromMergeQueueEvent
-    # carries the reason; anything other than a fully parsed current ejection
-    # stays silent, including a pull request that is still in the queue.
+    # carries the reason, but that reason is nullable and free-form, so a
+    # current ejection the forge left unlabelled still wakes under the
+    # unreported sentinel and one no reader can parse wakes under unreadable:
+    # an ejection is never dropped for the shape of its reason. Silence stays
+    # reserved for a pull request still in the queue and for a read that failed.
     [ "$state" = OPEN ] || exit 0
     # shellcheck disable=SC2016 # GraphQL variables are for gh, not the shell.
     gql_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){isInMergeQueue timelineItems(last:20,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason}}}}}}'
     # shellcheck disable=SC2016 # jq owns every $ expression in this filter.
-    gql_filter='.data.repository.pullRequest as $pr | if $pr == null then empty elif $pr.isInMergeQueue != false then empty else (($pr.timelineItems.nodes // []) | map(select(. != null and .createdAt != null)) | last) as $ev | if ($ev.__typename == "RemovedFromMergeQueueEvent") and ($ev.reason != null) then "\($ev.reason)\t\($ev.createdAt)" else empty end end'
+    gql_filter='.data.repository.pullRequest as $pr | if $pr == null then empty elif $pr.isInMergeQueue != false then empty else (($pr.timelineItems.nodes // []) | map(select(. != null and .createdAt != null)) | last) as $ev | if $ev.__typename == "RemovedFromMergeQueueEvent" then ((($ev.reason // "") | tostring) as $r | (if ($r | test("^[A-Za-z0-9_]+$")) then $r elif $r == "" then "unreported" else "unreadable" end) as $t | "\($t)\t\($ev.createdAt)") else empty end end'
     raw=$(gh api graphql -f query="$gql_query" -F owner="$owner" -F name="$repo" -F number="$number" -q "$gql_filter" 2>/dev/null) || exit 0
     [ -n "$raw" ] || exit 0
     case "$raw" in

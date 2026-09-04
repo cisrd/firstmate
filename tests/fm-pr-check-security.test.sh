@@ -140,6 +140,23 @@ case "${1:-} ${2:-}" in
     case " $* " in
       *REMOVED_FROM_MERGE_QUEUE_EVENT*|*RemovedFromMergeQueueEvent*)
         [ "${FM_TEST_GH_GRAPHQL_FAIL:-0}" = 0 ] || exit 1
+        if [ -n "${FM_TEST_GH_TIMELINE_JSON:-}" ]; then
+          # Reproduce gh's own -q handling, so a case that supplies a forge
+          # response exercises the poll's real filter instead of a fixture of
+          # what that filter was assumed to produce.
+          filter=
+          prev=
+          for arg in "$@"; do
+            if [ "$prev" = -q ]; then
+              filter=$arg
+              break
+            fi
+            prev=$arg
+          done
+          [ -n "$filter" ] || exit 1
+          printf '%s' "$FM_TEST_GH_TIMELINE_JSON" | jq -r "$filter" || exit 1
+          exit 0
+        fi
         printf '%s\n' "${FM_TEST_GH_TIMELINE-}"
         exit 0
         ;;
@@ -682,6 +699,11 @@ make_poll_fixture() {
   chmod 0600 "$dir/home/state/task-a.check.sh" "$dir/home/state/task-a.pr-poll"
 }
 
+# One current ejection as the forge returns it, with the removal event last.
+ejected_response() {  # <reason-json>
+  printf '{"data":{"repository":{"pullRequest":{"isInMergeQueue":false,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent","createdAt":"2026-09-04T09:00:00Z"},{"__typename":"RemovedFromMergeQueueEvent","createdAt":"2026-09-04T10:00:00Z","reason":%s}]}}}}}' "$1"
+}
+
 run_poll() {
   local dir=$1
   FM_TEST_GH_LOG="$dir/gh.log" FM_TEST_GLAB_LOG="$dir/glab.log" \
@@ -714,6 +736,29 @@ test_static_poll_contract() {
   out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' run_poll "$dir")
   [ "$out" = 'dequeued:failed_checks:2026-09-04T10:00:00Z' ] \
     || fail "static poll did not emit the ejection reason"
+
+  # The reason the forge returns is nullable and free-form, so these run the
+  # poll's own response filter over responses the forge can actually send.
+  ln -sf "$REAL_JQ" "$dir/fakebin/jq"
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_TIMELINE_JSON="$(ejected_response '"CI_FAILURE"')" run_poll "$dir")
+  [ "$out" = 'dequeued:CI_FAILURE:2026-09-04T10:00:00Z' ] \
+    || fail "static poll dropped the forge's own ejection reason: $out"
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_TIMELINE_JSON="$(ejected_response null)" run_poll "$dir")
+  [ "$out" = 'dequeued:unreported:2026-09-04T10:00:00Z' ] \
+    || fail "an ejection with no reason stayed silent: $out"
+  out=$(FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE_JSON="$(ejected_response '"Base branch was updated"')" run_poll "$dir")
+  [ "$out" = 'dequeued:unreadable:2026-09-04T10:00:00Z' ] \
+    || fail "an ejection with an unparsable reason stayed silent: $out"
+  out=$(FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE_JSON='{"data":{"repository":{"pullRequest":{"isInMergeQueue":true,"timelineItems":{"nodes":[{"__typename":"RemovedFromMergeQueueEvent","createdAt":"2026-09-04T10:00:00Z","reason":"CI_FAILURE"}]}}}}}' \
+    run_poll "$dir")
+  [ -z "$out" ] || fail "a pull request back in the queue reported an ejection: $out"
+  out=$(FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE_JSON='{"data":{"repository":{"pullRequest":{"isInMergeQueue":false,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent","createdAt":"2026-09-04T10:00:00Z"}]}}}}}' \
+    run_poll "$dir")
+  [ -z "$out" ] || fail "a pull request with no removal event reported an ejection: $out"
+  rm -f "$dir/fakebin/jq"
 
   mv "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll.missing"
   out=$(run_poll "$dir")
@@ -2234,11 +2279,71 @@ test_dequeued_poll_new_ejection_wakes_again() {
   pass "a later ejection of the same PR is a new identity and wakes again"
 }
 
+test_updated_poll_program_keeps_armed_polls_working() {
+  local dir state rc old_template
+  dir=$(make_case poll-program-update)
+  state="$dir/home/state"
+  old_template="$dir/previous-fm-pr-poll.sh"
+  cp "$POLL" "$old_template"
+  printf '# bytes shipped by a previous release of this poll program\n' >> "$old_template"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1 "$old_template"
+  add_stop_custom_check "$dir"
+  if cmp -s "$POLL" "$state/task-a.check.sh"; then
+    fail "the fixture did not arm an older poll program"
+  fi
+
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "poll-program update watcher failed: $(cat "$dir/watch.err")"
+  case "$(cat "$dir/watch.out")" in
+    check:*task-a.check.sh:*dequeued:failed_checks:2026-09-04T10:00:00Z) ;;
+    *) fail "a poll armed before the update went blind: $(cat "$dir/watch.out")" ;;
+  esac
+  cmp -s "$POLL" "$state/task-a.check.sh" \
+    || fail "the armed poll was not refreshed onto the current poll program"
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "the refreshed poll left its registration inconsistent"
+  pass "a poll armed before a poll-program update keeps polling across it"
+}
+
+test_edited_poll_program_is_never_refreshed() {
+  local dir state rc
+  dir=$(make_case poll-program-edited)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  # An edit in place keeps the registered inode, so only the recorded hash can
+  # tell an older release apart from a program somebody rewrote.
+  printf '#!/usr/bin/env bash\nprintf "merged\\n"\n' > "$state/task-a.check.sh"
+  chmod 0600 "$state/task-a.check.sh"
+
+  set +e
+  run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "edited poll program watcher failed: $(cat "$dir/watch.err")"
+  case "$(cat "$dir/watch.out")" in
+    *"rejected unauthenticated state checks"*task-a.check.sh*) ;;
+    *) fail "an edited poll program was not reported: $(cat "$dir/watch.out")" ;;
+  esac
+  if cmp -s "$POLL" "$state/task-a.check.sh"; then
+    fail "an edited poll program was refreshed instead of rejected"
+  fi
+  pass "an edited poll program is rejected rather than refreshed"
+}
+
 test_parser_matrix
 test_gitlab_merge_watch
 test_merged_poll_retires_once
 test_dequeued_poll_wakes_with_reason
 test_dequeued_poll_new_ejection_wakes_again
+test_updated_poll_program_keeps_armed_polls_working
+test_edited_poll_program_is_never_refreshed
 test_merged_poll_reregistration_after_notification_is_absorbed
 test_merged_poll_retries_a_failed_upward_report
 test_self_merge_and_poll_publish_one_outcome

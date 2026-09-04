@@ -424,6 +424,8 @@ Handle actionable wakes as follows:
 3. For `check:`, act on the named poll result, including merges, merge-queue ejections, Relay events, process-to-event source results, and captain inbox notes; a handled inbox note is also acknowledged with `bin/fm-inbox.sh drain --ack <id>`, or it stays counted as still waiting for firstmate.
    A `dequeued:` poll line is handled by `bin/fm-pr-enqueue.sh`.
    Re-queue when that script prints `queued:`; otherwise escalate the forge reason to the captain.
+   A `dequeued:unreported:` or `dequeued:unreadable:` line is a real ejection the forge left unlabelled or labelled unreadably, not a poll failure.
+   A run that prints `queued:` and then `escalate:` did re-queue the pull request but could not record its one-attempt bound: tell the captain and do not re-queue it again.
    Re-queue is not a merge.
 4. For `heartbeat:`, review the whole fleet from the structured fleet view, reconcile suspicious tasks and PR state, update the backlog, and never report an unchanged fleet as progress.
 

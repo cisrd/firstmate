@@ -5,9 +5,12 @@
 # The watcher wakes firstmate with dequeued:<reason>:<timestamp>. This script is
 # the response: it calls enqueuePullRequest when the live pull request is still
 # open, not a draft, not already in the queue, mergeable, with green checks and
-# resolved review threads. Any other reason, including merge_conflict, red
-# checks, unresolved threads, an unreadable forge read, or a second automatic
-# attempt for the same armed PR identity, prints escalate: and does not enqueue.
+# resolved review threads, and the ejection reason is a transient check failure
+# in either the forge's or firstmate's spelling. Any other reason, including
+# merge_conflict, an ejection the forge left unlabelled, a reason no known
+# vocabulary covers, red checks, unresolved threads, an unreadable forge read,
+# or a second automatic attempt for the same armed PR identity, prints
+# escalate: and does not enqueue.
 # Re-queue is not a merge. The bound is one automatic enqueuePullRequest per
 # armed PR identity, recorded in state/<id>.pr-poll-enqueued.
 #
@@ -65,9 +68,20 @@ if fm_pr_poll_enqueued_already "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH
   escalate "$REASON already requeued once"
 fi
 
-case "$REASON" in
-  failed_checks|checks_timed_out) ;;
-  *) escalate "$REASON" ;;
+# The forge spells its removal reasons in upper snake case, and firstmate's own
+# vocabulary is lower snake case, so the token is folded before it is matched
+# and a reason outside every known spelling is refused by name rather than
+# silently treated as ineligible.
+REASON_TOKEN=$(printf '%s\n' "$REASON" | tr '[:lower:]' '[:upper:]')
+case "$REASON_TOKEN" in
+  CI_FAILURE|CI_TIMEOUT|FAILED_CHECKS|CHECKS_TIMED_OUT) ;;
+  UNREPORTED|UNREADABLE)
+    escalate "$REASON the forge reported no usable ejection reason" ;;
+  MANUAL|MERGE_CONFLICT|QUEUE_CLEARED|ROLL_BACK|BRANCH_PROTECTIONS|ALREADY_MERGED|\
+  GIT_TREE_INVALID|INVALID_MERGE_COMMIT|UNKNOWN_REMOVAL_REASON)
+    escalate "$REASON is not an automatic re-queue reason" ;;
+  *)
+    escalate "$REASON is not a known merge-queue ejection reason" ;;
 esac
 
 # shellcheck disable=SC2016 # GraphQL variables are for gh, not the shell.
@@ -112,7 +126,13 @@ case "$queued_id" in
   *$'\n'*) escalate "$REASON enqueuePullRequest failed" ;;
 esac
 
-fm_pr_poll_enqueued_mark "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" "$REASON" \
-  || escalate "$REASON requeue was not recorded"
+# The mutation already landed, so the outcome reported is a re-queue either way.
+# A marker that could not be written only loses the one-attempt bound, and
+# saying the re-queue failed would send the captain after a pull request that is
+# in fact back in the queue.
+if ! fm_pr_poll_enqueued_mark "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" "$REASON"; then
+  printf 'queued: %s\n' "$URL"
+  escalate "$REASON pull request was requeued but the attempt could not be recorded"
+fi
 printf 'queued: %s\n' "$URL"
 exit 0

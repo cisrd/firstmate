@@ -95,6 +95,11 @@ FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_POLL_RETIREMENT_REJECTED=
 FM_PR_DEQUEUED_REASON=
 FM_PR_DEQUEUED_AT=
+FM_PR_POLL_STALE_PROVIDER=
+FM_PR_POLL_STALE_URL=
+FM_PR_POLL_STALE_HOST=
+FM_PR_POLL_STALE_PATH=
+FM_PR_POLL_STALE_NUMBER=
 FM_PR_ENQUEUED_COUNT=
 FM_PR_ENQUEUED_REASON=
 FM_PR_ENQUEUED_PROVIDER=
@@ -644,6 +649,86 @@ fm_pr_poll_snapshot_capture() {
   FM_PR_POLL_SNAPSHOT_TEMPLATE_HASH=$FM_PR_REG_TEMPLATE_HASH
   FM_PR_POLL_SNAPSHOT_DATA_IDENTITY=$FM_PR_REG_DATA_IDENTITY
   FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY=$FM_PR_REG_CHECK_IDENTITY
+}
+
+# --- poll-program refresh -----------------------------------------------------
+# An armed poll carries a byte copy of bin/fm-pr-poll.sh, so shipping any change
+# to that program invalidates every poll armed before the change: the copy no
+# longer compares equal to the template and the watcher can only report the
+# check as unauthenticated until a human re-arms it. That copy is still provably
+# the one its own registration recorded, and its sidecar and task metadata still
+# agree, so the poll is stale rather than untrusted, and the two are told apart
+# here. Only the poll program itself is refreshed; no other artifact is migrated
+# and no other kind of mismatch is repaired.
+fm_pr_poll_template_stale() {  # <state> <id> <template>
+  local state=$1 id=$2 template=$3 state_device check data registration meta
+  FM_PR_POLL_STALE_PROVIDER=
+  FM_PR_POLL_STALE_URL=
+  FM_PR_POLL_STALE_HOST=
+  FM_PR_POLL_STALE_PATH=
+  FM_PR_POLL_STALE_NUMBER=
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  [ -f "$template" ] && [ ! -L "$template" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  check="$state/$id.check.sh"
+  data="$state/$id.pr-poll"
+  registration="$state/$id.pr-poll-registration"
+  meta="$state/$id.meta"
+  # A poll holding a retirement receipt is being removed, not kept alive, and
+  # that receipt is bound to the exact artifacts a refresh would replace.
+  [ ! -e "$state/$id.pr-poll-retirement" ] && [ ! -L "$state/$id.pr-poll-retirement" ] || return 1
+  fm_pr_private_file_valid "$check" 600 "$state_device" || return 1
+  fm_pr_private_file_valid "$data" 600 "$state_device" || return 1
+  fm_pr_private_file_valid "$registration" 600 "$state_device" || return 1
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  [ "$(fm_pr_file_link_count "$meta")" = 1 ] || return 1
+  # Equal bytes are not stale, and the caller's failure then has another cause.
+  if cmp -s "$template" "$check"; then
+    return 1
+  fi
+  fm_pr_poll_data_parse "$data" || return 1
+  fm_pr_poll_registration_parse "$registration" || return 1
+  [ "$FM_PR_REG_ID" = "$id" ] || return 1
+  [ "$FM_PR_REG_PROVIDER" = "$FM_PR_DATA_PROVIDER" ] || return 1
+  [ "$FM_PR_REG_URL" = "$FM_PR_DATA_URL" ] || return 1
+  [ "$FM_PR_REG_HOST" = "$FM_PR_DATA_HOST" ] || return 1
+  [ "$FM_PR_REG_PATH" = "$FM_PR_DATA_PATH" ] || return 1
+  [ "$FM_PR_REG_NUMBER" = "$FM_PR_DATA_NUMBER" ] || return 1
+  [ "$FM_PR_REG_DATA_HASH" = "$(fm_pr_sha256 "$data")" ] || return 1
+  [ "$FM_PR_REG_DATA_IDENTITY" = "$(fm_pr_file_identity "$data")" ] || return 1
+  # The published copy must be exactly the one this registration recorded, so an
+  # edited or swapped check program is never mistaken for an older release.
+  [ "$FM_PR_REG_TEMPLATE_HASH" = "$(fm_pr_sha256 "$check")" ] || return 1
+  [ "$FM_PR_REG_CHECK_IDENTITY" = "$(fm_pr_file_identity "$check")" ] || return 1
+  fm_pr_metadata_identity_parse "$meta" || return 1
+  [ "$FM_PR_META_PROVIDER" = "$FM_PR_DATA_PROVIDER" ] || return 1
+  [ "$FM_PR_META_URL" = "$FM_PR_DATA_URL" ] || return 1
+  [ "$FM_PR_META_HOST" = "$FM_PR_DATA_HOST" ] || return 1
+  [ "$FM_PR_META_PATH" = "$FM_PR_DATA_PATH" ] || return 1
+  [ "$FM_PR_META_NUMBER" = "$FM_PR_DATA_NUMBER" ] || return 1
+  FM_PR_POLL_STALE_PROVIDER=$FM_PR_DATA_PROVIDER
+  FM_PR_POLL_STALE_URL=$FM_PR_DATA_URL
+  FM_PR_POLL_STALE_HOST=$FM_PR_DATA_HOST
+  FM_PR_POLL_STALE_PATH=$FM_PR_DATA_PATH
+  FM_PR_POLL_STALE_NUMBER=$FM_PR_DATA_NUMBER
+}
+
+# Re-arm a stale poll on the identity it already carries, through the same
+# transactional publication an initial arm uses, so a partial refresh revokes
+# rather than leaving a half-updated poll. A caller that cannot re-arm still
+# reports the check, so a refused refresh is loud rather than silent.
+fm_pr_poll_template_refresh() {  # <state> <id> <template>
+  local state=$1 id=$2 template=$3 previous_umask rc=0
+  fm_pr_poll_template_stale "$state" "$id" "$template" || return 1
+  previous_umask=$(umask)
+  fm_pr_poll_prepare "$state" "$id" "$FM_PR_POLL_STALE_PROVIDER" "$FM_PR_POLL_STALE_URL" \
+    "$FM_PR_POLL_STALE_HOST" "$FM_PR_POLL_STALE_PATH" "$FM_PR_POLL_STALE_NUMBER" "$template" \
+    || rc=1
+  [ "$rc" -ne 0 ] || fm_pr_poll_publish_prepared || rc=1
+  umask "$previous_umask"
+  [ "$rc" -eq 0 ] || return 1
+  fm_pr_poll_artifacts_valid "$state" "$id" "$template"
 }
 
 fm_pr_poll_snapshot_matches() {

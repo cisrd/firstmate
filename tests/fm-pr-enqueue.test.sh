@@ -104,7 +104,7 @@ test_merge_conflict_escalates_without_enqueue() {
   rc=$?
   set -e
   [ "$rc" -eq 2 ] || fail "merge_conflict should escalate"
-  [ "$(cat "$dir/stdout")" = 'escalate: merge_conflict' ] \
+  [ "$(cat "$dir/stdout")" = 'escalate: merge_conflict is not an automatic re-queue reason' ] \
     || fail "merge_conflict did not keep the forge reason: $(cat "$dir/stdout")"
   ! grep -q enqueuePullRequest "$dir/gh.log" || fail "merge_conflict called enqueuePullRequest"
   [ ! -e "$dir/home/state/task-a.pr-poll-enqueued" ] || fail "conflict recorded an enqueue attempt"
@@ -161,6 +161,82 @@ test_already_queued_is_idempotent() {
   pass "a pull request already in the queue is reported queued without a mutation"
 }
 
+test_forge_spelled_reason_requeues() {
+  local dir rc
+  dir=$(make_case forge-spelling)
+  write_ready_meta "$dir"
+  set +e
+  run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "the forge's own spelling should requeue: $(cat "$dir/stdout")"
+  [ "$(cat "$dir/stdout")" = 'queued: https://github.com/o/r/pull/1' ] \
+    || fail "CI_FAILURE did not requeue: $(cat "$dir/stdout")"
+  grep -q enqueuePullRequest "$dir/gh.log" || fail "CI_FAILURE did not call enqueuePullRequest"
+
+  dir=$(make_case forge-spelling-timeout)
+  write_ready_meta "$dir"
+  set +e
+  run_enqueue "$dir" ci_timeout > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "a folded timeout reason should requeue: $(cat "$dir/stdout")"
+  [ "$(cat "$dir/stdout")" = 'queued: https://github.com/o/r/pull/1' ] \
+    || fail "ci_timeout did not requeue: $(cat "$dir/stdout")"
+  pass "a transient check failure requeues in the forge's spelling and in firstmate's"
+}
+
+test_unknown_reason_is_refused_by_name() {
+  local dir rc
+  dir=$(make_case unknown-reason)
+  write_ready_meta "$dir"
+  set +e
+  run_enqueue "$dir" flurbed_by_kraken > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "an unknown reason should escalate"
+  [ "$(cat "$dir/stdout")" = 'escalate: flurbed_by_kraken is not a known merge-queue ejection reason' ] \
+    || fail "an unknown reason was not refused by name: $(cat "$dir/stdout")"
+  ! grep -q enqueuePullRequest "$dir/gh.log" || fail "an unknown reason called enqueuePullRequest"
+  pass "a reason outside every known vocabulary is refused explicitly"
+}
+
+test_unlabelled_ejection_escalates() {
+  local dir rc reason
+  for reason in unreported unreadable; do
+    dir=$(make_case "unlabelled-$reason")
+    write_ready_meta "$dir"
+    set +e
+    run_enqueue "$dir" "$reason" > "$dir/stdout" 2> "$dir/stderr"
+    rc=$?
+    set -e
+    [ "$rc" -eq 2 ] || fail "an unlabelled ejection should escalate"
+    [ "$(cat "$dir/stdout")" = "escalate: $reason the forge reported no usable ejection reason" ] \
+      || fail "an unlabelled ejection did not say so: $(cat "$dir/stdout")"
+    ! grep -q enqueuePullRequest "$dir/gh.log" \
+      || fail "an unlabelled ejection called enqueuePullRequest"
+  done
+  pass "an ejection the forge did not label usably escalates instead of requeueing"
+}
+
+test_unrecorded_requeue_is_reported_as_queued() {
+  local dir rc
+  dir=$(make_case unrecorded-requeue)
+  write_ready_meta "$dir"
+  mkdir "$dir/home/state/task-a.pr-poll-enqueued"
+  set +e
+  run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "an unrecorded requeue should still escalate"
+  grep -q enqueuePullRequest "$dir/gh.log" || fail "the requeue mutation did not run"
+  grep -Fqx 'queued: https://github.com/o/r/pull/1' "$dir/stdout" \
+    || fail "an unrecorded requeue hid the landed requeue: $(cat "$dir/stdout")"
+  grep -Fqx 'escalate: failed_checks pull request was requeued but the attempt could not be recorded' \
+    "$dir/stdout" || fail "an unrecorded requeue did not name the lost bound: $(cat "$dir/stdout")"
+  pass "a requeue whose attempt could not be recorded is still reported as queued"
+}
+
 test_unreadable_state_escalates() {
   local dir rc
   dir=$(make_case unreadable)
@@ -182,3 +258,7 @@ test_red_checks_escalate
 test_unresolved_threads_escalate
 test_already_queued_is_idempotent
 test_unreadable_state_escalates
+test_forge_spelled_reason_requeues
+test_unknown_reason_is_refused_by_name
+test_unlabelled_ejection_escalates
+test_unrecorded_requeue_is_reported_as_queued
