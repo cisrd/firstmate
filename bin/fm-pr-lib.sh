@@ -1611,7 +1611,12 @@ fm_pr_poll_enqueued_mark() {  # <state> <id> <provider> <host> <path> <number> <
   fm_pr_task_id_valid "$id" || return 1
   [ -d "$state" ] && [ ! -L "$state" ] || return 1
   [[ "$reason" =~ ^[A-Za-z0-9_]+$ ]] || return 1
-  fm_pr_poll_enqueued_attempts "$state" "$id" "$provider" "$host" "$path" "$number" || return 1
+  # The count carried forward is what a readable marker already recorded. A
+  # marker that cannot be read carries nothing, and the atomic write below
+  # replaces it rather than refusing: a marker left unreadable is a marker that
+  # bounds nothing.
+  fm_pr_poll_enqueued_attempts "$state" "$id" "$provider" "$host" "$path" "$number" \
+    || FM_PR_ENQUEUED_ATTEMPTS=0
   next=$((FM_PR_ENQUEUED_ATTEMPTS + 1))
   state_device=$(fm_pr_file_device "$state") || return 1
   marker="$state/$id.pr-poll-enqueued"

@@ -301,6 +301,69 @@ test_automatic_attempts_stop_at_the_ceiling() {
   pass "a delivery ejected past the ceiling stops being requeued automatically"
 }
 
+test_ceiling_does_not_mask_the_forge_reason() {
+  local dir rc eject
+  dir=$(make_case ceiling-vs-reason)
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 CI_FAILURE 2026-09-04T10:00:00Z
+  set +e
+  run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "the first ejection should requeue: $(cat "$dir/stdout")"
+  for eject in 11 12; do
+    write_dequeued_marker "$dir" github github.com o/r 1 CI_FAILURE "2026-09-04T${eject}:00:00Z"
+    set +e
+    run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+    rc=$?
+    set -e
+    [ "$rc" -eq 0 ] || fail "ejection at $eject:00 should requeue: $(cat "$dir/stdout")"
+  done
+
+  write_dequeued_marker "$dir" github github.com o/r 1 merge_conflict 2026-09-04T13:00:00Z
+  set +e
+  run_enqueue "$dir" merge_conflict > "$dir/stdout4" 2> "$dir/stderr4"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "a conflict past the ceiling should escalate"
+  [ "$(cat "$dir/stdout4")" = 'escalate: merge_conflict is not an automatic re-queue reason' ] \
+    || fail "the ceiling masked the forge reason: $(cat "$dir/stdout4")"
+  [ "$(grep -c enqueuePullRequest "$dir/gh.log")" -eq 3 ] \
+    || fail "the conflict ejection requeued anyway"
+  pass "an ejection past the ceiling is reported by its forge reason, not as a spent budget"
+}
+
+test_unreadable_marker_is_replaced_and_counted() {
+  local dir rc
+  dir=$(make_case unreadable-marker)
+  write_ready_meta "$dir" https://github.com/o/r/pull/1 CI_FAILURE 2026-09-04T10:00:00Z
+  # A well-formed marker body left world-readable, as an archive extraction or a
+  # restore that does not preserve modes produces.
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+    fm-pr-poll-enqueued-v1 github github.com o/r 1 2026-09-03T10:00:00Z 1 CI_FAILURE \
+    > "$dir/home/state/task-a.pr-poll-enqueued"
+  chmod 0644 "$dir/home/state/task-a.pr-poll-enqueued"
+  set +e
+  run_enqueue "$dir" CI_FAILURE > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "an unreadable marker must not block the requeue: $(cat "$dir/stdout")"
+  [ "$(cat "$dir/stdout")" = 'queued: https://github.com/o/r/pull/1' ] \
+    || fail "an unreadable marker was reported as unrecorded: $(cat "$dir/stdout")"
+  [ "$(fm_pr_file_mode "$dir/home/state/task-a.pr-poll-enqueued")" = 600 ] \
+    || fail "the marker was not replaced with a private one"
+
+  set +e
+  run_enqueue "$dir" CI_FAILURE > "$dir/stdout2" 2> "$dir/stderr2"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] || fail "the healed marker did not bound the same ejection"
+  [ "$(cat "$dir/stdout2")" = 'escalate: CI_FAILURE already requeued once' ] \
+    || fail "the healed marker did not carry the attempt: $(cat "$dir/stdout2")"
+  [ "$(grep -c enqueuePullRequest "$dir/gh.log")" -eq 1 ] \
+    || fail "the healed marker still allowed a second attempt"
+  pass "a present but unreadable marker is replaced and its attempt counted"
+}
+
 test_attempt_ceiling_is_overridable() {
   local dir rc count
   dir=$(make_case attempt-ceiling-override)
@@ -564,5 +627,7 @@ test_each_ejection_gets_its_own_automatic_attempt
 test_closed_pull_request_is_named_before_any_unknown_wait
 test_queued_pull_request_is_reported_before_any_unknown_wait
 test_automatic_attempts_stop_at_the_ceiling
+test_ceiling_does_not_mask_the_forge_reason
+test_unreadable_marker_is_replaced_and_counted
 test_attempt_ceiling_is_overridable
 test_a_new_delivery_starts_its_own_attempts

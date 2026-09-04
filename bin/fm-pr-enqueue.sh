@@ -96,24 +96,6 @@ NUMBER=$FM_PR_DEQUEUED_NUMBER
 OWNER=${PROJECT_PATH%%/*}
 REPO=${PROJECT_PATH#*/}
 
-if fm_pr_poll_enqueued_already "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" \
-  "$FM_PR_DEQUEUED_AT"; then
-  escalate "$REASON already requeued once"
-fi
-
-# A delivery that fails deterministically inside the merge group is ejected
-# again on every attempt, and each attempt reads the pull request head rather
-# than the merge group, so the per-ejection bound alone would keep re-queueing
-# it. Past this ceiling the delivery stops being automated and goes to the
-# captain. An unreadable marker counts as no attempts; the write below is what
-# reports it.
-ATTEMPT_CEILING=${FM_PR_ENQUEUE_ATTEMPT_CEILING:-3}
-case "$ATTEMPT_CEILING" in ''|*[!0-9]*|0) ATTEMPT_CEILING=3 ;; esac
-fm_pr_poll_enqueued_attempts "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" \
-  || FM_PR_ENQUEUED_ATTEMPTS=0
-[ "$FM_PR_ENQUEUED_ATTEMPTS" -lt "$ATTEMPT_CEILING" ] \
-  || escalate "$REASON reached the automatic re-queue ceiling of $ATTEMPT_CEILING after $FM_PR_ENQUEUED_ATTEMPTS attempts on this pull request"
-
 # The forge spells its removal reasons in upper snake case, and firstmate's own
 # vocabulary is lower snake case, so both tokens are folded before they are
 # compared or matched, and a reason outside every known spelling is refused by
@@ -132,6 +114,27 @@ case "$MARKER_TOKEN" in
   *)
     escalate "$REASON is not a known merge-queue ejection reason" ;;
 esac
+
+# What the forge ejected this delivery for is the more specific fact, so it is
+# established before either bound is consulted: a reason no automatic re-queue
+# covers is reported as itself rather than as a spent budget.
+if fm_pr_poll_enqueued_already "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" \
+  "$FM_PR_DEQUEUED_AT"; then
+  escalate "$REASON already requeued once"
+fi
+
+# A delivery that fails deterministically inside the merge group is ejected
+# again on every attempt, and each attempt reads the pull request head rather
+# than the merge group, so the per-ejection bound alone would keep re-queueing
+# it. Past this ceiling the delivery stops being automated and goes to the
+# captain. A marker that cannot be read records no attempts, and the write at
+# the end of a successful re-queue replaces it.
+ATTEMPT_CEILING=${FM_PR_ENQUEUE_ATTEMPT_CEILING:-3}
+case "$ATTEMPT_CEILING" in ''|*[!0-9]*|0) ATTEMPT_CEILING=3 ;; esac
+fm_pr_poll_enqueued_attempts "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" "$NUMBER" \
+  || FM_PR_ENQUEUED_ATTEMPTS=0
+[ "$FM_PR_ENQUEUED_ATTEMPTS" -lt "$ATTEMPT_CEILING" ] \
+  || escalate "$REASON reached the automatic re-queue ceiling of $ATTEMPT_CEILING after $FM_PR_ENQUEUED_ATTEMPTS attempts on this pull request"
 
 # shellcheck disable=SC2016 # GraphQL variables are for gh, not the shell.
 gql_read='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id state isDraft isInMergeQueue mergeable reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviewThreads(first:100){nodes{isResolved isOutdated}}}}}'
