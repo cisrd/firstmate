@@ -112,6 +112,26 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 # shellcheck source=bin/fm-backend.sh
 . "$SCRIPT_DIR/fm-backend.sh"
+# shellcheck source=bin/fm-pr-lib.sh
+. "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-backlog-transition-lib.sh
+. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
+
+# BEFORE the libraries below, which create this directory on the way in:
+# bin/fm-worktree-proc-lib.sh loads bin/fm-wake-lib.sh, which runs
+# `mkdir -p "$STATE"` at source time. Loaded first, a mistyped or unmounted
+# FM_HOME is materialised, the sweep then finds no records in the empty state
+# directory it just made, and the whole point of this command inverts: the
+# session-start digest prints "(none)" for a fleet nobody examined, which is the
+# exact "I could not look" reported as "I looked and found nothing" that the
+# UNSCANNABLE line exists to remove. The two siblings this command sits beside -
+# bin/fm-teardown.sh and bin/fm-task-root.sh - take the same guard, in the same
+# position, for the same reason.
+fm_backlog_directory_present "$STATE" "state directory" || {
+  echo "error: fm-orphan-reap refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
+  exit 1
+}
+
 # shellcheck source=bin/fm-worktree-proc-lib.sh
 . "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
 # shellcheck source=bin/fm-gate-refuse-lib.sh
@@ -126,15 +146,25 @@ die() {  # <message>
 # Prints them one per line; a task that cannot qualify prints nothing and
 # returns 1, with the reason on stderr only when <verbose> is 1.
 #
-# A recorded temp root that validation REFUSES is not silently dropped. Doing so
-# would narrow the scan to fewer roots than the record names while leaving the
-# report unchanged, so a copy with an unexamined root would read exactly like a
-# clean one - the same silent degradation the UNSCANNABLE line exists to remove,
-# reached through a refused root instead of an unproducible listing. It is
-# reported back to the caller on the two `!tmp-refused-*` marker lines, which
+# A recorded root that validation REFUSES is not silently dropped, and that
+# holds for BOTH roots. Dropping one would narrow the scan to fewer roots than
+# the record names while leaving the report unchanged, so a copy with an
+# unexamined root would read exactly like a clean one - the same silent
+# degradation the UNSCANNABLE line exists to remove, reached through a refused
+# root instead of an unproducible listing. Each is reported back to the caller
+# on its own pair of marker lines, `!copy-refused-*` and `!tmp-refused-*`, which
 # travel on stdout because this function is read through a pipe and a global set
 # in that subshell would never reach the caller. Absolute roots start with `/`,
 # so no real root can be mistaken for a marker.
+#
+# REFUSED IS NOT ABSENT, and only the first is worth an alert. A record that
+# names no copy at all, and a kind that never has a disposable copy, are
+# legitimate absences: nothing was named, so nothing went unexamined, and they
+# stay silent. A copy the record DOES name and the wall refuses is the other
+# case - something was named and could not be looked at - and it is exactly what
+# the header promises to surface. The shape is reachable in normal use, not
+# theoretical: an ordinary clone is a supported task copy (bin/fm-teardown.sh
+# accepts one deliberately) and fails the linked-worktree proof used here.
 task_roots() {  # <task-id> <meta> <verbose>
   local id=$1 meta=$2 verbose=$3 kind wt tmp wt_out tmp_out tmp_rc reason
   kind=$(fm_meta_get "$meta" kind)
@@ -147,6 +177,10 @@ task_roots() {  # <task-id> <meta> <verbose>
       ;;
   esac
   wt=$(fm_meta_get "$meta" worktree)
+  if [ -z "$wt" ]; then
+    [ "$verbose" = 1 ] && echo "task $id records no local copy, so there is none to examine" >&2
+    return 1
+  fi
   # One call, not two. On success this validator prints the resolved path and
   # nothing else; on refusal it prints only its reason. So the single capture
   # that would have carried the path carries the diagnostic instead - the same
@@ -156,8 +190,11 @@ task_roots() {  # <task-id> <meta> <verbose>
   # reason from a SECOND reading that need not agree with the first that
   # actually decided.
   if ! wt_out=$(fm_wtproc_disposable_worktree "$wt" "$FM_HOME" 2>&1); then
+    reason=${wt_out:-the local-copy check refused it without stating a reason; inspect that path by hand}
+    printf '!copy-refused-path %s\n' "$wt"
+    printf '!copy-refused-reason %s\n' "$reason"
     if [ "$verbose" = 1 ]; then
-      echo "task $id: recorded local copy '$wt' was refused, so it was NOT examined: ${wt_out:-the local-copy check refused it without stating a reason; inspect that path by hand}" >&2
+      echo "task $id: recorded local copy '$wt' was refused, so it was NOT examined: $reason" >&2
     fi
     return 1
   fi
@@ -265,6 +302,7 @@ listening_ports() {  # <pid>...
 scan_task() {  # <task-id> <verbose>
   local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
   local undetermined=0 undetermined_why="" label refused_path="" refused_reason=""
+  local copy_refused_path="" copy_refused_reason=""
   local -a roots=()
   # EVERY global this function publishes is reset here, not just the two the
   # early returns happened to reach. scan_task returns from a dozen places -
@@ -281,6 +319,8 @@ scan_task() {  # <task-id> <verbose>
   SCAN_SKIPPED_LEADERS=0
   SCAN_UNSCANNABLE_ROOT=
   SCAN_REFUSED_ROOT=
+  SCAN_REFUSED_COPY=
+  SCAN_REFUSED_COPY_REASON=
   SCAN_UNDETERMINED_WHY=
   SCAN_UNEXAMINED=0
   meta="$STATE/$id.meta"
@@ -293,6 +333,8 @@ scan_task() {  # <task-id> <verbose>
     case "$line" in
       '!tmp-refused-path '*) refused_path=${line#'!tmp-refused-path '}; continue ;;
       '!tmp-refused-reason '*) refused_reason=${line#'!tmp-refused-reason '}; continue ;;
+      '!copy-refused-path '*) copy_refused_path=${line#'!copy-refused-path '}; continue ;;
+      '!copy-refused-reason '*) copy_refused_reason=${line#'!copy-refused-reason '}; continue ;;
     esac
     # Only an absolute path resolved by a validator is ever a root. Anything
     # else on this stream is a diagnostic that grew a newline, and a scan root
@@ -300,6 +342,21 @@ scan_task() {  # <task-id> <verbose>
     case "$line" in /*) ;; *) continue ;; esac
     roots+=("$line")
   done < <(task_roots "$id" "$meta" "$verbose" || true)
+  # A refused COPY leaves no root at all, so nothing whatever about this task was
+  # established. It exits on the same status an unlistable root does, because the
+  # two produce the identical fact - the copy was not read - and every caller
+  # already routes that status to "I could not look" rather than "nothing to
+  # stop". Returning 1 here instead, as a copy with no processes does, is what
+  # let a live leak read as a clean fleet.
+  if [ -n "$copy_refused_path" ]; then
+    SCAN_REFUSED_COPY=$copy_refused_path
+    SCAN_REFUSED_COPY_REASON=$copy_refused_reason
+    SCAN_UNSCANNABLE_ROOT=$copy_refused_path
+    SCAN_UNEXAMINED=1
+    printf 'UNSCANNABLE: %s copy=%s (%s, so this copy was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
+      "$id" "$copy_refused_path" "${copy_refused_reason:-the local-copy check refused it without stating a reason}"
+    return 3
+  fi
   # Reported on its own line, ahead of anything the remaining roots yield: a
   # root the record names and validation refuses was NOT examined, and that is a
   # fact about the copy whether or not the roots that WERE examined turn out to
@@ -467,7 +524,11 @@ cmd_scan() {
   local want="" found=0 unscannable=0 undetermined=0 meta id rc
   while [ $# -gt 0 ]; do
     case "$1" in
-      --task) shift; want=${1:-}; [ -n "$want" ] || die "--task needs a task id" ;;
+      --task)
+        shift; want=${1:-}
+        [ -n "$want" ] || die "--task needs a task id"
+        fm_task_id_path_safe "$want" || die "invalid task id '$want'"
+        ;;
       *) die "unknown scan argument '$1'" ;;
     esac
     shift
@@ -530,6 +591,10 @@ cmd_reap() {  # <task-id>
   # keeps working from inside a gate.
   fm_refuse_if_gate_agent
   [ -n "$id" ] || { usage >&2; exit 2; }
+  # Both $STATE/<id>.meta and, through fm_wtproc_task_tmp, $FM_TASK_TMP_ROOT/fm-<id>
+  # are built from this string, so it is checked before either is, exactly as
+  # every sibling entrypoint checks it.
+  fm_task_id_path_safe "$id" || die "invalid task id '$id'"
   # scan_task resets every one of these itself, on entry, so the reap reads
   # exactly what this call established and there is no second list here to fall
   # out of step with that one.
@@ -550,7 +615,13 @@ cmd_reap() {  # <task-id>
       ;;
     3)
       # "Nothing to stop" would be a claim about the copy; all that is known
-      # here is that the copy could not be read.
+      # here is that the copy could not be read. Which of the two ways it could
+      # not be read decides what an operator does next, so they are not merged
+      # into one message: a refused record is corrected, an unlistable host is
+      # inspected by hand.
+      if [ -n "$SCAN_REFUSED_COPY" ]; then
+        die "task $id's recorded local copy $SCAN_REFUSED_COPY was refused, so it was NOT examined (${SCAN_REFUSED_COPY_REASON:-the local-copy check refused it without stating a reason}); nothing was stopped and nothing is known about what is running there. Correct the record with $SCRIPT_DIR/fm-task-root.sh $id worktree <path-to-the-real-copy>, or inspect that path by hand"
+      fi
       die "the processes in task $id's local copy could not be listed on this host (${SCAN_UNSCANNABLE_ROOT:-its recorded roots} could not be read); nothing was stopped and nothing is known about what is running there"
       ;;
     *)
