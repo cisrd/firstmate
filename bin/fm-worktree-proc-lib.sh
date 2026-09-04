@@ -84,6 +84,8 @@
 #   fm_wtproc_disposable_worktree <dir> -> echoes the resolved path, 0 when the
 #                                          path is provably a linked worktree
 #                                          and not a primary checkout
+#                                          (0 = accepted, 1 = refused with a
+#                                          reason, 2 = absent, nothing there)
 #   fm_wtproc_task_tmp <task-id> <dir>  -> echoes the resolved per-task tmp root
 #   fm_wtproc_signalling_root <dir> <label>
 #                                       -> echoes the resolved path after the
@@ -694,10 +696,23 @@ fm_wtproc_signalling_root() {  # <dir> <label> [fm-home]
   printf '%s' "$real"
 }
 
+# Three outcomes, not two, for the same reason fm_wtproc_task_tmp has three:
+#   0  accepted; the resolved path is printed
+#   1  REFUSED; the reason is printed on stderr
+#   2  ABSENT; nothing exists at that path
+#
+# ABSENT was folded into REFUSED, and a caller cannot tell those apart from one
+# status. They are opposite facts: a refused path is one that IS there and could
+# not be examined, while an absent one holds nothing to examine and nothing to
+# inspect. A recorded copy outlives its directory routinely - teardown removes
+# the copy several refusable steps before it removes the record - so a reporter
+# that read the two as one raised a permanent alarm, at every session start, for
+# a path that can never hold a process.
 fm_wtproc_disposable_worktree() {  # <dir> [fm-home]
   local dir=$1 home=${2:-${FM_HOME:-}} real top top_real git_dir common_dir
   [ -n "$dir" ] || { echo "fm-worktree-proc: no local copy recorded" >&2; return 1; }
-  [ -d "$dir" ] || { echo "fm-worktree-proc: '$dir' is not a directory" >&2; return 1; }
+  [ -e "$dir" ] || return 2
+  [ -d "$dir" ] || { echo "fm-worktree-proc: '$dir' exists but is not a directory" >&2; return 1; }
   real=$(cd "$dir" 2>/dev/null && pwd -P) || {
     echo "fm-worktree-proc: '$dir' cannot be resolved" >&2
     return 1

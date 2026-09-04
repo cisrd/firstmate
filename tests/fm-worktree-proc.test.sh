@@ -1500,6 +1500,85 @@ test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped() {
   pass "a recorded local copy the wall refuses is reported as unexamined instead of vanishing from the report"
 }
 
+# A COPY THAT IS GONE IS NOT A COPY THAT COULD NOT BE READ. teardown removes the
+# local copy several refusable steps before it removes the record, so a record
+# outliving its directory is ordinary. An absent path holds no process and gives
+# an operator nothing to inspect, so alerting on it put a contentless UNSCANNABLE
+# line in the session-start digest at every session start for as long as the
+# stale path stayed in the record - and pointed at a repair (retarget the copy)
+# that cannot be carried out once the copy is gone.
+test_a_recorded_copy_that_no_longer_exists_raises_no_alert() {
+  local dir out rc
+  dir="$TMP_ROOT/case-gone-copy"
+  mkdir -p "$dir"
+  make_backend_stub "$dir" fm-gc
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+  write_task_meta gc "$TMP_ROOT/copy-that-was-removed" "fmses:fm-gc"
+
+  rc=0
+  out=$(run_orphan "$dir" scan) || rc=$?
+  case "$out" in
+    *UNSCANNABLE*) fail "gone-copy: a copy whose directory is gone raised an unexamined-root alarm: $out" ;;
+  esac
+  [ "$rc" = 0 ] \
+    || fail "gone-copy: a scan whose only record names a removed copy exited $rc, so the digest alarms at every session start"
+
+  rc=0
+  out=$(run_orphan "$dir" reap gc) || rc=$?
+  case "$out" in
+    *"<path-to-the-real-copy>"*) fail "gone-copy: the cleanup told the operator to retarget a copy that no longer exists: $out" ;;
+  esac
+  rm -f "$HOME_DIR/state/gc.meta"
+  pass "a recorded local copy whose directory is gone stays silent instead of alarming forever"
+}
+
+# A REFUSAL NARROWS THE REPORT, NEVER THE SCAN - the rule the temp-root side has
+# always kept, applied to the copy. A refused copy used to abandon the whole root
+# set, so a temp root that passed the strictest validator in the library, and held
+# a live leaked process, was never looked at: the digest gave the operator no
+# signal it was leaking and the reap stopped nothing.
+test_a_refused_copy_still_scans_the_temp_root() {
+  local dir clone tmproot out rc pid
+  dir="$TMP_ROOT/case-refused-copy-tmp"
+  clone="$TMP_ROOT/clone-refused-with-tmp"
+  tmproot="$FM_TASK_TMP_ROOT/fm-rct"
+  mkdir -p "$dir" "$tmproot"
+  git clone --quiet "$PRIMARY" "$clone" 2>/dev/null \
+    || fail "refused-copy-tmp: could not build the ordinary-clone fixture"
+  make_backend_stub "$dir" fm-rct
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid=$(witness "$tmproot")
+  write_task_meta rct "$clone" "fmses:fm-rct" "$tmproot"
+
+  rc=0
+  out=$(run_orphan "$dir" scan --task rct) || rc=$?
+  # The copy is still reported as unexamined ...
+  case "$out" in
+    *"UNSCANNABLE: rct"*"$clone"*) ;;
+    *) fail "refused-copy-tmp: the refused copy stopped being reported: $out" ;;
+  esac
+  # ... and the temp root the record also names was scanned anyway.
+  case "$out" in
+    *"LEFTOVER: rct"*"$pid"*) ;;
+    *) fail "refused-copy-tmp: a live process in a valid temp root was never found because the copy was refused: $out" ;;
+  esac
+
+  out=$(run_orphan "$dir" reap rct)
+  case "$out" in
+    *"recorded local copy"*"was refused"*) ;;
+    *) fail "refused-copy-tmp: the cleanup did not say it had covered less than the record names: $out" ;;
+  esac
+  sleep 0.3
+  alive "$pid" && fail "refused-copy-tmp: the leaked process in the valid temp root was not stopped"
+
+  rm -f "$HOME_DIR/state/rct.meta"
+  rm -rf "$clone" "$tmproot"
+  pass "a refused local copy is reported without stopping the scan of a temp root that is valid"
+}
+
 # The other half of the split: an absence is not a refusal. A record that names
 # no copy at all named nothing that went unexamined, so it must stay silent -
 # alerting on it would put every such record into the digest at every session
@@ -1924,6 +2003,8 @@ test_an_undetermined_copy_keeps_its_label_when_everything_is_held_back
 test_a_refused_recorded_root_is_reported_rather_than_dropped
 test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped
 test_a_record_that_names_no_copy_raises_no_alert
+test_a_recorded_copy_that_no_longer_exists_raises_no_alert
+test_a_refused_copy_still_scans_the_temp_root
 test_a_missing_state_directory_refuses_instead_of_being_created
 test_a_task_id_that_escapes_the_home_is_refused
 test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable
