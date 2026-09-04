@@ -336,7 +336,7 @@ scan_task() {  # <task-id> <verbose>
   local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
   local undetermined=0 undetermined_why="" label refused_path="" refused_reason=""
   local copy_refused_path="" copy_refused_reason=""
-  local copy_root="" tmp_root="" roots_named=""
+  local copy_root="" tmp_root="" roots_named="" failed_root="" failed_named=""
   local -a roots=()
   # EVERY global this function publishes is reset here, not just the two the
   # early returns happened to reach. scan_task returns from a dozen places -
@@ -409,7 +409,7 @@ scan_task() {  # <task-id> <verbose>
     printf 'UNSCANNABLE: %s copy=%s (%s, so this copy was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
       "$id" "$copy_refused_path" "${copy_refused_reason:-the local-copy check refused it without stating a reason}"
     if [ "${#roots[@]}" -eq 0 ]; then
-      SCAN_UNSCANNABLE_ROOT=$copy_refused_path
+      SCAN_UNSCANNABLE_ROOT="copy=$copy_refused_path"
       return 3
     fi
   fi
@@ -420,7 +420,7 @@ scan_task() {  # <task-id> <verbose>
   if [ -n "$refused_path" ]; then
     SCAN_REFUSED_ROOT=$refused_path
     SCAN_UNEXAMINED=1
-    printf 'UNSCANNABLE: %s copy=%s (%s, so this recorded root was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
+    printf 'UNSCANNABLE: %s tasktmp=%s (%s, so this recorded root was NOT checked and cannot be called clean; correct the record or inspect it by hand)\n' \
       "$id" "$refused_path" "${refused_reason:-the temp-root check refused it without stating a reason}"
   fi
   [ "${#roots[@]}" -gt 0 ] || return 1
@@ -434,14 +434,29 @@ scan_task() {  # <task-id> <verbose>
   # never examined, which is the exact silent degradation this whole mechanism
   # exists to remove.
   fm_wtproc_collect "${roots[@]}" || {
-    SCAN_UNSCANNABLE_ROOT=${FM_WTPROC_FAILED_ROOT:-${roots[0]}}
+    # Which root broke is a fact about that root, so it is named by identity.
+    # Position cannot answer it: whenever the copy is gone or refused the temp
+    # root is the only entry left, and reading "the first root" as "the copy"
+    # sent an operator to inspect a temp root - for a task that may have no copy
+    # on disk at all.
+    failed_root=$FM_WTPROC_FAILED_ROOT
+    if [ -z "$failed_root" ]; then
+      failed_named=${roots_named:-its recorded roots}
+    else
+      case "$failed_root" in
+        "$copy_root") failed_named="copy=$failed_root" ;;
+        "$tmp_root") failed_named="tasktmp=$failed_root" ;;
+        *) failed_named="root=$failed_root" ;;
+      esac
+    fi
+    SCAN_UNSCANNABLE_ROOT=$failed_named
     if [ "$_FM_WTPROC_RESOLVER" = none ]; then
       reason="this host can answer from neither /proc (${FM_PROC_ROOT_OVERRIDE:-/proc}) nor lsof"
     else
       reason="the working-directory scan of that root failed"
     fi
-    printf 'UNSCANNABLE: %s copy=%s (%s, so this copy was NOT checked and cannot be called clean; inspect it by hand)\n' \
-      "$id" "$SCAN_UNSCANNABLE_ROOT" "$reason"
+    printf 'UNSCANNABLE: %s %s (%s, so it was NOT checked and cannot be called clean; inspect it by hand)\n' \
+      "$id" "$failed_named" "$reason"
     return 3
   }
   [ -n "$FM_WTPROC_PIDS" ] || return 1

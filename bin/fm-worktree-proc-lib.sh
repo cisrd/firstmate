@@ -584,13 +584,8 @@ fm_wtproc_endpoint_shell_pid() {  # <backend> <target>
 # reaps only the paths that resolved. A new caller does the same - it never hands
 # a recorded string to the scan.
 #
-# fm_wtproc_prospective_root carries the same refusals to a path that does not
-# exist YET, for the callers that WRITE a root into a record rather than signal
-# into one. Existence is not what makes a path safe, so a wall reachable only
-# through an existing directory would let `<home>/projects/not-created-yet` be
-# recorded today and become a kill root the moment someone creates it.
 _fm_wtproc_refuse_sensitive_root() {  # <real-path> <fm-home> <what>
-  local real=$1 home=$2 what=$3 home_real
+  local real=$1 home=$2 what=$3 home_real projects_dir projects_real
   case "$real" in
     /) echo "fm-worktree-proc: refusing the filesystem root" >&2; return 1 ;;
     /*/*) ;;
@@ -609,63 +604,21 @@ _fm_wtproc_refuse_sensitive_root() {  # <real-path> <fm-home> <what>
     echo "fm-worktree-proc: '$real' is the firstmate home itself" >&2
     return 1
   fi
+  # The SAME directory every other script resolves the primary clones through -
+  # bin/fm-spawn.sh, bin/fm-bootstrap.sh, bin/fm-fleet-sync.sh and the rest all
+  # read ${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}. Hardcoding $home/projects
+  # left the one setting that MOVES that tree outside the wall: on a home run
+  # with FM_PROJECTS_OVERRIDE=/srv/code, a recorded root naming /srv/code/<name>
+  # cleared every refusal here and became a legal kill root, which is precisely
+  # the harm this wall exists to prevent.
+  projects_dir=${FM_PROJECTS_OVERRIDE:-$home_real/projects}
+  projects_real=$(cd "$projects_dir" 2>/dev/null && pwd -P) || projects_real=$projects_dir
   case "$real" in
-    "$home_real"/projects|"$home_real"/projects/*)
+    "$projects_real"|"$projects_real"/*)
       echo "fm-worktree-proc: '$real' is a primary clone, not a disposable copy" >&2
       return 1
       ;;
   esac
-}
-
-# _fm_wtproc_prospective_real: the path <dir> WOULD resolve to, for a <dir> that
-# need not exist. Its deepest existing ancestor is resolved for real, so a
-# symlinked home still lands on the same answer the refusals compare against,
-# and the components below it are appended as written. A `..` component would
-# make that append a lie, so it is refused rather than guessed at.
-_fm_wtproc_prospective_real() {  # <absolute-path>
-  local dir=$1 tail='' base real
-  case "$dir" in /*) ;; *) return 1 ;; esac
-  case "/$dir/" in */../*) return 1 ;; esac
-  while [ ! -d "$dir" ]; do
-    base=${dir##*/}
-    dir=${dir%/*}
-    [ -n "$dir" ] || dir=/
-    case "$base" in
-      ''|.) ;;
-      *) if [ -n "$tail" ]; then tail="$base/$tail"; else tail=$base; fi ;;
-    esac
-    [ "$dir" != / ] || break
-  done
-  [ -d "$dir" ] || return 1
-  real=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || return 1
-  [ -n "$tail" ] || { printf '%s' "$real"; return 0; }
-  case "$real" in
-    /) printf '/%s' "$tail" ;;
-    *) printf '%s/%s' "$real" "$tail" ;;
-  esac
-}
-
-# fm_wtproc_prospective_root: the shape refusals applied to a root a caller is
-# about to RECORD, whether or not anything is there yet.
-#
-# fm_wtproc_signalling_root answers about a directory that exists, and reports
-# an absent one as "nothing to examine" before the refusals ever run - correct
-# for a scan, wrong for a write. A command that repairs a task record must not
-# be able to store `<home>/projects/<name>` merely because that directory has
-# not been created, since the refusal it was invoked to clear returns intact the
-# day it is.
-#
-#   0  accepted; the resolved (or would-be resolved) path is printed
-#   1  refused; the reason is printed on stderr
-fm_wtproc_prospective_root() {  # <dir> <label> [fm-home]
-  local dir=$1 label=$2 home=${3:-${FM_HOME:-}} real
-  [ -n "$dir" ] || { echo "fm-worktree-proc: no path was given for $label" >&2; return 1; }
-  real=$(_fm_wtproc_prospective_real "$dir") || {
-    echo "fm-worktree-proc: $label '$dir' is not an absolute path this can resolve" >&2
-    return 1
-  }
-  _fm_wtproc_refuse_sensitive_root "$real" "$home" "$label" || return 1
-  printf '%s' "$real"
 }
 
 # fm_wtproc_signalling_root: resolve <dir> and apply the shape refusals that no
