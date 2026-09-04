@@ -100,9 +100,19 @@ FM_PR_POLL_STALE_URL=
 FM_PR_POLL_STALE_HOST=
 FM_PR_POLL_STALE_PATH=
 FM_PR_POLL_STALE_NUMBER=
-FM_PR_POLL_PRESERVED_CHECK=
-FM_PR_POLL_PRESERVED_DATA=
-FM_PR_POLL_PRESERVED_REG=
+FM_PR_PRESERVE_ID=
+FM_PR_PRESERVE_PROVIDER=
+FM_PR_PRESERVE_URL=
+FM_PR_PRESERVE_HOST=
+FM_PR_PRESERVE_PATH=
+FM_PR_PRESERVE_NUMBER=
+FM_PR_PRESERVE_DATA_HASH=
+FM_PR_PRESERVE_TEMPLATE_HASH=
+FM_PR_PRESERVE_DATA_IDENTITY=
+FM_PR_PRESERVE_CHECK_IDENTITY=
+FM_PR_PRESERVE_REG_HASH=
+FM_PR_PRESERVE_REG_IDENTITY=
+FM_PR_POLL_PRESERVE_REJECTED=
 FM_PR_ENQUEUED_COUNT=
 FM_PR_ENQUEUED_REASON=
 FM_PR_ENQUEUED_PROVIDER=
@@ -681,6 +691,9 @@ fm_pr_poll_template_stale() {  # <state> <id> <template>
   # A poll holding a retirement receipt is being removed, not kept alive, and
   # that receipt is bound to the exact artifacts a refresh would replace.
   [ ! -e "$state/$id.pr-poll-retirement" ] && [ ! -L "$state/$id.pr-poll-retirement" ] || return 1
+  # An unfinished set-aside still owns these same artifacts until it is
+  # recovered, so a second refresh never starts on top of one.
+  [ ! -e "$state/$id.pr-poll-preserve" ] && [ ! -L "$state/$id.pr-poll-preserve" ] || return 1
   fm_pr_private_file_valid "$check" 600 "$state_device" || return 1
   fm_pr_private_file_valid "$data" 600 "$state_device" || return 1
   fm_pr_private_file_valid "$registration" 600 "$state_device" || return 1
@@ -722,84 +735,236 @@ fm_pr_poll_template_stale() {  # <state> <id> <template>
 # but would turn a refused refresh into a disarmed poll: the task would lose the
 # check the watcher reports, and its merge or ejection would then sleep with
 # nobody to wake. The artifacts a refresh is about to replace are therefore set
-# aside first and put back if the refresh does not complete. They are set aside
-# and put back by rename, so what returns is the exact inode the registration
+# aside first and put back if the refresh does not complete.
+#
+# The set-aside is durable rather than held in the refreshing process: a receipt
+# naming those exact artifacts is published before the first rename, and the
+# copies are set aside under fixed names bound to it. An interruption anywhere
+# in a refresh therefore leaves either a poll that is still armed or that
+# receipt, which the next cycle recovers or reports. Copies are set aside and
+# put back by rename, so what returns is the exact inode the registration
 # recorded rather than an equal-looking copy, and the restored poll is armed on
 # its previous program, reported by its caller, and refreshable again next time.
-fm_pr_poll_preserved_clear() {
-  FM_PR_POLL_PRESERVED_CHECK=
-  FM_PR_POLL_PRESERVED_DATA=
-  FM_PR_POLL_PRESERVED_REG=
+fm_pr_poll_preserve_parse() {
+  local file=$1 version id provider url host path number data_hash template_hash
+  local data_identity check_identity reg_hash reg_identity _extra
+  FM_PR_PRESERVE_ID=
+  FM_PR_PRESERVE_PROVIDER=
+  FM_PR_PRESERVE_URL=
+  FM_PR_PRESERVE_HOST=
+  FM_PR_PRESERVE_PATH=
+  FM_PR_PRESERVE_NUMBER=
+  FM_PR_PRESERVE_DATA_HASH=
+  FM_PR_PRESERVE_TEMPLATE_HASH=
+  FM_PR_PRESERVE_DATA_IDENTITY=
+  FM_PR_PRESERVE_CHECK_IDENTITY=
+  FM_PR_PRESERVE_REG_HASH=
+  FM_PR_PRESERVE_REG_IDENTITY=
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  exec 9< "$file" || return 1
+  IFS= read -r version <&9 || { exec 9<&-; return 1; }
+  IFS= read -r id <&9 || { exec 9<&-; return 1; }
+  IFS= read -r provider <&9 || { exec 9<&-; return 1; }
+  IFS= read -r url <&9 || { exec 9<&-; return 1; }
+  IFS= read -r host <&9 || { exec 9<&-; return 1; }
+  IFS= read -r path <&9 || { exec 9<&-; return 1; }
+  IFS= read -r number <&9 || { exec 9<&-; return 1; }
+  IFS= read -r data_hash <&9 || { exec 9<&-; return 1; }
+  IFS= read -r template_hash <&9 || { exec 9<&-; return 1; }
+  IFS= read -r data_identity <&9 || { exec 9<&-; return 1; }
+  IFS= read -r check_identity <&9 || { exec 9<&-; return 1; }
+  IFS= read -r reg_hash <&9 || { exec 9<&-; return 1; }
+  IFS= read -r reg_identity <&9 || { exec 9<&-; return 1; }
+  if IFS= read -r _extra <&9; then
+    exec 9<&-
+    return 1
+  fi
+  exec 9<&-
+  [ "$version" = fm-pr-poll-preserve-v1 ] || return 1
+  fm_pr_task_id_valid "$id" || return 1
+  fm_pr_url_parse "$url" || return 1
+  [ "$provider" = "$FM_PR_PROVIDER" ] || return 1
+  [ "$host" = "$FM_PR_HOST" ] || return 1
+  [ "$path" = "$FM_PR_PATH" ] || return 1
+  [ "$number" = "$FM_PR_NUMBER" ] || return 1
+  [[ "$data_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$template_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$reg_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$data_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  [[ "$check_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  [[ "$reg_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
+  FM_PR_PRESERVE_ID=$id
+  FM_PR_PRESERVE_PROVIDER=$provider
+  FM_PR_PRESERVE_URL=$url
+  FM_PR_PRESERVE_HOST=$host
+  FM_PR_PRESERVE_PATH=$path
+  FM_PR_PRESERVE_NUMBER=$number
+  FM_PR_PRESERVE_DATA_HASH=$data_hash
+  FM_PR_PRESERVE_TEMPLATE_HASH=$template_hash
+  FM_PR_PRESERVE_DATA_IDENTITY=$data_identity
+  FM_PR_PRESERVE_CHECK_IDENTITY=$check_identity
+  FM_PR_PRESERVE_REG_HASH=$reg_hash
+  FM_PR_PRESERVE_REG_IDENTITY=$reg_identity
 }
 
-fm_pr_poll_preserved_discard() {
-  [ -z "$FM_PR_POLL_PRESERVED_CHECK" ] || rm -f -- "$FM_PR_POLL_PRESERVED_CHECK"
-  [ -z "$FM_PR_POLL_PRESERVED_REG" ] || rm -f -- "$FM_PR_POLL_PRESERVED_REG"
-  [ -z "$FM_PR_POLL_PRESERVED_DATA" ] || rm -f -- "$FM_PR_POLL_PRESERVED_DATA"
-  fm_pr_poll_preserved_clear
+fm_pr_poll_preserve_receipt_valid() {  # <state> <id>
+  local state=$1 id=$2 receipt state_device
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  receipt="$state/$id.pr-poll-preserve"
+  fm_pr_private_file_valid "$receipt" 600 "$state_device" || return 1
+  fm_pr_poll_preserve_parse "$receipt" || return 1
+  [ "$FM_PR_PRESERVE_ID" = "$id" ]
 }
 
-# A name that could not be put back keeps its set-aside copy on disk rather than
-# losing it, so a failed restore never destroys the poll it was protecting.
-fm_pr_poll_preserved_restore() {  # <state> <id>
-  local state=$1 id=$2 failed=0
-  if [ -n "$FM_PR_POLL_PRESERVED_DATA" ]; then
-    if mv -f -- "$FM_PR_POLL_PRESERVED_DATA" "$state/$id.pr-poll"; then
-      FM_PR_POLL_PRESERVED_DATA=
-    else
-      failed=1
-    fi
+fm_pr_poll_preserve_artifact_matches() {  # <path> <device> <identity> <hash>
+  local path=$1 device=$2 identity=$3 hash=$4
+  fm_pr_private_file_valid "$path" 600 "$device" || return 1
+  [ "$(fm_pr_file_identity "$path")" = "$identity" ] || return 1
+  [ "$(fm_pr_sha256 "$path")" = "$hash" ]
+}
+
+fm_pr_poll_preserve_set_aside() {  # <source> <destination> <device>
+  local source=$1 destination=$2 device=$3
+  fm_pr_regular_destination_on_device_or_absent "$destination" "$device" || return 1
+  mv -f -- "$source" "$destination" || return 1
+  fm_pr_private_file_valid "$destination" 600 "$device"
+}
+
+fm_pr_poll_preserve_put_back() {  # <preserved> <destination> <device> <identity> <hash>
+  local preserved=$1 destination=$2 device=$3 identity=$4 hash=$5
+  [ -e "$preserved" ] || [ -L "$preserved" ] || return 0
+  fm_pr_poll_preserve_artifact_matches "$preserved" "$device" "$identity" "$hash" || return 1
+  fm_pr_regular_destination_on_device_or_absent "$destination" "$device" || return 1
+  mv -f -- "$preserved" "$destination"
+}
+
+# Put back every artifact the receipt still owns, and retire the receipt only
+# once all three canonical names hold exactly what it recorded. A receipt that
+# cannot be honoured is kept, so the poll it protects keeps being reported by
+# the next cycle instead of disappearing.
+fm_pr_poll_preserve_recover_one() {  # <state> <id>
+  local state=$1 id=$2 receipt state_device
+  fm_pr_task_id_valid "$id" || return 1
+  receipt="$state/$id.pr-poll-preserve"
+  if [ ! -e "$receipt" ] && [ ! -L "$receipt" ]; then
+    return 0
   fi
-  if [ -n "$FM_PR_POLL_PRESERVED_REG" ]; then
-    if mv -f -- "$FM_PR_POLL_PRESERVED_REG" "$state/$id.pr-poll-registration"; then
-      FM_PR_POLL_PRESERVED_REG=
-    else
-      failed=1
-    fi
-  fi
+  fm_pr_poll_preserve_receipt_valid "$state" "$id" || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  fm_pr_poll_preserve_put_back "$state/$id.pr-poll-preserve-data" "$state/$id.pr-poll" \
+    "$state_device" "$FM_PR_PRESERVE_DATA_IDENTITY" "$FM_PR_PRESERVE_DATA_HASH" || return 1
+  fm_pr_poll_preserve_put_back "$state/$id.pr-poll-preserve-registration" \
+    "$state/$id.pr-poll-registration" \
+    "$state_device" "$FM_PR_PRESERVE_REG_IDENTITY" "$FM_PR_PRESERVE_REG_HASH" || return 1
   # The runnable name comes back last, and only once the state a run of it reads
   # is back, so a half-restored poll is never executable.
-  if [ "$failed" -eq 0 ] && [ -n "$FM_PR_POLL_PRESERVED_CHECK" ]; then
-    if mv -f -- "$FM_PR_POLL_PRESERVED_CHECK" "$state/$id.check.sh"; then
-      FM_PR_POLL_PRESERVED_CHECK=
-    else
-      failed=1
-    fi
-  fi
-  return "$failed"
+  fm_pr_poll_preserve_put_back "$state/$id.pr-poll-preserve-check" "$state/$id.check.sh" \
+    "$state_device" "$FM_PR_PRESERVE_CHECK_IDENTITY" "$FM_PR_PRESERVE_TEMPLATE_HASH" || return 1
+  fm_pr_poll_preserve_artifact_matches "$state/$id.pr-poll" "$state_device" \
+    "$FM_PR_PRESERVE_DATA_IDENTITY" "$FM_PR_PRESERVE_DATA_HASH" || return 1
+  fm_pr_poll_preserve_artifact_matches "$state/$id.pr-poll-registration" "$state_device" \
+    "$FM_PR_PRESERVE_REG_IDENTITY" "$FM_PR_PRESERVE_REG_HASH" || return 1
+  fm_pr_poll_preserve_artifact_matches "$state/$id.check.sh" "$state_device" \
+    "$FM_PR_PRESERVE_CHECK_IDENTITY" "$FM_PR_PRESERVE_TEMPLATE_HASH" || return 1
+  # The restored poll must address the pull request this receipt was written
+  # for, so a receipt is retired only against the identity it recorded.
+  fm_pr_poll_data_parse "$state/$id.pr-poll" || return 1
+  [ "$FM_PR_DATA_PROVIDER" = "$FM_PR_PRESERVE_PROVIDER" ] || return 1
+  [ "$FM_PR_DATA_URL" = "$FM_PR_PRESERVE_URL" ] || return 1
+  [ "$FM_PR_DATA_HOST" = "$FM_PR_PRESERVE_HOST" ] || return 1
+  [ "$FM_PR_DATA_PATH" = "$FM_PR_PRESERVE_PATH" ] || return 1
+  [ "$FM_PR_DATA_NUMBER" = "$FM_PR_PRESERVE_NUMBER" ] || return 1
+  rm -f -- "$receipt" || return 1
+  [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || return 1
+  rm -f -- "$state/$id.pr-poll-preserve-check" \
+    "$state/$id.pr-poll-preserve-registration" "$state/$id.pr-poll-preserve-data"
 }
 
-fm_pr_poll_preserved_save() {  # <state> <id>
-  local state=$1 id=$2 tmp
-  fm_pr_poll_preserved_clear
+fm_pr_poll_preserve_recover_all() {  # <state>
+  local state=$1 receipt id
+  FM_PR_POLL_PRESERVE_REJECTED=
+  for receipt in "$state"/*.pr-poll-preserve; do
+    [ -e "$receipt" ] || [ -L "$receipt" ] || continue
+    id=$(basename "$receipt" .pr-poll-preserve)
+    if ! fm_pr_task_id_valid "$id" || ! fm_pr_poll_preserve_recover_one "$state" "$id"; then
+      FM_PR_POLL_PRESERVE_REJECTED="$FM_PR_POLL_PRESERVE_REJECTED $receipt"
+    fi
+  done
+  [ -z "$FM_PR_POLL_PRESERVE_REJECTED" ]
+}
+
+fm_pr_poll_preserve_remove() {  # <state> <id>
+  local state=$1 id=$2 artifact
+  fm_pr_task_id_valid "$id" || return 1
+  for artifact in "$state/$id.pr-poll-preserve" "$state/$id.pr-poll-preserve-check" \
+    "$state/$id.pr-poll-preserve-registration" "$state/$id.pr-poll-preserve-data"; do
+    [ -e "$artifact" ] || [ -L "$artifact" ] || continue
+    [ -f "$artifact" ] && [ ! -L "$artifact" ] || return 1
+    rm -f -- "$artifact" || return 1
+  done
+}
+
+fm_pr_poll_preserve_save() {  # <state> <id>
+  local state=$1 id=$2 state_device receipt tmp check data registration
+  local data_hash template_hash reg_hash data_identity check_identity reg_identity
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  check="$state/$id.check.sh"
+  data="$state/$id.pr-poll"
+  registration="$state/$id.pr-poll-registration"
+  receipt="$state/$id.pr-poll-preserve"
+  fm_pr_private_file_valid "$check" 600 "$state_device" || return 1
+  fm_pr_private_file_valid "$data" 600 "$state_device" || return 1
+  fm_pr_private_file_valid "$registration" 600 "$state_device" || return 1
+  fm_pr_poll_data_parse "$data" || return 1
+  data_hash=$(fm_pr_sha256 "$data") || return 1
+  template_hash=$(fm_pr_sha256 "$check") || return 1
+  reg_hash=$(fm_pr_sha256 "$registration") || return 1
+  data_identity=$(fm_pr_file_identity "$data") || return 1
+  check_identity=$(fm_pr_file_identity "$check") || return 1
+  reg_identity=$(fm_pr_file_identity "$registration") || return 1
+  umask 077
+  tmp=$(mktemp "$state/.fm-pr-poll-preserve.XXXXXX") || return 1
+  if ! printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+      fm-pr-poll-preserve-v1 "$id" "$FM_PR_DATA_PROVIDER" "$FM_PR_DATA_URL" \
+      "$FM_PR_DATA_HOST" "$FM_PR_DATA_PATH" "$FM_PR_DATA_NUMBER" \
+      "$data_hash" "$template_hash" "$data_identity" "$check_identity" \
+      "$reg_hash" "$reg_identity" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! fm_pr_private_file_valid "$tmp" 600 "$state_device" \
+    || ! fm_pr_poll_preserve_parse "$tmp" \
+    || [ "$FM_PR_PRESERVE_ID" != "$id" ] \
+    || ! fm_pr_regular_destination_on_device_or_absent "$receipt" "$state_device" \
+    || [ -e "$receipt" ] || [ -L "$receipt" ] \
+    || ! mv -f -- "$tmp" "$receipt"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
   # Withdrawn in the order a revocation uses: the runnable name first, so no run
   # of the check can observe state that is on its way out.
-  tmp=$(mktemp "$state/.fm-pr-poll-preserved-check.XXXXXX") || return 1
-  if ! mv -f -- "$state/$id.check.sh" "$tmp"; then
-    rm -f -- "$tmp"
+  if ! fm_pr_poll_preserve_set_aside "$check" "$state/$id.pr-poll-preserve-check" "$state_device" \
+    || ! fm_pr_poll_preserve_set_aside "$registration" \
+      "$state/$id.pr-poll-preserve-registration" "$state_device" \
+    || ! fm_pr_poll_preserve_set_aside "$data" "$state/$id.pr-poll-preserve-data" "$state_device"; then
+    fm_pr_poll_preserve_recover_one "$state" "$id" || true
     return 1
   fi
-  FM_PR_POLL_PRESERVED_CHECK=$tmp
-  if ! tmp=$(mktemp "$state/.fm-pr-poll-preserved-registration.XXXXXX"); then
-    fm_pr_poll_preserved_restore "$state" "$id" || true
-    return 1
-  fi
-  if ! mv -f -- "$state/$id.pr-poll-registration" "$tmp"; then
-    rm -f -- "$tmp"
-    fm_pr_poll_preserved_restore "$state" "$id" || true
-    return 1
-  fi
-  FM_PR_POLL_PRESERVED_REG=$tmp
-  if ! tmp=$(mktemp "$state/.fm-pr-poll-preserved-data.XXXXXX"); then
-    fm_pr_poll_preserved_restore "$state" "$id" || true
-    return 1
-  fi
-  if ! mv -f -- "$state/$id.pr-poll" "$tmp"; then
-    rm -f -- "$tmp"
-    fm_pr_poll_preserved_restore "$state" "$id" || true
-    return 1
-  fi
-  FM_PR_POLL_PRESERVED_DATA=$tmp
+  fm_pr_poll_preserve_receipt_valid "$state" "$id"
+}
+
+# The receipt goes first: once the refreshed poll is published and valid, a copy
+# that outlives an interruption must never be put back over it.
+fm_pr_poll_preserve_discard() {  # <state> <id>
+  local state=$1 id=$2 receipt
+  fm_pr_task_id_valid "$id" || return 1
+  receipt="$state/$id.pr-poll-preserve"
+  rm -f -- "$receipt" || return 1
+  [ ! -e "$receipt" ] && [ ! -L "$receipt" ] || return 1
+  rm -f -- "$state/$id.pr-poll-preserve-check" \
+    "$state/$id.pr-poll-preserve-registration" "$state/$id.pr-poll-preserve-data"
 }
 
 # Re-arm a stale poll on the identity it already carries, through the same
@@ -816,14 +981,14 @@ fm_pr_poll_template_refresh() {  # <state> <id> <template>
     || rc=1
   # Nothing is set aside until the replacement is fully staged, so a refresh
   # that cannot even prepare leaves the armed poll untouched.
-  [ "$rc" -ne 0 ] || fm_pr_poll_preserved_save "$state" "$id" || rc=1
+  [ "$rc" -ne 0 ] || fm_pr_poll_preserve_save "$state" "$id" || rc=1
   [ "$rc" -ne 0 ] || fm_pr_poll_publish_prepared || rc=1
   umask "$previous_umask"
   if [ "$rc" -eq 0 ] && fm_pr_poll_artifacts_valid "$state" "$id" "$template"; then
-    fm_pr_poll_preserved_discard
+    fm_pr_poll_preserve_discard "$state" "$id" || return 1
     return 0
   fi
-  fm_pr_poll_preserved_restore "$state" "$id" || true
+  fm_pr_poll_preserve_recover_one "$state" "$id" || true
   return 1
 }
 

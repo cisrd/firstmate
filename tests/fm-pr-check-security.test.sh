@@ -1284,6 +1284,40 @@ SH
   [ ! -e "$dir/home/state/task-a.pr-poll-dequeued" ] || fail "teardown left the dequeued marker"
   [ ! -e "$dir/home/state/task-a.pr-poll-enqueued" ] || fail "teardown left the enqueued marker"
 
+  dir=$(make_case teardown-preserved-set-aside)
+  fakebin="$dir/fakebin"
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' \
+    'endpoint_task_id=task-a' \
+    "worktree=$dir/missing-worktree" \
+    "project=$dir/project" \
+    'kind=ship' \
+    'mode=local-only'
+  for artifact in pr-poll-preserve pr-poll-preserve-check pr-poll-preserve-registration \
+    pr-poll-preserve-data; do
+    printf '%s\n' "$artifact" > "$dir/home/state/task-a.$artifact"
+    chmod 0600 "$dir/home/state/task-a.$artifact"
+  done
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  touch "$dir/home/state/.last-watcher-beat"
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+    "$TEARDOWN" task-a --force > "$dir/teardown-preserve.out" 2> "$dir/teardown-preserve.err" \
+    || fail "teardown of an unfinished set-aside failed: $(cat "$dir/teardown-preserve.err")"
+  for artifact in pr-poll-preserve pr-poll-preserve-check pr-poll-preserve-registration \
+    pr-poll-preserve-data; do
+    [ ! -e "$dir/home/state/task-a.$artifact" ] \
+      || fail "teardown left task-a.$artifact"
+  done
+  # A later recovery cycle must have nothing left to re-arm a torn-down task with.
+  fm_pr_poll_preserve_recover_all "$dir/home/state" \
+    || fail "a torn-down task still carried a recoverable set-aside"
+  [ ! -e "$dir/home/state/task-a.check.sh" ] \
+    || fail "recovery re-armed a check for a torn-down task"
+
   dir=$(make_case teardown-retirement-receipt)
   fakebin="$dir/fakebin"
   fm_write_meta "$dir/home/state/task-a.meta" \
@@ -2398,6 +2432,111 @@ test_failed_poll_refresh_keeps_the_armed_poll() {
   pass "a refused poll-program refresh keeps the poll armed, audible and refreshable"
 }
 
+seed_stale_poll() {  # <dir> <id> <url>
+  local dir=$1 id=$2 url=$3 old_template
+  old_template="$dir/previous-fm-pr-poll.sh"
+  cp "$POLL" "$old_template"
+  printf '# bytes shipped by a previous release of this poll program\n' >> "$old_template"
+  write_poll_meta "$dir/home/state" "$id" "$url"
+  seed_canonical_poll "$dir" "$id" "$url" "$old_template"
+  if cmp -s "$POLL" "$dir/home/state/$id.check.sh"; then
+    fail "the fixture did not arm an older poll program"
+  fi
+}
+
+# Reproduce the on-disk state a watcher leaves behind when it loses the process
+# between setting an armed poll aside and putting it back: the real set-aside
+# runs, and the process is then killed outright inside that window.
+interrupt_poll_refresh_after_set_aside() {  # <dir> <id> <url>
+  local dir=$1 id=$2 url=$3 state rc
+  state="$dir/home/state"
+  set +e
+  # The signal-death notice for the killed subshell is the fixture working, not
+  # a diagnostic this suite reports.
+  {
+    (
+      fm_pr_poll_template_stale "$state" "$id" "$POLL" || exit 3
+      fm_pr_url_parse "$url" || exit 3
+      fm_pr_poll_prepare "$state" "$id" "$FM_PR_PROVIDER" "$url" "$FM_PR_HOST" \
+        "$FM_PR_PATH" "$FM_PR_NUMBER" "$POLL" || exit 3
+      fm_pr_poll_preserve_save "$state" "$id" || exit 3
+      kill -9 "$BASHPID"
+    )
+  } 2>/dev/null
+  rc=$?
+  set -e
+  [ "$rc" -ne 3 ] || fail "the interrupted-refresh fixture could not set $id aside"
+  [ ! -e "$state/$id.check.sh" ] && [ ! -L "$state/$id.check.sh" ] \
+    || fail "the interrupted-refresh fixture left $id armed"
+  [ -f "$state/$id.pr-poll-preserve" ] \
+    || fail "an interrupted refresh left no durable trace for $id"
+}
+
+test_interrupted_poll_refresh_is_recovered_by_the_next_cycle() {
+  local dir state rc suffix
+  dir=$(make_case poll-refresh-interrupted)
+  state="$dir/home/state"
+  seed_stale_poll "$dir" task-a https://github.com/o/r/pull/1
+  interrupt_poll_refresh_after_set_aside "$dir" task-a https://github.com/o/r/pull/1
+
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch.out" 2> "$dir/watch.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "interrupted-refresh recovery watcher failed: $(cat "$dir/watch.err")"
+  case "$(cat "$dir/watch.out")" in
+    check:*task-a.check.sh:*dequeued:failed_checks:2026-09-04T10:00:00Z) ;;
+    *) fail "a poll interrupted mid-refresh stayed silent: $(cat "$dir/watch.out")" ;;
+  esac
+  fm_pr_poll_artifacts_valid "$state" task-a "$POLL" \
+    || fail "the recovered poll was not left armed on the current program"
+  for suffix in pr-poll-preserve pr-poll-preserve-check pr-poll-preserve-registration \
+    pr-poll-preserve-data; do
+    [ ! -e "$state/task-a.$suffix" ] && [ ! -L "$state/task-a.$suffix" ] \
+      || fail "a completed refresh left task-a.$suffix behind"
+  done
+  pass "a refresh interrupted after its set-aside is recovered and polls again"
+}
+
+test_unusable_set_aside_keeps_reporting_every_cycle() {
+  local dir state rc
+  dir=$(make_case poll-refresh-unusable-set-aside)
+  state="$dir/home/state"
+  seed_stale_poll "$dir" task-a https://github.com/o/r/pull/1
+  interrupt_poll_refresh_after_set_aside "$dir" task-a https://github.com/o/r/pull/1
+  # A set-aside copy that is no longer the artifact its receipt recorded cannot
+  # be put back, and must never be dropped in silence either.
+  printf 'tampered set-aside bytes\n' > "$state/task-a.pr-poll-preserve-check"
+  chmod 0600 "$state/task-a.pr-poll-preserve-check"
+
+  set +e
+  run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "unusable set-aside watcher failed: $(cat "$dir/watch-1.err")"
+  case "$(cat "$dir/watch-1.out")" in
+    *"rejected unauthenticated PR poll preserve receipts"*task-a.pr-poll-preserve*) ;;
+    *) fail "an unusable set-aside went unreported: $(cat "$dir/watch-1.out")" ;;
+  esac
+  [ -f "$state/task-a.pr-poll-preserve" ] \
+    || fail "an unusable set-aside was dropped instead of kept for repair"
+
+  ack_watcher_cycle "$state" || fail "unusable set-aside acknowledgement failed"
+  rm -f "$state/.last-check"
+  set +e
+  run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "second unusable set-aside watcher failed: $(cat "$dir/watch-2.err")"
+  case "$(cat "$dir/watch-2.out")" in
+    *"rejected unauthenticated PR poll preserve receipts"*task-a.pr-poll-preserve*) ;;
+    *) fail "an unusable set-aside fell silent on a later cycle: $(cat "$dir/watch-2.out")" ;;
+  esac
+  pass "a set-aside that cannot be put back is reported on every cycle, never dropped"
+}
+
 test_edited_poll_program_is_never_refreshed() {
   local dir state rc
   dir=$(make_case poll-program-edited)
@@ -2431,6 +2570,8 @@ test_dequeued_poll_wakes_with_reason
 test_dequeued_poll_new_ejection_wakes_again
 test_updated_poll_program_keeps_armed_polls_working
 test_failed_poll_refresh_keeps_the_armed_poll
+test_interrupted_poll_refresh_is_recovered_by_the_next_cycle
+test_unusable_set_aside_keeps_reporting_every_cycle
 test_edited_poll_program_is_never_refreshed
 test_merged_poll_reregistration_after_notification_is_absorbed
 test_merged_poll_retries_a_failed_upward_report

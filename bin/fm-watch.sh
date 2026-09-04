@@ -1627,6 +1627,17 @@ while :; do
   # never run until the fleet went quiet. Checks are due only every
   # CHECK_INTERVAL, so most cycles skip this block and fall straight through.
   if [ "$(age_of "$STATE/.last-check")" -ge "$CHECK_INTERVAL" ]; then
+    # A poll-program refresh sets its armed artifacts aside under a receipt
+    # before replacing them, so a watcher that lost the process mid-refresh
+    # leaves that receipt rather than a task with no poll. Put those artifacts
+    # back before any check runs, and report a receipt that cannot be honoured
+    # instead of leaving its pull request unpolled.
+    if ! fm_pr_poll_preserve_recover_all "$STATE"; then
+      reason="check: rejected unauthenticated PR poll preserve receipts:$FM_PR_POLL_PRESERVE_REJECTED"
+      fm_wake_append check pr-poll-preserve "$reason" || exit 1
+      touch "$STATE/.last-check"
+      wake "$reason"
+    fi
     rejected_checks=
     for c in "$STATE"/*.check.sh; do
       [ -e "$c" ] || continue

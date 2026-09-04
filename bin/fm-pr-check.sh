@@ -43,6 +43,14 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   exit 1
 fi
 
+# A poll-program refresh interrupted mid-flight left its armed artifacts set
+# aside under a receipt. Put them back before publishing a replacement poll, so
+# a later recovery can never restore them over the poll armed here.
+fm_pr_poll_preserve_recover_one "$STATE" "$ID" || {
+  echo "error: pending PR poll preservation could not be validated" >&2
+  exit 1
+}
+
 # A prior exact merged result may have queued its durable wake immediately
 # before interruption.
 # Finish only its identity-bound receipt before publishing a replacement poll.
