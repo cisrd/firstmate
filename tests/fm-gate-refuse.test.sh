@@ -35,7 +35,6 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 SEND="$ROOT/bin/fm-send.sh"
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 ORPHAN_REAP="$ROOT/bin/fm-orphan-reap.sh"
-TASK_ROOT="$ROOT/bin/fm-task-root.sh"
 
 TMP=$(fm_test_tmproot fm-gate-refuse)
 fm_git_identity fmtest fmtest@example.invalid
@@ -349,7 +348,7 @@ test_teardown_refuses_and_admits() {
   pass "fm-teardown: refuses on marker and gate-worktree backstop; a normal teardown is unaffected"
 }
 
-# --- fm-orphan-reap (reap only) and fm-task-root ------------------------------
+# --- fm-orphan-reap (reap only) ----------------------------------------------
 
 # A minimal home with one task record. Neither entrypoint under test here gets
 # far enough to need a real worktree: the refusal must fire before either looks
@@ -372,13 +371,6 @@ run_orphan_reap() {  # <cwd> <case-dir> <verb> [ASSIGN...]
       "$ORPHAN_REAP" "$verb" task-x1 ) 2>&1
 }
 
-run_task_root() {  # <cwd> <case-dir> <path> [ASSIGN...]
-  local cwd=$1 case_dir=$2 path=$3; shift 3
-  ( cd "$cwd" && env -u NO_MISTAKES_GATE -u FM_GATE_REFUSE_BYPASS \
-      "FM_ROOT_OVERRIDE=$ROOT" "FM_HOME=$case_dir" \
-      "FM_STATE_OVERRIDE=$case_dir/state" "$@" \
-      "$TASK_ROOT" task-x1 worktree "$path" ) 2>&1
-}
 
 test_orphan_reap_refuses_and_admits() {
   local case_dir out rc
@@ -408,34 +400,6 @@ test_orphan_reap_refuses_and_admits() {
   pass "fm-orphan-reap: the reap refuses on marker and backstop while the read-only scan stays available"
 }
 
-test_task_root_refuses_and_admits() {
-  local case_dir out rc before
-
-  case_dir=$(make_reap_case task-root-envmark)
-  before=$(cat "$case_dir/state/task-x1.meta")
-  out=$(run_task_root "$NORMAL_CWD" "$case_dir" "$case_dir/wt" NO_MISTAKES_GATE=1); rc=$?
-  expect_code 3 "$rc" "task-root: NO_MISTAKES_GATE must refuse the retarget"
-  assert_contains "$out" "$ENV_MSG" "task-root: env-marker refusal message"
-  [ "$(cat "$case_dir/state/task-x1.meta")" = "$before" ] \
-    || fail "task-root: a gate-refused retarget still rewrote the record"
-
-  case_dir=$(make_reap_case task-root-backstop)
-  before=$(cat "$case_dir/state/task-x1.meta")
-  out=$(run_task_root "$GATE_WT" "$case_dir" "$case_dir/wt"); rc=$?
-  expect_code 3 "$rc" "task-root: gate-worktree cwd must refuse with the marker unset"
-  assert_contains "$out" "$PATH_MSG" "task-root: path-backstop refusal message"
-  [ "$(cat "$case_dir/state/task-x1.meta")" = "$before" ] \
-    || fail "task-root: a backstop-refused retarget still rewrote the record"
-
-  case_dir=$(make_reap_case task-root-ok)
-  mkdir -p "$case_dir/newwt"
-  out=$(run_task_root "$NORMAL_CWD" "$case_dir" "$case_dir/newwt"); rc=$?
-  expect_code 0 "$rc" "task-root: a normal session must still retarget the record: $out"
-  assert_not_contains "$out" "$ENV_MSG" "task-root: normal retarget must not print the gate refusal"
-  assert_not_contains "$out" "$PATH_MSG" "task-root: normal retarget must not print the backstop refusal"
-  pass "fm-task-root: refuses on marker and gate-worktree backstop without touching the record; a normal retarget is unaffected"
-}
-
 test_helper_env_marker_refuses
 test_helper_empty_env_marker_refuses
 test_helper_path_backstop_refuses
@@ -444,4 +408,3 @@ test_spawn_refuses_and_admits
 test_send_refuses_and_admits
 test_teardown_refuses_and_admits
 test_orphan_reap_refuses_and_admits
-test_task_root_refuses_and_admits

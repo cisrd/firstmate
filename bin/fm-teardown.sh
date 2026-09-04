@@ -1817,21 +1817,18 @@ reap_task_backend_process_group() {  # <label>
 # clone, which its own suite pins, so that proof would refuse a shape teardown
 # is required to handle. The half kept is the half that names the harm.
 #
-# The refusal is a REPAIRABLE one, and it says how. There is no --force escape
-# and there must not be: forcing a reap under the firstmate home's projects/
-# tree would stop the captain's own stack, which is the single outcome this wall
-# exists to prevent, so --force cannot be the answer. The answer is to correct
-# the RECORD, and the operator is handed the exact command that does it -
-# bin/fm-task-root.sh, which rewrites that one field through the same wall and
-# signals nothing. Nobody is told to hand-edit a state file.
-
-# A repair command an operator can paste has to name the home it applies to
-# whenever that is not the one the tool would default to on its own.
-fm_teardown_home_prefix() {
-  [ "$FM_HOME" != "$FM_ROOT" ] || return 0
-  printf 'FM_HOME=%s ' "$(printf '%q' "$FM_HOME")"
-}
-
+# The refusal is an HONEST DEAD END, and that is deliberate. There is no --force
+# escape and there must not be: forcing a reap under the firstmate home's
+# projects/ tree would stop the captain's own stack, which is the single outcome
+# this wall exists to prevent. Nor is a retarget command offered. `worktree=` is
+# not merely a reap root - it is the field this teardown reads for the
+# landed-work safety check, the branch cleanup, the hook removal, and the return
+# of the copy itself - so a tool that rewrote it while presenting itself as
+# retargeting a scan root would silently redirect all of those, and an absent
+# replacement would skip them entirely while teardown reported success over a
+# copy still holding unlanded work. So the refusal names the bad recorded root,
+# says exactly why it was refused, and states the repair in one sentence without
+# pretending to automate it.
 REAP_ROOTS=()
 validate_recorded_reap_roots() {
   local real rc pair label dir
@@ -1850,8 +1847,7 @@ validate_recorded_reap_roots() {
       2) ;;
       *)
         echo "REFUSED: task $ID's recorded $label '$dir' is not a path this may ever signal into (${real:-the check refused it without stating a reason}); nothing was signalled and nothing was removed." >&2
-        echo "Point the record at this task's real disposable copy and rerun this teardown:" >&2
-        echo "  $(fm_teardown_home_prefix)$SCRIPT_DIR/fm-task-root.sh $ID $label <path-to-the-real-copy>" >&2
+        echo "Repair: correct the $label= line in $STATE/$ID.meta so it names this task's own disposable copy, then rerun this teardown; nothing here will edit that record for you, because $label= also decides which path teardown checks for unlanded work and returns." >&2
         exit 1
         ;;
     esac
@@ -2878,12 +2874,12 @@ fi
 # Ordering it later cost the operator the repair it was being handed. Past the
 # backlog close marker written below, a refusal leaves `state/<id>.backlog-close`
 # on disk; the next session start replays that marker, removes the task record
-# and closes the row, and the `fm-task-root.sh` line this refusal prints then
-# fails with "task record is unsafe or missing" - the record it needed is gone,
-# teardown can never run for that id again, and the leftover processes are never
-# reaped. The refusal is deterministic, so every rerun refuses again and the
-# window before the next session start was the only chance to use it. A refusal
-# must leave the task WHOLE: record intact, backlog unclosed, endpoint untouched.
+# and closes the row, so the record the printed repair tells the operator to
+# correct is gone - teardown can never run for that id again, and the leftover
+# processes are never reaped. The refusal is deterministic, so every rerun
+# refuses again and the window before the next session start was the only chance
+# to act. A refusal must leave the task WHOLE: record intact, backlog unclosed,
+# endpoint untouched.
 if [ "$KIND" != secondmate ]; then
   validate_recorded_reap_roots
 fi

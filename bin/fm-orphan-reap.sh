@@ -125,8 +125,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 # session-start digest prints "(none)" for a fleet nobody examined, which is the
 # exact "I could not look" reported as "I looked and found nothing" that the
 # UNSCANNABLE line exists to remove. The two siblings this command sits beside -
-# bin/fm-teardown.sh and bin/fm-task-root.sh - take the same guard, in the same
-# position, for the same reason.
+# bin/fm-teardown.sh - takes the same guard, in the same position, for the same
+# reason.
 fm_backlog_directory_present "$STATE" "state directory" || {
   echo "error: fm-orphan-reap refused: $FM_BACKLOG_TRANSITION_ERROR" >&2
   exit 1
@@ -154,8 +154,16 @@ die() {  # <message>
 # root instead of an unproducible listing. Each is reported back to the caller
 # on its own pair of marker lines, `!copy-refused-*` and `!tmp-refused-*`, which
 # travel on stdout because this function is read through a pipe and a global set
-# in that subshell would never reach the caller. Absolute roots start with `/`,
-# so no real root can be mistaken for a marker.
+# in that subshell would never reach the caller.
+#
+# THE ROOTS THEMSELVES ARE LABELLED TOO, on `!copy-root` and `!tmp-root`, and
+# that is not decoration. A caller cannot recover which root is which from
+# position once either one can be missing: a copy that is gone, and a copy the
+# wall refuses, both leave the temp root alone in the set. Reading "the first
+# root" as "the copy" then printed the temp root under a `copy=` label, and an
+# operator following the digest went to inspect a path that is not the task's
+# copy at all. Every payload is still checked to be an absolute path before it
+# is accepted as a root.
 #
 # REFUSED IS NOT ABSENT, and only the first is worth an alert. The rule is one
 # question: was something NAMED that could NOT BE EXAMINED? Only then is there
@@ -211,7 +219,7 @@ task_roots() {  # <task-id> <meta> <verbose>
   wt_rc=0
   wt_out=$(fm_wtproc_disposable_worktree "$wt" "$FM_HOME" 2>&1) || wt_rc=$?
   case "$wt_rc" in
-    0) printf '%s\n' "$wt_out" ;;
+    0) printf '!copy-root %s\n' "$wt_out" ;;
     2)
       [ "$verbose" = 1 ] && echo "task $id: recorded local copy '$wt' does not exist, so there is nothing in it to examine" >&2
       ;;
@@ -233,7 +241,7 @@ task_roots() {  # <task-id> <meta> <verbose>
   tmp_out=$(fm_wtproc_task_tmp "$id" "$tmp" "$FM_HOME" 2>&1) || tmp_rc=$?
   case "$tmp_rc" in
     0)
-      printf '%s\n' "$tmp_out"
+      printf '!tmp-root %s\n' "$tmp_out"
       return 0
       ;;
     2)
@@ -328,6 +336,7 @@ scan_task() {  # <task-id> <verbose>
   local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
   local undetermined=0 undetermined_why="" label refused_path="" refused_reason=""
   local copy_refused_path="" copy_refused_reason=""
+  local copy_root="" tmp_root="" roots_named=""
   local -a roots=()
   # EVERY global this function publishes is reset here, not just the two the
   # early returns happened to reach. scan_task returns from a dozen places -
@@ -346,6 +355,7 @@ scan_task() {  # <task-id> <verbose>
   SCAN_REFUSED_ROOT=
   SCAN_REFUSED_COPY=
   SCAN_REFUSED_COPY_REASON=
+  SCAN_ROOTS_NAMED=
   SCAN_UNDETERMINED_WHY=
   SCAN_UNEXAMINED=0
   meta="$STATE/$id.meta"
@@ -360,13 +370,30 @@ scan_task() {  # <task-id> <verbose>
       '!tmp-refused-reason '*) refused_reason=${line#'!tmp-refused-reason '}; continue ;;
       '!copy-refused-path '*) copy_refused_path=${line#'!copy-refused-path '}; continue ;;
       '!copy-refused-reason '*) copy_refused_reason=${line#'!copy-refused-reason '}; continue ;;
+      # Only an absolute path resolved by a validator is ever a root. Anything
+      # else on this stream is a diagnostic that grew a newline, and a scan root
+      # is the last place to be lenient about what it accepts.
+      '!copy-root '*)
+        line=${line#'!copy-root '}
+        case "$line" in /*) ;; *) continue ;; esac
+        copy_root=$line
+        roots+=("$line")
+        continue
+        ;;
+      '!tmp-root '*)
+        line=${line#'!tmp-root '}
+        case "$line" in /*) ;; *) continue ;; esac
+        tmp_root=$line
+        roots+=("$line")
+        continue
+        ;;
     esac
-    # Only an absolute path resolved by a validator is ever a root. Anything
-    # else on this stream is a diagnostic that grew a newline, and a scan root
-    # is the last place to be lenient about what it accepts.
-    case "$line" in /*) ;; *) continue ;; esac
-    roots+=("$line")
   done < <(task_roots "$id" "$meta" "$verbose" || true)
+  # Each root under the label that is true of it, so no line ever describes one
+  # root with another's name. A task whose copy is gone or refused reports only
+  # the temp root, and says `tasktmp=`.
+  [ -z "$copy_root" ] || roots_named="copy=$copy_root"
+  [ -z "$tmp_root" ] || roots_named="${roots_named:+$roots_named }tasktmp=$tmp_root"
   # Reported on its own line whatever else this task yields, and NOT the end of
   # the examination. The copy could not be read, which is a fact about the copy
   # alone; a temp root the record also names is validated separately and may be
@@ -507,6 +534,7 @@ scan_task() {  # <task-id> <verbose>
   pids=$(printf '%s' "$FM_WTPROC_SELECTED" | tr '\n' ' ')
   pids=${pids% }
   SCAN_ROOTS=("${roots[@]}")
+  SCAN_ROOTS_NAMED=$roots_named
   SCAN_PIDS=$pids
   SCAN_VERDICT=$verdict
   SCAN_SPARE=$spare
@@ -526,12 +554,12 @@ scan_task() {  # <task-id> <verbose>
     # a clean copy, and the report has to say so.
     [ "$skipped" -gt 0 ] || return 1
     if [ "$undetermined" = 1 ]; then
-      printf 'UNDETERMINED: %s agent=%s copy=%s leaders_skipped=%s (%s, so this copy has no established owner; the endpoint shell could not be identified from the record either, so no session leader in it was classified - inspect them by hand)\n' \
-        "$id" "$verdict" "${roots[0]}" "$skipped" "$undetermined_why"
+      printf 'UNDETERMINED: %s agent=%s %s leaders_skipped=%s (%s, so this task has no established owner; the endpoint shell could not be identified from the record either, so no session leader in it was classified - inspect them by hand)\n' \
+        "$id" "$verdict" "$roots_named" "$skipped" "$undetermined_why"
       return 4
     fi
-    printf 'UNRESOLVED: %s agent=%s copy=%s leaders_skipped=%s (the endpoint shell could not be identified from the record, so no session leader in this copy was classified; inspect them by hand)\n' \
-      "$id" "$verdict" "${roots[0]}" "$skipped"
+    printf 'UNRESOLVED: %s agent=%s %s leaders_skipped=%s (the endpoint shell could not be identified from the record, so no session leader in the root(s) named here was classified; inspect them by hand)\n' \
+      "$id" "$verdict" "$roots_named" "$skipped"
     return 0
   fi
   # shellcheck disable=SC2086  # pids is a deliberate space-separated list
@@ -543,8 +571,8 @@ scan_task() {  # <task-id> <verbose>
   # the copy, and the label alone no longer says: it now covers an unreadable
   # agent state as well as an unreadable current state.
   [ "$undetermined" = 1 ] && note="$note ($undetermined_why, so nothing here is stopped for you)"
-  printf '%s: %s agent=%s copy=%s pids=%s%s%s\n' \
-    "$label" "$id" "$verdict" "${roots[0]}" "$(printf '%s' "$pids" | tr ' ' ',')" \
+  printf '%s: %s agent=%s %s pids=%s%s%s\n' \
+    "$label" "$id" "$verdict" "$roots_named" "$(printf '%s' "$pids" | tr ' ' ',')" \
     "${ports:+ listening=$ports}" "$note"
   [ "$undetermined" = 0 ] || return 4
 }
@@ -593,10 +621,11 @@ cmd_scan() {
     fm_wtproc_snapshot_end
   fi
   [ "$found" = 1 ] || return 0
-  echo "Each LEFTOVER line names a local copy whose worker is gone while processes it started are still running."
+  echo "Each LEFTOVER line names the recorded root(s) of a task whose worker is gone while processes it started are still running; copy= is the task's local copy and tasktmp= its per-task temp root."
   echo "An UNRESOLVED line names one where the endpoint's own shell could not be identified from the record, so its session leaders were left unclassified rather than guessed at; inspect those by hand."
+  echo "A task whose copy is gone or was refused is reported on its temp root alone, which is why some lines carry only tasktmp=."
   if [ "$undetermined" = 1 ]; then
-    echo "An UNDETERMINED line names a copy holding processes whose owner could not be established - its own agent state could not be read, or that state reads gone while its current state could not be read at all - and each line says which; its processes are reported but never stopped for you, because an undetermined reading is not evidence the worker is gone."
+    echo "An UNDETERMINED line names root(s) holding processes whose owner could not be established - its own agent state could not be read, or that state reads gone while its current state could not be read at all - and each line says which; its processes are reported but never stopped for you, because an undetermined reading is not evidence the worker is gone."
   fi
   if [ "$unscannable" = 1 ]; then
     echo "An UNSCANNABLE line names a recorded root that was not examined at all - this host could not list it, or the record naming it was refused - so nothing about it, clean or leaking, was established."
@@ -632,7 +661,7 @@ cmd_reap() {  # <task-id>
   # cleanup that covered fewer roots than the record names has to say so, or a
   # copy with an unexamined root reads afterwards like a fully cleaned one.
   if [ -n "$SCAN_REFUSED_COPY" ]; then
-    echo "warning: task $id's recorded local copy $SCAN_REFUSED_COPY was refused, so nothing in it was examined or stopped; correct the record with $SCRIPT_DIR/fm-task-root.sh $id worktree <path-to-the-real-copy>, or inspect it by hand" >&2
+    echo "warning: task $id's recorded local copy $SCAN_REFUSED_COPY was refused, so nothing in it was examined or stopped; correct the worktree= line in $STATE/$id.meta so it names this task's own copy, or inspect that path by hand" >&2
   fi
   if [ -n "$SCAN_REFUSED_ROOT" ]; then
     echo "warning: task $id's recorded temp root $SCAN_REFUSED_ROOT was refused, so nothing in it was examined or stopped; correct the record or inspect it by hand" >&2
@@ -640,10 +669,10 @@ cmd_reap() {  # <task-id>
   case "$scan_rc" in
     0) ;;
     4)
-      die "task $id's local copy holds processes whose owner could not be established: ${SCAN_UNDETERMINED_WHY:-the reason was not recorded; read the scan line for this task and inspect the copy by hand}. An undetermined reading is not evidence its worker is gone - it is the same reading a stale record pointing at a copy since handed to a live task produces - so nothing was stopped. Inspect the copy and its processes by hand"
+      die "task $id holds processes in ${SCAN_ROOTS_NAMED:-its recorded roots} whose owner could not be established: ${SCAN_UNDETERMINED_WHY:-the reason was not recorded; read the scan line for this task and inspect those roots by hand}. An undetermined reading is not evidence its worker is gone - it is the same reading a stale record pointing at a copy since handed to a live task produces - so nothing was stopped. Inspect those roots and their processes by hand"
       ;;
     5)
-      die "task $id runs on a backend with no agent classifier, so whether its worker is still alive cannot be established at all; a stop needs positive evidence the worker is gone and none can be obtained here. Inspect the copy and its processes by hand"
+      die "task $id runs on a backend with no agent classifier, so whether its worker is still alive cannot be established at all; a stop needs positive evidence the worker is gone and none can be obtained here. Inspect its recorded roots and their processes by hand"
       ;;
     3)
       # "Nothing to stop" would be a claim about the copy; all that is known
@@ -652,9 +681,9 @@ cmd_reap() {  # <task-id>
       # into one message: a refused record is corrected, an unlistable host is
       # inspected by hand.
       if [ -n "$SCAN_REFUSED_COPY" ]; then
-        die "task $id's recorded local copy $SCAN_REFUSED_COPY was refused, so it was NOT examined (${SCAN_REFUSED_COPY_REASON:-the local-copy check refused it without stating a reason}); nothing was stopped and nothing is known about what is running there. Correct the record with $SCRIPT_DIR/fm-task-root.sh $id worktree <path-to-the-real-copy>, or inspect that path by hand"
+        die "task $id's recorded local copy $SCAN_REFUSED_COPY was refused, so it was NOT examined (${SCAN_REFUSED_COPY_REASON:-the local-copy check refused it without stating a reason}); nothing was stopped and nothing is known about what is running there. Correct the worktree= line in $STATE/$id.meta so it names this task's own copy, or inspect that path by hand"
       fi
-      die "the processes in task $id's local copy could not be listed on this host (${SCAN_UNSCANNABLE_ROOT:-its recorded roots} could not be read); nothing was stopped and nothing is known about what is running there"
+      die "the processes in the recorded roots of task $id could not be listed on this host (${SCAN_UNSCANNABLE_ROOT:-its recorded roots} could not be read); nothing was stopped and nothing is known about what is running there"
       ;;
     *)
       echo "nothing to stop for $id"
@@ -662,18 +691,18 @@ cmd_reap() {  # <task-id>
       ;;
   esac
   if [ -z "$SCAN_PIDS" ]; then
-    echo "nothing to stop for $id: $SCAN_SKIPPED_LEADERS session leader(s) in its local copy were left alone because its endpoint shell could not be identified from the record; inspect them by hand"
+    echo "nothing to stop for $id: $SCAN_SKIPPED_LEADERS session leader(s) in ${SCAN_ROOTS_NAMED:-its recorded roots} were left alone because its endpoint shell could not be identified from the record; inspect them by hand"
     return 0
   fi
-  echo "$id: agent reads '$SCAN_VERDICT'; stopping $(printf '%s' "$SCAN_PIDS" | wc -w) process(es) left in its local copy"
+  echo "$id: agent reads '$SCAN_VERDICT'; stopping $(printf '%s' "$SCAN_PIDS" | wc -w) process(es) left in ${SCAN_ROOTS_NAMED:-its recorded roots}"
   # Called in this shell rather than a command substitution so the reap's own
   # account of what it signalled and what outlived it survives the call.
   fm_wtproc_reap "$id ownerless" "$SCAN_SPARE" "${SCAN_ROOTS[@]}" >/dev/null || rc=$?
   case "$rc" in
     0) ;;
-    2) die "the processes in task $id's local copy were signalled but could not be re-checked afterwards; they are in an unknown state - inspect them before retrying" ;;
-    3) die "task $id's local copy still holds ${FM_WTPROC_SURVIVORS// /,} after a force-stop; they did not respond to it and are still running" ;;
-    *) die "the processes in task $id's local copy could not be accounted for; nothing was signalled, but inspect them before retrying" ;;
+    2) die "the processes in ${SCAN_ROOTS_NAMED:-the recorded roots of task $id} were signalled but could not be re-checked afterwards; they are in an unknown state - inspect them before retrying" ;;
+    3) die "${SCAN_ROOTS_NAMED:-the recorded roots of task $id} still holds ${FM_WTPROC_SURVIVORS// /,} after a force-stop; they did not respond to it and are still running" ;;
+    *) die "the processes in ${SCAN_ROOTS_NAMED:-the recorded roots of task $id} could not be accounted for; nothing was signalled, but inspect them before retrying" ;;
   esac
   if [ -n "$FM_WTPROC_REAPED" ]; then
     echo "stopped $id pids=$(printf '%s' "$FM_WTPROC_REAPED" | tr ' ' ',')"
