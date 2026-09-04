@@ -137,6 +137,13 @@ SH
 printf '%s\n' "$*" >> "$FM_TEST_GH_LOG"
 case "${1:-} ${2:-}" in
   "api graphql")
+    case " $* " in
+      *REMOVED_FROM_MERGE_QUEUE_EVENT*|*RemovedFromMergeQueueEvent*)
+        [ "${FM_TEST_GH_GRAPHQL_FAIL:-0}" = 0 ] || exit 1
+        printf '%s\n' "${FM_TEST_GH_TIMELINE-}"
+        exit 0
+        ;;
+    esac
     printf '%s\n' \
       'state=MERGED' \
       'merged=true' \
@@ -700,6 +707,13 @@ test_static_poll_contract() {
   [ "$out" = merged ] || fail "static poll did not emit exactly one merged line"
   out=$(FM_TEST_GH_FAIL=1 run_poll "$dir")
   [ -z "$out" ] || fail "static poll emitted after gh failure"
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_GRAPHQL_FAIL=1 run_poll "$dir")
+  [ -z "$out" ] || fail "static poll emitted after graphql failure"
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_TIMELINE='not-a-timeline' run_poll "$dir")
+  [ -z "$out" ] || fail "static poll emitted for unparseable timeline"
+  out=$(FM_TEST_GH_STATE=OPEN FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' run_poll "$dir")
+  [ "$out" = 'dequeued:failed_checks:2026-09-04T10:00:00Z' ] \
+    || fail "static poll did not emit the ejection reason"
 
   mv "$dir/home/state/task-a.pr-poll" "$dir/home/state/task-a.pr-poll.missing"
   out=$(run_poll "$dir")
@@ -733,7 +747,7 @@ test_static_poll_contract() {
   set -e
   [ "$rc" -eq 0 ] || fail "watcher did not surface merged poll"
   [ "$(grep -c '^check: .*: merged$' "$dir/watch.out")" -eq 1 ] || fail "watcher did not convert merged output into exactly one wake"
-  pass "static poll is silent except for one merged line and remains watcher-bounded"
+  pass "static poll is silent except for merged or a parsed ejection, and remains watcher-bounded"
 }
 
 test_atomic_interruption_leaves_no_partial_artifact() {
@@ -1200,6 +1214,30 @@ SH
   [ ! -e "$dir/home/state/task-a.pr-poll" ] || fail "teardown left the sidecar"
   [ ! -e "$dir/home/state/task-a.pr-poll-registration" ] || fail "teardown left the PR poll registration"
   [ ! -e "$dir/home/state/task-a.check-trust" ] || fail "teardown left the custom check registration"
+
+  dir=$(make_case teardown-dequeued-enqueued)
+  fakebin="$dir/fakebin"
+  fm_write_meta "$dir/home/state/task-a.meta" \
+    'window=firstmate:fm-task-a' \
+    'endpoint_task_id=task-a' \
+    "worktree=$dir/missing-worktree" \
+    "project=$dir/project" \
+    'kind=ship' \
+    'mode=local-only'
+  printf 'dequeued\n' > "$dir/home/state/task-a.pr-poll-dequeued"
+  printf 'enqueued\n' > "$dir/home/state/task-a.pr-poll-enqueued"
+  chmod 0600 "$dir/home/state/task-a.pr-poll-dequeued" "$dir/home/state/task-a.pr-poll-enqueued"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  touch "$dir/home/state/.last-watcher-beat"
+  FM_HOME="$dir/home" FM_ROOT_OVERRIDE="$ROOT" PATH="$fakebin:$BASE_PATH" \
+    "$TEARDOWN" task-a --force > "$dir/teardown-dq.out" 2> "$dir/teardown-dq.err" \
+    || fail "teardown of ejection markers failed: $(cat "$dir/teardown-dq.err")"
+  [ ! -e "$dir/home/state/task-a.pr-poll-dequeued" ] || fail "teardown left the dequeued marker"
+  [ ! -e "$dir/home/state/task-a.pr-poll-enqueued" ] || fail "teardown left the enqueued marker"
 
   dir=$(make_case teardown-retirement-receipt)
   fakebin="$dir/fakebin"
@@ -2121,9 +2159,86 @@ test_gitlab_merged_poll_retires() {
   pass "GitHub and GitLab exact merged results share one retirement path"
 }
 
+test_dequeued_poll_wakes_with_reason() {
+  local dir state rc
+  dir=$(make_case dequeued-wake)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  add_stop_custom_check "$dir"
+
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "dequeued watcher failed: $(cat "$dir/watch-1.err")"
+  case "$(cat "$dir/watch-1.out")" in
+    check:*task-a.check.sh:*dequeued:failed_checks:2026-09-04T10:00:00Z) ;;
+    *) fail "ejected PR did not wake with its forge reason: $(cat "$dir/watch-1.out")" ;;
+  esac
+  [ -f "$state/task-a.check.sh" ] || fail "ejection retired the still-open poll"
+  [ -f "$state/task-a.pr-poll-dequeued" ] || fail "ejection did not record its identity"
+  ack_watcher_cycle "$state" || fail "dequeued wake acknowledgement failed"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'failed_checks\t2026-09-04T10:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "duplicate ejection watcher failed: $(cat "$dir/watch-2.err")"
+  case "$(cat "$dir/watch-2.out")" in
+    check:*z-stop.check.sh:*stop-cycle) ;;
+    *) fail "already handled ejection still woke: $(cat "$dir/watch-2.out")" ;;
+  esac
+  ! grep -F 'task-a.check.sh: dequeued:' "$dir/watch-2.out" >/dev/null \
+    || fail "already handled ejection was printed again"
+  ! grep "$(printf '\tcheck\ttask-a.check.sh\t')" "$state/.wake-queue" >/dev/null 2>&1 \
+    || fail "already handled ejection remained queued"
+  [ -f "$state/task-a.check.sh" ] || fail "duplicate absorption retired the poll"
+  pass "an ejected PR wakes once with its forge reason and stays silent after"
+}
+
+test_dequeued_poll_new_ejection_wakes_again() {
+  local dir state rc
+  dir=$(make_case dequeued-new-event)
+  state="$dir/home/state"
+  write_poll_meta "$state" task-a https://github.com/o/r/pull/1
+  seed_canonical_poll "$dir" task-a https://github.com/o/r/pull/1
+  add_stop_custom_check "$dir"
+
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'checks_timed_out\t2026-09-04T10:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-1.out" 2> "$dir/watch-1.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "first timeout ejection watcher failed: $(cat "$dir/watch-1.err")"
+  ack_watcher_cycle "$state" || fail "first timeout ejection acknowledgement failed"
+
+  rm -f "$state/.last-check"
+  set +e
+  FM_TEST_GH_STATE=OPEN \
+    FM_TEST_GH_TIMELINE=$'checks_timed_out\t2026-09-04T11:00:00Z' \
+    run_watcher_bounded "$dir/home" "$dir/fakebin" > "$dir/watch-2.out" 2> "$dir/watch-2.err"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] || fail "second timeout ejection watcher failed: $(cat "$dir/watch-2.err")"
+  case "$(cat "$dir/watch-2.out")" in
+    check:*task-a.check.sh:*dequeued:checks_timed_out:2026-09-04T11:00:00Z) ;;
+    *) fail "a later ejection did not wake: $(cat "$dir/watch-2.out")" ;;
+  esac
+  pass "a later ejection of the same PR is a new identity and wakes again"
+}
+
 test_parser_matrix
 test_gitlab_merge_watch
 test_merged_poll_retires_once
+test_dequeued_poll_wakes_with_reason
+test_dequeued_poll_new_ejection_wakes_again
 test_merged_poll_reregistration_after_notification_is_absorbed
 test_merged_poll_retries_a_failed_upward_report
 test_self_merge_and_poll_publish_one_outcome

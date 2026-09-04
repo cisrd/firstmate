@@ -16,6 +16,10 @@
 # after its durable wake is appended.
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
+# A current merge-queue ejection is not terminal: the poll stays armed, and a
+# private dequeued marker records the ejection identity the watcher already
+# woke so the same event is silent on later polls. A private enqueued marker
+# records the one automatic enqueuePullRequest allowed for that armed PR.
 
 FM_PR_PROVIDER=
 FM_PR_URL=
@@ -89,6 +93,14 @@ FM_PR_RETIRE_REG_IDENTITY=
 FM_PR_RETIRE_RECEIPT_HASH=
 FM_PR_RETIRE_RECEIPT_IDENTITY=
 FM_PR_POLL_RETIREMENT_REJECTED=
+FM_PR_DEQUEUED_REASON=
+FM_PR_DEQUEUED_AT=
+FM_PR_ENQUEUED_COUNT=
+FM_PR_ENQUEUED_REASON=
+FM_PR_ENQUEUED_PROVIDER=
+FM_PR_ENQUEUED_HOST=
+FM_PR_ENQUEUED_PATH=
+FM_PR_ENQUEUED_NUMBER=
 
 fm_task_id_path_safe() {
   local id=${1-}
@@ -1010,6 +1022,189 @@ fm_pr_poll_merge_notified_remove() {  # <state> <id>
   local state=$1 id=$2 marker
   fm_pr_task_id_valid "$id" || return 1
   marker="$state/$id.pr-poll-merge-notified"
+  [ -e "$marker" ] || [ -L "$marker" ] || return 0
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  rm -f -- "$marker"
+}
+
+# --- merge-queue ejection identity marker ------------------------------------
+# The poll keeps emitting the same dequeued line while that ejection is current.
+# This marker records the exact reason and forge timestamp already woken, so the
+# watcher absorbs later identical polls without retiring the still-open watch.
+# A later ejection with a new timestamp is a different identity and wakes again.
+# bin/fm-pr-enqueue.sh owns the automatic re-queue bound separately.
+fm_pr_poll_dequeued_line_parse() {  # <line>
+  local line=$1 rest
+  FM_PR_DEQUEUED_REASON=
+  FM_PR_DEQUEUED_AT=
+  case "$line" in
+    dequeued:*) ;;
+    *) return 1 ;;
+  esac
+  rest=${line#dequeued:}
+  case "$rest" in
+    *:*) ;;
+    *) return 1 ;;
+  esac
+  FM_PR_DEQUEUED_REASON=${rest%%:*}
+  FM_PR_DEQUEUED_AT=${rest#*:}
+  [[ "$FM_PR_DEQUEUED_REASON" =~ ^[A-Za-z0-9_]+$ ]] || return 1
+  [[ "$FM_PR_DEQUEUED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$ ]] || return 1
+}
+
+fm_pr_poll_dequeued_marker_matches() {  # <marker> <device> <provider> <host> <path> <number> <reason> <created>
+  local marker=$1 device=$2 expected_provider=$3 expected_host=$4 expected_path=$5
+  local expected_number=$6 expected_reason=$7 expected_created=$8
+  local version provider host path number reason created
+  fm_pr_private_file_valid "$marker" 600 "$device" || return 1
+  exec 8< "$marker" || return 1
+  IFS= read -r version <&8 || { exec 8<&-; return 1; }
+  IFS= read -r provider <&8 || { exec 8<&-; return 1; }
+  IFS= read -r host <&8 || { exec 8<&-; return 1; }
+  IFS= read -r path <&8 || { exec 8<&-; return 1; }
+  IFS= read -r number <&8 || { exec 8<&-; return 1; }
+  IFS= read -r reason <&8 || { exec 8<&-; return 1; }
+  IFS= read -r created <&8 || { exec 8<&-; return 1; }
+  if IFS= read -r _extra <&8; then
+    exec 8<&-
+    return 1
+  fi
+  exec 8<&-
+  [ "$version" = fm-pr-poll-dequeued-v1 ] \
+    && [ "$provider" = "$expected_provider" ] \
+    && [ "$host" = "$expected_host" ] \
+    && [ "$path" = "$expected_path" ] \
+    && [ "$number" = "$expected_number" ] \
+    && [ "$reason" = "$expected_reason" ] \
+    && [ "$created" = "$expected_created" ]
+}
+
+fm_pr_poll_dequeued_already_notified() {  # <state> <id> <provider> <host> <path> <number> <reason> <created>
+  local state=$1 id=$2 provider=$3 host=$4 path=$5 number=$6 reason=$7 created=$8
+  local marker state_device
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  marker="$state/$id.pr-poll-dequeued"
+  fm_pr_poll_dequeued_marker_matches "$marker" "$state_device" \
+    "$provider" "$host" "$path" "$number" "$reason" "$created"
+}
+
+fm_pr_poll_dequeued_mark_notified() {  # <state> <id> <provider> <host> <path> <number> <reason> <created>
+  local state=$1 id=$2 provider=$3 host=$4 path=$5 number=$6 reason=$7 created=$8
+  local marker tmp state_device
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  marker="$state/$id.pr-poll-dequeued"
+  fm_pr_regular_destination_on_device_or_absent "$marker" "$state_device" || return 1
+  umask 077
+  tmp=$(mktemp "$state/.fm-pr-poll-dequeued.XXXXXX") || return 1
+  if ! printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+      fm-pr-poll-dequeued-v1 "$provider" "$host" "$path" "$number" "$reason" "$created" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! fm_pr_poll_dequeued_marker_matches "$tmp" "$state_device" \
+      "$provider" "$host" "$path" "$number" "$reason" "$created" \
+    || ! fm_pr_regular_destination_on_device_or_absent "$marker" "$state_device" \
+    || ! mv -f -- "$tmp" "$marker" \
+    || ! fm_pr_poll_dequeued_marker_matches "$marker" "$state_device" \
+      "$provider" "$host" "$path" "$number" "$reason" "$created"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+fm_pr_poll_dequeued_remove() {  # <state> <id>
+  local state=$1 id=$2 marker
+  fm_pr_task_id_valid "$id" || return 1
+  marker="$state/$id.pr-poll-dequeued"
+  [ -e "$marker" ] || [ -L "$marker" ] || return 0
+  [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
+  rm -f -- "$marker"
+}
+
+# --- automatic enqueuePullRequest attempt marker -----------------------------
+# One automatic re-queue is allowed per armed PR identity. The count lives here
+# so a later ejection of the same pull request escalates instead of looping.
+# bin/fm-pr-enqueue.sh is the only writer.
+fm_pr_poll_enqueued_marker_parse() {  # <marker> <device>
+  local marker=$1 device=$2 version provider host path number count reason
+  FM_PR_ENQUEUED_COUNT=
+  FM_PR_ENQUEUED_REASON=
+  FM_PR_ENQUEUED_PROVIDER=
+  FM_PR_ENQUEUED_HOST=
+  FM_PR_ENQUEUED_PATH=
+  FM_PR_ENQUEUED_NUMBER=
+  fm_pr_private_file_valid "$marker" 600 "$device" || return 1
+  exec 8< "$marker" || return 1
+  IFS= read -r version <&8 || { exec 8<&-; return 1; }
+  IFS= read -r provider <&8 || { exec 8<&-; return 1; }
+  IFS= read -r host <&8 || { exec 8<&-; return 1; }
+  IFS= read -r path <&8 || { exec 8<&-; return 1; }
+  IFS= read -r number <&8 || { exec 8<&-; return 1; }
+  IFS= read -r count <&8 || { exec 8<&-; return 1; }
+  IFS= read -r reason <&8 || { exec 8<&-; return 1; }
+  if IFS= read -r _extra <&8; then
+    exec 8<&-
+    return 1
+  fi
+  exec 8<&-
+  [ "$version" = fm-pr-poll-enqueued-v1 ] || return 1
+  case "$count" in
+    [1-9]|[1-9][0-9]*) ;;
+    *) return 1 ;;
+  esac
+  [[ "$reason" =~ ^[A-Za-z0-9_]+$ ]] || return 1
+  FM_PR_ENQUEUED_COUNT=$count
+  FM_PR_ENQUEUED_REASON=$reason
+  FM_PR_ENQUEUED_PROVIDER=$provider
+  FM_PR_ENQUEUED_HOST=$host
+  FM_PR_ENQUEUED_PATH=$path
+  FM_PR_ENQUEUED_NUMBER=$number
+}
+
+fm_pr_poll_enqueued_already() {  # <state> <id> <provider> <host> <path> <number>
+  local state=$1 id=$2 provider=$3 host=$4 path=$5 number=$6 marker state_device
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  marker="$state/$id.pr-poll-enqueued"
+  fm_pr_poll_enqueued_marker_parse "$marker" "$state_device" || return 1
+  [ "$FM_PR_ENQUEUED_PROVIDER" = "$provider" ] \
+    && [ "$FM_PR_ENQUEUED_HOST" = "$host" ] \
+    && [ "$FM_PR_ENQUEUED_PATH" = "$path" ] \
+    && [ "$FM_PR_ENQUEUED_NUMBER" = "$number" ]
+}
+
+fm_pr_poll_enqueued_mark() {  # <state> <id> <provider> <host> <path> <number> <reason>
+  local state=$1 id=$2 provider=$3 host=$4 path=$5 number=$6 reason=$7
+  local marker tmp state_device
+  fm_pr_task_id_valid "$id" || return 1
+  [ -d "$state" ] && [ ! -L "$state" ] || return 1
+  [[ "$reason" =~ ^[A-Za-z0-9_]+$ ]] || return 1
+  state_device=$(fm_pr_file_device "$state") || return 1
+  marker="$state/$id.pr-poll-enqueued"
+  fm_pr_regular_destination_on_device_or_absent "$marker" "$state_device" || return 1
+  umask 077
+  tmp=$(mktemp "$state/.fm-pr-poll-enqueued.XXXXXX") || return 1
+  if ! printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n' \
+      fm-pr-poll-enqueued-v1 "$provider" "$host" "$path" "$number" 1 "$reason" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! fm_pr_poll_enqueued_marker_parse "$tmp" "$state_device" \
+    || [ "$FM_PR_ENQUEUED_COUNT" != 1 ] \
+    || [ "$FM_PR_ENQUEUED_REASON" != "$reason" ] \
+    || ! fm_pr_regular_destination_on_device_or_absent "$marker" "$state_device" \
+    || ! mv -f -- "$tmp" "$marker" \
+    || ! fm_pr_poll_enqueued_already "$state" "$id" "$provider" "$host" "$path" "$number"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+
+fm_pr_poll_enqueued_remove() {  # <state> <id>
+  local state=$1 id=$2 marker
+  fm_pr_task_id_valid "$id" || return 1
+  marker="$state/$id.pr-poll-enqueued"
   [ -e "$marker" ] || [ -L "$marker" ] || return 0
   [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
   rm -f -- "$marker"

@@ -63,7 +63,9 @@
 #                          an unhandled record's ladder cannot advance; quiet
 #                          successful attempts never wake firstmate
 #                          (bin/fm-task-inbox-lib.sh owns the ladder policy)
-#   check: <script>: <out> authenticated check output, always actionable
+#   check: <script>: <out> authenticated check output, always actionable.
+#                          A PR poll emits merged or dequeued:<reason>:<time>;
+#                          any other PR-poll output is ignored rather than woken.
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
@@ -1675,6 +1677,24 @@ while :; do
             continue
           fi
           wake "$reason"
+        fi
+        if [ "$is_pr_poll" -eq 1 ] && fm_pr_poll_dequeued_line_parse "$out"; then
+          if fm_pr_poll_dequeued_already_notified "$STATE" "$id" \
+            "$provider" "$host" "$path" "$number" \
+            "$FM_PR_DEQUEUED_REASON" "$FM_PR_DEQUEUED_AT"; then
+            triage_log "absorbed duplicate dequeued PR poll result for $id"
+            continue
+          fi
+          fm_wake_append check "$c" "$reason" || exit 1
+          fm_pr_poll_dequeued_mark_notified "$STATE" "$id" \
+            "$provider" "$host" "$path" "$number" \
+            "$FM_PR_DEQUEUED_REASON" "$FM_PR_DEQUEUED_AT" || exit 1
+          touch "$STATE/.last-check"
+          wake "$reason"
+        fi
+        if [ "$is_pr_poll" -eq 1 ]; then
+          triage_log "ignored non-canonical PR poll output for $id"
+          continue
         fi
         fm_wake_append check "$c" "$reason" || exit 1
         touch "$STATE/.last-check"
