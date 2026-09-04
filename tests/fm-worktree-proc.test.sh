@@ -1533,6 +1533,59 @@ test_a_recorded_copy_that_no_longer_exists_raises_no_alert() {
   pass "a recorded local copy whose directory is gone stays silent instead of alarming forever"
 }
 
+# EVERY LINE NAMES THE ROOT IT ACTUALLY DESCRIBES. The report used to print
+# whichever root happened to be first in the collected set under a `copy=` label.
+# Once a copy can be missing from that set - gone, or refused - the survivor is
+# the temp root, so the digest said `copy=/tmp/fm-<id>` for a path that is not
+# the task's copy at all, and an operator following it went to inspect the wrong
+# directory. Position is not identity; the label has to come from which root it
+# is.
+test_a_report_line_names_the_root_it_describes() {
+  local dir tmproot out pid
+  dir="$TMP_ROOT/case-root-labels"
+  tmproot="$FM_TASK_TMP_ROOT/fm-lbl"
+  mkdir -p "$dir" "$tmproot"
+  make_backend_stub "$dir" fm-lbl
+  make_crew_state_stub "$dir"
+  printf 'dead' > "$dir/agent"
+
+  pid=$(witness "$tmproot")
+  # The copy is gone; only the temp root remains to be examined.
+  write_task_meta lbl "$TMP_ROOT/copy-removed-for-labels" "fmses:fm-lbl" "$tmproot"
+
+  out=$(run_orphan "$dir" scan --task lbl)
+  case "$out" in
+    *"LEFTOVER: lbl"*"$pid"*) ;;
+    *) fail "root-labels: the live process in the temp root was not reported at all: $out" ;;
+  esac
+  # The assertion this case exists for.
+  case "$out" in
+    *"copy=$tmproot"*) fail "root-labels: the temp root was reported under a copy= label: $out" ;;
+  esac
+  case "$out" in
+    *"tasktmp=$tmproot"*) ;;
+    *) fail "root-labels: the temp root was not named as a temp root: $out" ;;
+  esac
+
+  out=$(run_orphan "$dir" reap lbl)
+  # The sentence that says where the processes were stopped must name the root
+  # they were actually in. Saying "its local copy" here described the temp root
+  # as the copy - and this task no longer has a copy to speak of.
+  case "$out" in
+    *"process(es) left in tasktmp=$tmproot"*) ;;
+    *) fail "root-labels: the cleanup did not name the root it stopped processes in: $out" ;;
+  esac
+  case "$out" in
+    *"left in its local copy"*) fail "root-labels: the cleanup called the temp root a local copy: $out" ;;
+  esac
+  sleep 0.3
+  alive "$pid" && fail "root-labels: the leaked process in the temp root was not stopped"
+
+  rm -f "$HOME_DIR/state/lbl.meta"
+  rm -rf "$tmproot"
+  pass "a task reported on its temp root alone names it tasktmp=, never copy="
+}
+
 # A REFUSAL NARROWS THE REPORT, NEVER THE SCAN - the rule the temp-root side has
 # always kept, applied to the copy. A refused copy used to abandon the whole root
 # set, so a temp root that passed the strictest validator in the library, and held
@@ -2005,6 +2058,7 @@ test_a_recorded_copy_the_wall_refuses_is_reported_rather_than_dropped
 test_a_record_that_names_no_copy_raises_no_alert
 test_a_recorded_copy_that_no_longer_exists_raises_no_alert
 test_a_refused_copy_still_scans_the_temp_root
+test_a_report_line_names_the_root_it_describes
 test_a_missing_state_directory_refuses_instead_of_being_created
 test_a_task_id_that_escapes_the_home_is_refused
 test_a_temp_root_that_no_longer_exists_is_not_reported_unscannable

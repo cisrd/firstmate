@@ -3053,81 +3053,21 @@ test_a_forbidden_recorded_root_refuses_before_the_backlog_is_committed() {
   pass "a recorded root refusal leaves the task record and its backlog row intact across a session-start replay"
 }
 
-# A repair that writes a value some other guard then refuses only moves the dead
-# end. bin/fm-orphan-reap.sh reads `tasktmp=` through fm_wtproc_task_tmp, which
-# binds it to the exact path bin/fm-spawn.sh builds, so a retarget anywhere else
-# buys a clean teardown at the price of an UNSCANNABLE line for that task at
-# every session start until it is gone.
-test_retargeting_tasktmp_off_the_canonical_path_is_refused() {
-  local case_dir rc home before
-  case_dir=$(make_case task-root-tasktmp-binding)
-  home="$case_dir/home"
-  mkdir -p "$home" "$case_dir/tmproot/fm-task-x1" "$case_dir/somewhere-else"
-  write_meta "$case_dir" no-mistakes ship
-  printf '%s\n' "tasktmp=$case_dir/tasktmp" >> "$case_dir/state/task-x1.meta"
-  before=$(cat "$case_dir/state/task-x1.meta")
 
-  rc=0
-  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
-  FM_TASK_TMP_ROOT="$case_dir/tmproot" \
-    "$ROOT/bin/fm-task-root.sh" task-x1 tasktmp "$case_dir/somewhere-else" \
-    > "$case_dir/out" 2> "$case_dir/err" || rc=$?
-  [ "$rc" -ne 0 ] || fail "task-root-tasktmp-binding: a tasktmp off the canonical path was accepted"
-  assert_grep "$case_dir/tmproot/fm-task-x1" "$case_dir/err" \
-    "task-root-tasktmp-binding: the refusal did not name the path it would accept"
-  [ "$(cat "$case_dir/state/task-x1.meta")" = "$before" ] \
-    || fail "task-root-tasktmp-binding: a refused retarget still wrote to the record"
 
-  rc=0
-  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
-  FM_TASK_TMP_ROOT="$case_dir/tmproot" \
-    "$ROOT/bin/fm-task-root.sh" task-x1 tasktmp "$case_dir/tmproot/fm-task-x1" \
-    > "$case_dir/out2" 2> "$case_dir/err2" || rc=$?
-  expect_code 0 "$rc" "task-root-tasktmp-binding: the canonical temp root should be accepted: $(cat "$case_dir/err2")"
-  [ "$(fm_meta_read "$case_dir/state/task-x1.meta" tasktmp)" = "$case_dir/tmproot/fm-task-x1" ] \
-    || fail "task-root-tasktmp-binding: the accepted retarget did not land in the record"
-  pass "the retarget binds tasktmp to the task's own canonical temp root and refuses anything else without writing"
-}
-
-# Existence is not what makes a path safe. A replacement under projects/ that has
-# not been created yet must be refused now, not accepted and turned back into the
-# same dead-end refusal the day someone creates it.
-test_retargeting_onto_an_absent_forbidden_path_is_refused() {
-  local case_dir rc home before
-  case_dir=$(make_case task-root-absent-forbidden)
-  home="$case_dir/home"
-  mkdir -p "$home/projects"
-  write_meta "$case_dir" no-mistakes ship
-  before=$(cat "$case_dir/state/task-x1.meta")
-
-  rc=0
-  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
-    "$ROOT/bin/fm-task-root.sh" task-x1 worktree "$home/projects/ghost" \
-    > "$case_dir/out" 2> "$case_dir/err" || rc=$?
-  [ "$rc" -ne 0 ] \
-    || fail "task-root-absent-forbidden: an absent path under projects/ was recorded anyway"
-  [ "$(cat "$case_dir/state/task-x1.meta")" = "$before" ] \
-    || fail "task-root-absent-forbidden: a refused retarget still wrote to the record"
-  [ ! -e "$home/projects/ghost" ] \
-    || fail "task-root-absent-forbidden: the refused retarget created the path it was refusing"
-  pass "a replacement root that does not exist yet still clears the projects/ wall before it can be recorded"
-}
-
-# THE WALL MUST HAVE A DOOR, AND THE DOOR MUST NOT BE --force. Forcing a reap
-# under the firstmate home's projects/ tree would stop the captain's own stack -
-# the exact harm the wall exists to prevent - so the escape cannot be to weaken
-# it. The escape is to correct the RECORD, and teardown has to hand the operator
-# the command that does it rather than leaving a dead end whose only remedy is
-# hand-editing a state file. This case walks that door end to end: refuse, run
-# the printed repair, rerun, succeed - with the stack process alive throughout.
-test_a_forbidden_recorded_root_prints_a_repair_that_actually_works() {
+# THE WALL HAS NO DOOR, AND THAT IS THE POINT. Forcing a reap under the
+# firstmate home's projects/ tree would stop the captain's own stack - the exact
+# harm the wall exists to prevent - so --force cannot be the escape. Neither is a
+# retarget command: worktree= is the field teardown reads for the landed-work
+# check, the branch cleanup and the return of the copy, so a tool that rewrote it
+# as if it were only a scan root would redirect all of those silently. What the
+# refusal owes the operator instead is honesty - name the bad root, say why, and
+# state the manual repair - and then that repair has to actually work. This case
+# walks it end to end with the stack process alive throughout.
+test_a_forbidden_recorded_root_refuses_with_a_repair_that_works_by_hand() {
   local case_dir rc stack_pid leftover_pid home real_tmp
   case_dir=$(make_case forbidden-root-repair)
   home="$case_dir/home"
-  # The canonical temp root for this task: the exact path bin/fm-spawn.sh builds
-  # from $FM_TASK_TMP_ROOT. Retargeting anywhere else writes a value teardown
-  # tolerates but bin/fm-orphan-reap.sh refuses, so the repair is required to
-  # produce this one.
   real_tmp="$case_dir/tmproot/fm-task-x1"
   mkdir -p "$home/projects/api-stack" "$real_tmp"
   write_meta "$case_dir" no-mistakes ship
@@ -3157,25 +3097,23 @@ test_a_forbidden_recorded_root_prints_a_repair_that_actually_works() {
   rc=0
   run_case_teardown > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   expect_code 1 "$rc" "forbidden-root-repair: teardown should refuse a recorded root it may never signal into"
-  assert_grep "fm-task-root.sh task-x1 tasktmp" "$case_dir/stderr" \
-    "forbidden-root-repair: the refusal named no command that retargets the bad record"
   assert_grep "$home/projects/api-stack" "$case_dir/stderr" \
     "forbidden-root-repair: the refusal did not name the bad recorded root"
-
-  # Run the repair the refusal advertises. It must touch neither path.
-  FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" FM_STATE_OVERRIDE="$case_dir/state" \
-  FM_TASK_TMP_ROOT="$case_dir/tmproot" \
-    "$ROOT/bin/fm-task-root.sh" task-x1 tasktmp "$real_tmp" \
-    > "$case_dir/repair.out" 2> "$case_dir/repair.err" \
-    || fail "forbidden-root-repair: the advertised repair command failed: $(cat "$case_dir/repair.err")"
-  [ -d "$home/projects/api-stack" ] \
-    || fail "forbidden-root-repair: the repair removed the path it was supposed to stop signalling into"
+  assert_grep "$case_dir/state/task-x1.meta" "$case_dir/stderr" \
+    "forbidden-root-repair: the refusal did not name the record the operator must correct"
+  # No tool is advertised, because none may rewrite this field on the operator's
+  # behalf. A refusal that named one would be pointing at a trap.
+  assert_not_contains "$(cat "$case_dir/stderr")" "fm-task-root.sh" \
+    "forbidden-root-repair: the refusal advertised a retarget command that must not ship"
   kill -0 "$stack_pid" 2>/dev/null \
-    || fail "forbidden-root-repair: the repair signalled the operator's own stack"
-  [ "$(grep -c '^tasktmp=' "$case_dir/state/task-x1.meta")" = 1 ] \
-    || fail "forbidden-root-repair: the repair left more than one tasktmp= line behind"
-  grep -qx "kind=ship" "$case_dir/state/task-x1.meta" \
-    || fail "forbidden-root-repair: the repair disturbed a field it was never asked to touch"
+    || fail "forbidden-root-repair: the refusal signalled the operator's own stack"
+
+  # The operator does what the refusal told them to: correct the record itself.
+  # state/<id>.meta is the durable task record - a persisted key=value contract
+  # this suite already writes directly through fm_write_meta.
+  grep -v '^tasktmp=' "$case_dir/state/task-x1.meta" > "$case_dir/meta.fixed"
+  printf '%s\n' "tasktmp=$real_tmp" >> "$case_dir/meta.fixed"
+  mv "$case_dir/meta.fixed" "$case_dir/state/task-x1.meta"
 
   rc=0
   run_case_teardown > "$case_dir/stdout2" 2> "$case_dir/stderr2" || rc=$?
@@ -3188,10 +3126,10 @@ test_a_forbidden_recorded_root_prints_a_repair_that_actually_works() {
   fi
   if kill -0 "$leftover_pid" 2>/dev/null; then
     kill -KILL "$leftover_pid" 2>/dev/null || true
-    fail "forbidden-root-repair: the repaired teardown never harvested the retargeted temp root"
+    fail "forbidden-root-repair: the repaired teardown never harvested the corrected temp root"
   fi
   unset -f run_case_teardown
-  pass "a recorded root under projects/ refuses with a repair command that retargets the record and lets teardown finish"
+  pass "a recorded root under projects/ refuses with an honest repair instruction, and the corrected record lets teardown finish"
 }
 
 test_leaked_tasktmp_process_is_reaped() {
@@ -3770,10 +3708,8 @@ test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_a_recorded_root_under_projects_refuses_instead_of_signalling
-test_a_forbidden_recorded_root_prints_a_repair_that_actually_works
+test_a_forbidden_recorded_root_refuses_with_a_repair_that_works_by_hand
 test_a_forbidden_recorded_root_refuses_before_the_backlog_is_committed
-test_retargeting_tasktmp_off_the_canonical_path_is_refused
-test_retargeting_onto_an_absent_forbidden_path_is_refused
 test_teardown_never_signals_the_shell_it_was_started_from
 test_no_cwd_source_reaps_tmux_process_group
 test_no_cwd_source_still_reaps_the_group_when_both_roots_are_absent
