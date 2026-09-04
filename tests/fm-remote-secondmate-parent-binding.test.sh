@@ -229,7 +229,10 @@ case "$DELIVERED" in
 esac
 
 # --- a finished child worker inside the remote secondmate home --------------
-CHILD_WT="$REMOTE_HOME/projects/alpha"
+# A disposable copy, not the home's projects/ clone: teardown now refuses to
+# signal into projects/, which is where the operator's own stack lives.
+CHILD_WT="$REMOTE_HOME/wt"
+fm_git_init_commit "$CHILD_WT"
 mkdir -p "$REMOTE_HOME/state"
 # This regression exercises remote-parent binding, not backlog mutation. Keep
 # its synthetic child home on the supported hand-edited backend so teardown's
