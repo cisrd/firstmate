@@ -3091,7 +3091,7 @@ test_a_forbidden_recorded_root_refuses_with_a_repair_that_works_by_hand() {
     FM_DATA_OVERRIDE="$case_dir/data" \
     FM_CONFIG_OVERRIDE="$case_dir/config" \
     PATH="$case_dir/fakebin:${FM_TEARDOWN_TEST_PATH:-$PATH}" \
-      "$TEARDOWN" task-x1 "$@"
+      "$TEARDOWN" task-x1
   }
 
   rc=0
