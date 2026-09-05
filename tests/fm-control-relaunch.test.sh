@@ -130,6 +130,41 @@ SH
 exit 0
 SH
   chmod +x "$fb/sleep"
+  # A ship relaunch concludes the task's own parked no-mistakes run before it
+  # stops anything, so every case needs a hermetic `no-mistakes` - without it
+  # these tests would reach whatever real binary is on the runner's PATH.
+  # `axi status` answers FM_FAKE_AXI_STATUS verbatim (empty by default, i.e. no
+  # run, so the step is inert), and `axi abort` records its invocation - and
+  # whether FM_FAKE_NM_ABORT_WITNESS was still running when it fired - in
+  # FM_FAKE_NM_ABORT_LOG. With FM_FAKE_NM_ABORT_NOOP=1 the abort changes
+  # nothing and the run reads parked afterwards, the shape that must refuse.
+  cat > "$fb/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "${1:-} ${2:-}" in
+  "axi status")
+    shift 2
+    run_id=""
+    [ "${1:-}" = --run ] && run_id=${2:-}
+    if [ -n "$run_id" ] && [ "${FM_FAKE_NM_ABORT_NOOP:-0}" != 1 ]; then
+      printf 'run:\n  id: "%s"\n  outcome: cancelled\n' "$run_id"
+    else
+      printf '%s\n' "${FM_FAKE_AXI_STATUS:-}"
+    fi
+    ;;
+  "axi abort")
+    shift 2
+    witness=absent
+    if [ -n "${FM_FAKE_NM_ABORT_WITNESS:-}" ]; then
+      if kill -0 "$FM_FAKE_NM_ABORT_WITNESS" 2>/dev/null; then witness=alive; else witness=gone; fi
+    fi
+    [ -z "${FM_FAKE_NM_ABORT_LOG:-}" ] \
+      || printf 'abort %s witness=%s\n' "$*" "$witness" >> "$FM_FAKE_NM_ABORT_LOG"
+    ;;
+esac
+exit 0
+SH
+  chmod +x "$fb/no-mistakes"
 }
 
 # new_case <name> [id] -> echoes a case dir with a live claude ship task.
@@ -1743,6 +1778,76 @@ test_a_quota_killed_worker_is_cleaned_up_despite_a_stale_working_verb() {
   pass "fm-control relaunch: a worker killed mid-run is cleaned up despite the stale working verb it left behind"
 }
 
+# --- the task's own parked no-mistakes run ----------------------------------
+#
+# The cleanup above and bin/fm-teardown.sh's are the same act - both remove the
+# worker that would have answered a gate - so they carry the same ordering: the
+# run is concluded BEFORE anything in the copy is signalled. Signalling first
+# stops whatever was driving the run and leaves it parked forever, holding a
+# fleet slot the replacement then inherits.
+
+# A parked-at-a-gate `axi status` TOON payload for <branch>/<head>, the shape
+# no-mistakes actually emits (the same fixture tests/fm-teardown.test.sh and
+# tests/fm-crew-state.test.sh pin).
+parked_axi_status_toon() {  # <branch> <head>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: awaiting_approval
+  awaiting_agent: parked 2m10s
+  head: "$2"
+  pr: ""
+  findings: none
+gate: review
+EOF
+}
+
+test_relaunch_concludes_the_parked_run_before_it_signals_anything() {
+  local dir out rc leftover head
+  dir=$(new_case parked-run rl93)
+  add_ship_task "$dir" rl93 claude
+  head=$(git -C "$dir/wt" rev-parse HEAD)
+  # A process of the wedged incarnation, in the copy: exactly what the cleanup
+  # selects, and what the abort must still find running.
+  leftover=$(witness "$dir/wt")
+
+  out=$(FM_FAKE_AXI_STATUS="$(parked_axi_status_toon task-rl93 "$head")" \
+    FM_FAKE_NM_ABORT_LOG="$dir/nm-abort.log" \
+    FM_FAKE_NM_ABORT_WITNESS="$leftover" \
+    run_control "$dir" rl93 relaunch --note "wedged at a no-mistakes gate"); rc=$?
+  expect_code 0 "$rc" "a relaunch should succeed while concluding the parked run"$'\n'"$out"
+  assert_present "$dir/nm-abort.log" \
+    "the relaunch never concluded the task's own parked run"
+  assert_grep "abort --run 01RUN witness=alive" "$dir/nm-abort.log" \
+    "the parked run must be concluded before anything in the copy is signalled"
+  /bin/sleep 0.3
+  witness_alive "$leftover" \
+    && fail "the process the replaced incarnation left running survived the relaunch"
+  pass "fm-control relaunch: the task's own parked run is concluded before the cleanup signals anything"
+}
+
+test_a_parked_run_that_will_not_conclude_refuses_before_anything_is_touched() {
+  local dir out rc leftover head
+  dir=$(new_case parked-run-unconfirmed rl94)
+  add_ship_task "$dir" rl94 claude
+  head=$(git -C "$dir/wt" rev-parse HEAD)
+  leftover=$(witness "$dir/wt")
+
+  out=$(FM_FAKE_AXI_STATUS="$(parked_axi_status_toon task-rl94 "$head")" \
+    FM_FAKE_NM_ABORT_LOG="$dir/nm-abort.log" \
+    FM_FAKE_NM_ABORT_NOOP=1 \
+    run_control "$dir" rl94 relaunch --note "wedged at a no-mistakes gate"); rc=$?
+  expect_code 1 "$rc" "a run that stays parked must refuse the relaunch"$'\n'"$out"
+  assert_contains "$out" "REFUSED: no-mistakes run for rl94 is still parked" \
+    "the refusal should name the run that could not be concluded"
+  witness_alive "$leftover" \
+    || fail "the relaunch signalled the copy after refusing to conclude the parked run"
+  [ "$(cat "$dir/fake/command")" = claude ] \
+    || fail "the relaunch stopped the agent after refusing to conclude the parked run"
+  pass "fm-control relaunch: a run that will not conclude refuses before the agent or the copy is touched"
+}
+
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_serializes_concurrent_durable_metadata_publication
@@ -1799,3 +1904,5 @@ test_relaunch_spares_the_endpoint_shell_and_everything_outside_the_copy
 test_relaunch_holds_leaders_back_when_the_record_cannot_name_the_endpoint_shell
 test_a_quota_killed_worker_is_cleaned_up_despite_a_stale_working_verb
 test_a_failed_cleanup_still_records_the_leaders_it_never_classified
+test_relaunch_concludes_the_parked_run_before_it_signals_anything
+test_a_parked_run_that_will_not_conclude_refuses_before_anything_is_touched

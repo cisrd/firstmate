@@ -297,27 +297,6 @@ agent_verdict() {  # <meta>
   fm_backend_agent_state "$backend" "${target:-$window}" 2>/dev/null || printf 'unknown'
 }
 
-# Listening ports held by these pids, as supporting evidence for the report.
-# Best-effort and never part of any decision: ss is not everywhere, and a
-# process holding no socket is exactly as much of a leftover as one that does.
-listening_ports() {  # <pid>...
-  local pids=" $* " out
-  command -v ss >/dev/null 2>&1 || return 0
-  out=$(ss -H -tlnp 2>/dev/null) || return 0
-  printf '%s\n' "$out" | awk -v pids="$pids" '
-    {
-      port = $4
-      sub(/.*:/, "", port)
-      while (match($0, /pid=[0-9]+/)) {
-        p = substr($0, RSTART + 4, RLENGTH - 4)
-        if (index(pids, " " p " ") > 0 && !(port in seen)) { seen[port] = 1; list = list (list ? "," : "") port }
-        $0 = substr($0, RSTART + RLENGTH)
-      }
-    }
-    END { if (list) print list }
-  '
-}
-
 # scan_task answers with four different facts, and they may never be folded
 # into one:
 #   0  something is reported on stdout (LEFTOVER, UNRESOLVED, UNSCANNABLE)
@@ -337,7 +316,7 @@ listening_ports() {  # <pid>...
 # at while the rest were, which the status alone cannot carry: that copy has an
 # UNSCANNABLE line of its own and callers must not present it as fully examined.
 scan_task() {  # <task-id> <verbose>
-  local id=$1 verbose=$2 meta verdict pids ports line spare skipped note reason
+  local id=$1 verbose=$2 meta verdict pids line spare skipped note reason
   local undetermined=0 undetermined_why="" label refused_path="" refused_reason=""
   local copy_refused_path="" copy_refused_reason=""
   local copy_root="" tmp_root="" roots_named="" failed_root="" failed_named=""
@@ -591,8 +570,6 @@ scan_task() {  # <task-id> <verbose>
       "$id" "$verdict" "$roots_named" "$skipped"
     return 0
   fi
-  # shellcheck disable=SC2086  # pids is a deliberate space-separated list
-  ports=$(listening_ports $pids)
   note=""
   [ "$skipped" -gt 0 ] && note=" leaders_skipped=$skipped"
   # The reason travels on the line itself. An operator reading UNDETERMINED has
@@ -600,9 +577,8 @@ scan_task() {  # <task-id> <verbose>
   # the copy, and the label alone no longer says: it now covers an unreadable
   # agent state as well as an unreadable current state.
   [ "$undetermined" = 1 ] && note="$note ($undetermined_why, so nothing here is stopped for you)"
-  printf '%s: %s agent=%s %s pids=%s%s%s\n' \
-    "$label" "$id" "$verdict" "$roots_named" "$(printf '%s' "$pids" | tr ' ' ',')" \
-    "${ports:+ listening=$ports}" "$note"
+  printf '%s: %s agent=%s %s pids=%s%s\n' \
+    "$label" "$id" "$verdict" "$roots_named" "$(printf '%s' "$pids" | tr ' ' ',')" "$note"
   [ "$undetermined" = 0 ] || return 4
 }
 

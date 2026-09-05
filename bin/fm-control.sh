@@ -153,6 +153,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-worktree-proc-lib.sh
 . "$SCRIPT_DIR/fm-worktree-proc-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+. "$SCRIPT_DIR/fm-nm-run-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -977,6 +979,13 @@ do_relaunch() {
 
   record_note
   journal_write noted "${CHECKPOINT_LINES[@]}" "$note_line"
+
+  # Same order as bin/fm-teardown.sh: this task's own parked no-mistakes run is
+  # concluded BEFORE the worker that would have answered its gate is removed and
+  # before anything in the copy is signalled, so the replacement never inherits a
+  # run left parked with nothing driving it. A run that will not conclude refuses
+  # here, while the old agent is still untouched and the relaunch rolls back.
+  conclude_task_no_mistakes_run "$WT" || exit 1
 
   journal_write stopping "${CHECKPOINT_LINES[@]}" "$note_line"
   exit_result=$(do_exit)
