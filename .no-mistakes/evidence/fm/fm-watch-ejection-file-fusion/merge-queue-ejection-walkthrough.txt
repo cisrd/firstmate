@@ -1,0 +1,162 @@
+=== 1. The reported failure: an ejected PR is OPEN, so the old poll is silent ===
+
+$ gh pr view https://github.com/o/r/pull/450 --json state -q .state
+OPEN
+  (ejected from the merge queue at 2026-09-04T10:02:00Z, reason FAILED_CHECKS)
+
+$ <poll program at base 8f7b79c> --validated github https://github.com/o/r/pull/450 github.com o/r 450
+  # this is exactly how the watcher runs an armed poll
+<no output>
+  -> no output: nobody is woken, the delivery sleeps. This is the bug.
+
+  (the harness is wired: the same old program still reports a merge)
+$ <poll program at base 8f7b79c> --validated ... 450     # with the PR MERGED
+merged
+
+$ bin/fm-pr-poll.sh --validated github https://github.com/o/r/pull/450 github.com o/r 450   # AFTER
+dequeued:FAILED_CHECKS:2026-09-04T10:02:00Z
+  -> a second signal, distinct from merged.
+
+$ cmp -s bin/fm-pr-poll.sh state/task-450.check.sh   # the armed check is that program
+armed check is byte-identical to bin/fm-pr-poll.sh
+----------------------------------------------------------------------
+=== 2. What firstmate actually receives: the watcher wake, one per ejection ===
+
+--- PR 447 (merge_conflict) ---
+$ bin/fm-watch.sh      # cycle 1
+check: /tmp/fm-evid-run.trfLsd/wake-447/home/state/task-447.check.sh: dequeued:MERGE_CONFLICT:2026-09-04T09:41:00Z
+$ bin/fm-watch.sh      # cycle 2, same ejection, nothing new happened
+<silent: the same ejection never wakes twice>
+$ cat state/task-447.pr-poll-dequeued   # the ejection identity that keeps it quiet
+fm-pr-poll-dequeued-v1
+github
+github.com
+o/r
+447
+MERGE_CONFLICT
+2026-09-04T09:41:00Z
+
+--- PR 450 (failed_checks) ---
+$ bin/fm-watch.sh      # cycle 1
+check: /tmp/fm-evid-run.trfLsd/wake-450/home/state/task-450.check.sh: dequeued:FAILED_CHECKS:2026-09-04T10:02:00Z
+$ bin/fm-watch.sh      # cycle 2, same ejection, nothing new happened
+<silent: the same ejection never wakes twice>
+$ cat state/task-450.pr-poll-dequeued   # the ejection identity that keeps it quiet
+fm-pr-poll-dequeued-v1
+github
+github.com
+o/r
+450
+FAILED_CHECKS
+2026-09-04T10:02:00Z
+
+--- PR 451 (checks_timed_out) ---
+$ bin/fm-watch.sh      # cycle 1
+check: /tmp/fm-evid-run.trfLsd/wake-451/home/state/task-451.check.sh: dequeued:CHECKS_TIMED_OUT:2026-09-04T11:17:00Z
+$ bin/fm-watch.sh      # cycle 2, same ejection, nothing new happened
+<silent: the same ejection never wakes twice>
+$ cat state/task-451.pr-poll-dequeued   # the ejection identity that keeps it quiet
+fm-pr-poll-dequeued-v1
+github
+github.com
+o/r
+451
+CHECKS_TIMED_OUT
+2026-09-04T11:17:00Z
+
+--- PR 453 (checks_timed_out) ---
+$ bin/fm-watch.sh      # cycle 1
+check: /tmp/fm-evid-run.trfLsd/wake-453/home/state/task-453.check.sh: dequeued:CHECKS_TIMED_OUT:2026-09-04T12:48:00Z
+$ bin/fm-watch.sh      # cycle 2, same ejection, nothing new happened
+<silent: the same ejection never wakes twice>
+$ cat state/task-453.pr-poll-dequeued   # the ejection identity that keeps it quiet
+fm-pr-poll-dequeued-v1
+github
+github.com
+o/r
+453
+CHECKS_TIMED_OUT
+2026-09-04T12:48:00Z
+----------------------------------------------------------------------
+=== 3. Firstmate's response to a dequeued: wake (AGENTS.md section 8 item 3) ===
+
+$ bin/fm-pr-enqueue.sh task-447 merge_conflict
+escalate: merge_conflict is not an automatic re-queue reason
+[exit 2]
+$ bin/fm-pr-enqueue.sh task-447 merge_conflict    # the same ejection, answered again
+escalate: merge_conflict is not an automatic re-queue reason
+[exit 2]
+
+$ bin/fm-pr-enqueue.sh task-450 failed_checks
+queued: https://github.com/o/r/pull/450
+[exit 0]
+$ bin/fm-pr-enqueue.sh task-450 failed_checks    # the same ejection, answered again
+escalate: failed_checks already requeued once
+[exit 2]
+
+$ bin/fm-pr-enqueue.sh task-451 checks_timed_out
+queued: https://github.com/o/r/pull/451
+[exit 0]
+$ bin/fm-pr-enqueue.sh task-451 checks_timed_out    # the same ejection, answered again
+escalate: checks_timed_out already requeued once
+[exit 2]
+
+$ bin/fm-pr-enqueue.sh task-453 checks_timed_out
+queued: https://github.com/o/r/pull/453
+[exit 0]
+$ bin/fm-pr-enqueue.sh task-453 checks_timed_out    # the same ejection, answered again
+escalate: checks_timed_out already requeued once
+[exit 2]
+----------------------------------------------------------------------
+=== 4. Re-queue is not a merge ===
+$ ls state/task-450.*
+  task-450.check.sh
+  task-450.meta
+  task-450.pr-poll
+  task-450.pr-poll-dequeued
+  task-450.pr-poll-enqueued
+  task-450.pr-poll-registration
+  poll still armed (task-450.check.sh, task-450.pr-poll), no retirement,
+  no merge notification: the delivery is back in the queue, not merged.
+
+$ grep -c . state/task-450.pr-poll-merge-notified 2>/dev/null || echo '  no merge outcome recorded'
+  no merge outcome recorded
+
+$ cat state/task-450.pr-poll-enqueued        # the automatic-attempt bound
+fm-pr-poll-enqueued-v1
+github
+github.com
+o/r
+450
+2026-09-04T10:02:00Z
+1
+FAILED_CHECKS
+----------------------------------------------------------------------
+=== 5. Refusals: only green + resolved is re-queued, and errors stay silent ===
+
+--- PR 460: red checks ---
+$ bin/fm-watch.sh
+check: /tmp/fm-evid-run.trfLsd/refuse-460/home/state/task-460.check.sh: dequeued:FAILED_CHECKS:2026-09-04T13:00:00Z
+$ bin/fm-pr-enqueue.sh task-460 FAILED_CHECKS
+escalate: FAILED_CHECKS checks are not green
+[exit 2]
+
+--- PR 461: unresolved review thread ---
+$ bin/fm-watch.sh
+check: /tmp/fm-evid-run.trfLsd/refuse-461/home/state/task-461.check.sh: dequeued:FAILED_CHECKS:2026-09-04T13:10:00Z
+$ bin/fm-pr-enqueue.sh task-461 FAILED_CHECKS
+escalate: FAILED_CHECKS unresolved review threads
+[exit 2]
+
+--- PR 462: the forge left the ejection unlabelled ---
+$ bin/fm-watch.sh
+check: /tmp/fm-evid-run.trfLsd/refuse-462/home/state/task-462.check.sh: dequeued:unreported:2026-09-04T13:20:00Z
+$ bin/fm-pr-enqueue.sh task-462 unreported
+escalate: unreported the forge reported no usable ejection reason
+[exit 2]
+
+--- a forge read that fails is still silent, never read as an ejection ---
+$ FM_FAKE_GH_FAIL=1 bin/fm-watch.sh     # gh cannot reach the forge
+<silent: a failed lookup is never a merge and never an ejection>
+----------------------------------------------------------------------
+walkthrough complete
