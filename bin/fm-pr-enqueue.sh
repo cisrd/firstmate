@@ -5,12 +5,13 @@
 # The watcher wakes firstmate with dequeued:<reason>:<timestamp>. This script is
 # the response: it calls enqueuePullRequest when the live pull request is still
 # open, not a draft, not already in the queue, mergeable, with green checks and
-# resolved review threads, and the ejection reason is a transient check failure
-# in either the forge's or firstmate's spelling. Any other reason, including
-# merge_conflict, an ejection the forge left unlabelled, a reason no known
-# vocabulary covers, red checks, unresolved threads, an unreadable forge read,
-# a second automatic attempt for the same ejection, or a delivery that has
-# already spent its automatic attempts, prints escalate: and does not enqueue.
+# resolved review threads that fit one read page, and the ejection reason is a
+# transient check failure in either the forge's or firstmate's spelling. Any
+# other reason, including merge_conflict, an ejection the forge left unlabelled,
+# a reason no known vocabulary covers, red checks, unresolved threads, more
+# review threads than one page holds, an unreadable forge read, a second
+# automatic attempt for the same ejection, or a delivery that has already spent
+# its automatic attempts, prints escalate: and does not enqueue.
 # Re-queue is not a merge. The bound is one automatic enqueuePullRequest per
 # ejection, under a ceiling of FM_PR_ENQUEUE_ATTEMPT_CEILING attempts for the
 # armed PR identity as a whole, both recorded in state/<id>.pr-poll-enqueued.
@@ -137,9 +138,9 @@ fm_pr_poll_enqueued_attempts "$STATE" "$ID" "$PROVIDER" "$HOST" "$PROJECT_PATH" 
   || escalate "$REASON reached the automatic re-queue ceiling of $ATTEMPT_CEILING after $FM_PR_ENQUEUED_ATTEMPTS attempts on this pull request"
 
 # shellcheck disable=SC2016 # GraphQL variables are for gh, not the shell.
-gql_read='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id state isDraft isInMergeQueue mergeable reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviewThreads(first:100){nodes{isResolved isOutdated}}}}}'
+gql_read='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){id state isDraft isInMergeQueue mergeable reviewDecision commits(last:1){nodes{commit{statusCheckRollup{state}}}} reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved isOutdated}}}}}'
 # shellcheck disable=SC2016 # jq owns every $ expression in this filter.
-gql_read_filter='.data.repository.pullRequest as $pr | if $pr == null then empty else [($pr.id // ""), ($pr.state // ""), (if $pr.isDraft == true then "true" else "false" end), (if $pr.isInMergeQueue == true then "true" else "false" end), ($pr.mergeable // ""), ($pr.reviewDecision // ""), ((($pr.commits.nodes // []) | last | .commit.statusCheckRollup.state) // ""), ([($pr.reviewThreads.nodes // [])[] | select(.isResolved == false and .isOutdated != true)] | length | tostring)] | @tsv end'
+gql_read_filter='.data.repository.pullRequest as $pr | if $pr == null then empty else [($pr.id // ""), ($pr.state // ""), (if $pr.isDraft == true then "true" else "false" end), (if $pr.isInMergeQueue == true then "true" else "false" end), ($pr.mergeable // ""), ($pr.reviewDecision // ""), ((($pr.commits.nodes // []) | last | .commit.statusCheckRollup.state) // ""), ([($pr.reviewThreads.nodes // [])[] | select(.isResolved == false and .isOutdated != true)] | length | tostring), (if $pr.reviewThreads.pageInfo.hasNextPage == true then "true" else "false" end)] | @tsv end'
 
 read_pr_state() {
   gh api graphql -f query="$gql_read" -f owner="$OWNER" -f name="$REPO" -F number="$NUMBER" \
@@ -152,7 +153,7 @@ parse_pr_state() {
   case "$raw" in
     *$'\n'*) return 1 ;;
   esac
-  [ "$(printf '%s\n' "$raw" | awk -F '\t' '{print NF}')" = 8 ] || return 1
+  [ "$(printf '%s\n' "$raw" | awk -F '\t' '{print NF}')" = 9 ] || return 1
   pr_id=$(printf '%s\n' "$raw" | awk -F '\t' '{print $1}')
   pr_state=$(printf '%s\n' "$raw" | awk -F '\t' '{print $2}')
   is_draft=$(printf '%s\n' "$raw" | awk -F '\t' '{print $3}')
@@ -161,6 +162,7 @@ parse_pr_state() {
   review_decision=$(printf '%s\n' "$raw" | awk -F '\t' '{print $6}')
   check_state=$(printf '%s\n' "$raw" | awk -F '\t' '{print $7}')
   unresolved=$(printf '%s\n' "$raw" | awk -F '\t' '{print $8}')
+  threads_beyond_page=$(printf '%s\n' "$raw" | awk -F '\t' '{print $9}')
   [ -n "$pr_id" ] || return 1
   [[ "$pr_id" =~ ^[A-Za-z0-9_=-]+$ ]] || return 1
 }
@@ -219,6 +221,12 @@ if [ -z "$check_state" ]; then
 fi
 [ "$check_state" = SUCCESS ] || escalate "$REASON checks are not green"
 [ "$unresolved" = 0 ] || escalate "$REASON unresolved review threads"
+# The read asks for one page of review threads, so a pull request with more
+# threads than that page holds has an uncounted remainder: zero unresolved on
+# the page is not zero unresolved on the pull request, and guessing it is would
+# re-queue a delivery that is still waiting on a review.
+[ "$threads_beyond_page" = false ] \
+  || escalate "$REASON review threads do not fit one page and could not be counted"
 
 # shellcheck disable=SC2016 # GraphQL variables are for gh, not the shell.
 gql_mut='mutation($id:ID!){enqueuePullRequest(input:{pullRequestId:$id}){mergeQueueEntry{id}}}'

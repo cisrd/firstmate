@@ -40,6 +40,16 @@ case "${1:-} ${2:-}" in
           fi
           prev=$arg
         done
+        if [ -n "${FM_TEST_GH_PR_READ_JSON:-}" ] && [ -f "$FM_TEST_GH_PR_READ_JSON" ]; then
+          filter=
+          prev=
+          for arg in "$@"; do
+            [ "$prev" = -q ] && filter=$arg
+            prev=$arg
+          done
+          jq -r "$filter" < "$FM_TEST_GH_PR_READ_JSON"
+          exit 0
+        fi
         if [ -n "${FM_TEST_GH_PR_READ_FILE:-}" ] && [ -f "$FM_TEST_GH_PR_READ_FILE" ]; then
           line=$(head -n 1 "$FM_TEST_GH_PR_READ_FILE")
           tail -n +2 "$FM_TEST_GH_PR_READ_FILE" > "$FM_TEST_GH_PR_READ_FILE.next"
@@ -50,7 +60,7 @@ case "${1:-} ${2:-}" in
         if [ -n "${FM_TEST_GH_PR_READ+x}" ]; then
           printf '%s\n' "$FM_TEST_GH_PR_READ"
         else
-          line=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t0'
+          line=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t0\tfalse'
           printf '%s\n' "$line"
         fi
         exit 0
@@ -146,7 +156,7 @@ test_red_checks_escalate() {
   dir=$(make_case red-checks)
   write_ready_meta "$dir"
   set +e
-  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tFAILURE\t0' \
+  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tFAILURE\t0\tfalse' \
     run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
@@ -162,7 +172,7 @@ test_unresolved_threads_escalate() {
   dir=$(make_case unresolved)
   write_ready_meta "$dir" https://github.com/o/r/pull/1 checks_timed_out
   set +e
-  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t2' \
+  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t2\tfalse' \
     run_enqueue "$dir" checks_timed_out > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
@@ -178,7 +188,7 @@ test_already_queued_is_idempotent() {
   dir=$(make_case already-queued)
   write_ready_meta "$dir"
   set +e
-  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\ttrue\tMERGEABLE\t\tSUCCESS\t0' \
+  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\ttrue\tMERGEABLE\t\tSUCCESS\t0\tfalse' \
     run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
@@ -416,7 +426,7 @@ test_closed_pull_request_is_named_before_any_unknown_wait() {
   write_ready_meta "$dir"
   set +e
   FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 \
-    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tCLOSED\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0' \
+    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tCLOSED\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0\tfalse' \
     run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
@@ -435,7 +445,7 @@ test_queued_pull_request_is_reported_before_any_unknown_wait() {
   write_ready_meta "$dir"
   set +e
   FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 \
-    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\ttrue\tUNKNOWN\t\tSUCCESS\t0' \
+    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\ttrue\tUNKNOWN\t\tSUCCESS\t0\tfalse' \
     run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
@@ -519,8 +529,8 @@ test_unknown_then_mergeable_requeues() {
   dir=$(make_case unknown-then-mergeable)
   write_ready_meta "$dir"
   printf '%s\n%s\n' \
-    $'PR_kwDOabc\tOPEN\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0' \
-    $'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t0' \
+    $'PR_kwDOabc\tOPEN\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0\tfalse' \
+    $'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\tSUCCESS\t0\tfalse' \
     > "$dir/pr-reads"
   set +e
   FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 FM_TEST_GH_PR_READ_FILE="$dir/pr-reads" \
@@ -542,7 +552,7 @@ test_persistent_unknown_mergeability_is_refused() {
   write_ready_meta "$dir"
   set +e
   FM_PR_ENQUEUE_UNKNOWN_SLEEP_SECS=0 FM_PR_ENQUEUE_UNKNOWN_BUDGET_SECS=60 \
-    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0' \
+    FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tUNKNOWN\t\tSUCCESS\t0\tfalse' \
     run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
@@ -581,7 +591,7 @@ test_absent_rollup_is_named_not_called_red() {
   dir=$(make_case absent-rollup)
   write_ready_meta "$dir"
   set +e
-  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\t\t0' \
+  FM_TEST_GH_PR_READ=$'PR_kwDOabc\tOPEN\tfalse\tfalse\tMERGEABLE\t\t\t0\tfalse' \
     run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
   rc=$?
   set -e
@@ -607,10 +617,56 @@ test_graphql_string_fields_are_sent_raw() {
   pass "GraphQL owner and name are sent as strings even when they look like JSON literals"
 }
 
+write_thread_payload() {
+  local path=$1 more=$2 count=$3
+  jq -n --argjson more "$more" --argjson count "$count" \
+    '{data:{repository:{pullRequest:{
+      id:"PR_kwDOabc", state:"OPEN", isDraft:false, isInMergeQueue:false,
+      mergeable:"MERGEABLE", reviewDecision:null,
+      commits:{nodes:[{commit:{statusCheckRollup:{state:"SUCCESS"}}}]},
+      reviewThreads:{
+        pageInfo:{hasNextPage:$more},
+        nodes:[range($count) | {isResolved:true, isOutdated:false}]}}}}}' \
+    > "$path" || fail "could not write the review-thread payload"
+}
+
+test_review_threads_beyond_one_page_escalate() {
+  local dir rc
+  dir=$(make_case threads-beyond-page)
+  write_ready_meta "$dir"
+  write_thread_payload "$dir/pr.json" true 100
+  set +e
+  FM_TEST_GH_PR_READ_JSON="$dir/pr.json" \
+    run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 2 ] \
+    || fail "review threads past the read page should escalate: $(cat "$dir/stdout")"
+  [ "$(cat "$dir/stdout")" = 'escalate: failed_checks review threads do not fit one page and could not be counted' ] \
+    || fail "an uncounted thread remainder was not named: $(cat "$dir/stdout")"
+  ! grep -q enqueuePullRequest "$dir/gh.log" \
+    || fail "an uncounted thread remainder called enqueuePullRequest"
+
+  dir=$(make_case threads-fill-one-page)
+  write_ready_meta "$dir"
+  write_thread_payload "$dir/pr.json" false 100
+  set +e
+  FM_TEST_GH_PR_READ_JSON="$dir/pr.json" \
+    run_enqueue "$dir" failed_checks > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -eq 0 ] \
+    || fail "a full page of resolved threads should requeue: $(cat "$dir/stdout") $(cat "$dir/stderr")"
+  grep -q enqueuePullRequest "$dir/gh.log" \
+    || fail "a full page of resolved threads did not requeue"
+  pass "review threads past the read page escalate instead of counting as zero unresolved"
+}
+
 test_green_failed_checks_requeues_once
 test_merge_conflict_escalates_without_enqueue
 test_red_checks_escalate
 test_unresolved_threads_escalate
+test_review_threads_beyond_one_page_escalate
 test_already_queued_is_idempotent
 test_unreadable_state_escalates
 test_forge_spelled_reason_requeues
