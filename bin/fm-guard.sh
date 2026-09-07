@@ -27,7 +27,13 @@
 # bounded). Independent alarms (queued wakes, worktree tangle) are never
 # suppressed by that dedup. Normal wake handling (watcher briefly down between a
 # wake and the next supervision resume) stays inside the grace window and stays
-# silent. The queued-wakes warning stays silent for the supervision branch
+# silent. The queued-wakes warning counts only the rows the calling actor can
+# itself present or retire (fm_wake_actor_pending_count), so it is never an
+# instruction to run a drain with nothing to present. A row reserved by a live
+# supervision-branch grant therefore warns no actor here at all - main cannot
+# present it and the branch is never warned about queued rows anyway - and is
+# surfaced only by the held notice a main drain prints.
+# It also stays silent for the supervision branch
 # actor (FM_SUPERVISION_ACTOR=branch), because that actor runs guarded commands
 # while handling exactly the queued rows its grant covers and can drain nothing
 # else. Always exits 0: the guard warns, it never blocks.
@@ -177,7 +183,12 @@ if [ "$needed" = false ]; then
   exit 0
 fi
 
-[ -s "$FM_WAKE_QUEUE" ] && queue_pending=true
+# Count only the rows this actor could actually present or retire, so the
+# warning never sends an actor to a drain that provably has nothing for it.
+# fm-wake-lib.sh owns that per-actor classification.
+if [ -s "$FM_WAKE_QUEUE" ] && [ "$(fm_wake_actor_pending_count "$GUARD_ACTOR")" -gt 0 ]; then
+  queue_pending=true
+fi
 
 # No fresh watcher with tasks in flight is the dangerous state: emit a prominent,
 # bordered banner FIRST so it reads as an alarm, not a buried stderr line. Later
