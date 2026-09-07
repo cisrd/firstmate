@@ -1,0 +1,180 @@
+Wake-queue counted-row invariant: end-to-end CLI transcript
+===========================================================
+
+Reproduction driven through the real CLIs (bin/fm-guard.sh, bin/fm-wake-drain.sh,
+bin/fm-wake-grant.sh) against two trees: the base commit and the target commit.
+Scenario A replays the reported fmverif field state verbatim: a single stale
+fleet:w2:p3 row queued while a live supervision-branch grant holds it.
+Scenario B queues a structurally truncated row alongside a usable one.
+
+INVARIANT: any row counted in the pending-warning condition must be presented
+with an executable acknowledgement path (or be retired from the queue).
+
+######################################################################
+# BEFORE the fix (base commit ffd2c899 - the reported field behavior)
+# tree: /tmp/fm-e2e/base
+######################################################################
+
+===== A. the reported field state: one stale row queued, held by a LIVE supervision-branch grant =====
+
+state/.wake-queue (verbatim):
+    1788814215	1	stale	fleet:w2:p3	stale: fleet:w2:p3 (paused 7227s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+    (live branch grant published for sequence 1)
+
+$ bin/fm-guard.sh   # what the operator is told on every guarded command
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+$ bin/fm-wake-drain.sh   # what the operator gets when they follow that instruction
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+    queue holds 1 row(s)
+    guard counts a row as drainable-by-main (ordinary warning): yes
+    drain presents a row with an executable ack command:        no
+    INVARIANT VIOLATED: counted but unpresentable -> queue is wedged
+
+===== A2. same row, same kind, same endpoint - grant released (nothing else changed) =====
+
+$ bin/fm-guard.sh
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+$ bin/fm-wake-drain.sh
+    1788814215	1	stale	fleet:w2:p3	stale: fleet:w2:p3 (paused 7227s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+    WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3035104.1788814215.FVhL35
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+$ bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3035104.1788814215.FVhL35
+    queue after acknowledgement: 0 row(s)
+
+===== B. a structurally unusable row (lost its trailing fields) queued alongside a usable one =====
+
+state/.wake-queue (verbatim):
+    1788814217<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+    1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+
+$ bin/fm-guard.sh
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+$ bin/fm-wake-drain.sh
+    1788814217	1	signal	task-a.status	signal: task-a
+    WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3038985.1788814217.mbYZB2
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+    queue now holds 2 row(s):
+      1788814217<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+      1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+
+$ bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3038985.1788814217.mbYZB2
+    queue after acknowledgement: 1 row(s)
+
+$ bin/fm-guard.sh   # is the queue finally quiet?
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+    queue holds 1 row(s)
+    guard counts a row as drainable-by-main (ordinary warning): yes
+    drain presents a row with an executable ack command:        no
+    INVARIANT VIOLATED: counted but unpresentable -> queue is wedged
+
+
+######################################################################
+# AFTER the fix (target commit 0227b23)
+# tree: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M1YQBCAYD7E9ZWHV14G6B5ZK
+######################################################################
+
+===== A. the reported field state: one stale row queued, held by a LIVE supervision-branch grant =====
+
+state/.wake-queue (verbatim):
+    1788814219	1	stale	fleet:w2:p3	stale: fleet:w2:p3 (paused 7227s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+    (live branch grant published for sequence 1)
+
+$ bin/fm-guard.sh   # what the operator is told on every guarded command
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    NOTICE: wake rows held by the live supervision branch - it presents and acknowledges them; do not drain them from here.
+
+$ bin/fm-wake-drain.sh   # what the operator gets when they follow that instruction
+    WAKE ROWS HELD BY SUPERVISION BRANCH: 1 queued row(s) (1) are granted to the live supervision branch, which presents and acknowledges them.
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    NOTICE: wake rows held by the live supervision branch - it presents and acknowledges them; do not drain them from here.
+
+    queue holds 1 row(s)
+    guard counts a row as drainable-by-main (ordinary warning): no
+    drain presents a row with an executable ack command:        no
+    INVARIANT HOLDS
+
+===== A2. same row, same kind, same endpoint - grant released (nothing else changed) =====
+
+$ bin/fm-guard.sh
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+$ bin/fm-wake-drain.sh
+    1788814219	1	stale	fleet:w2:p3	stale: fleet:w2:p3 (paused 7227s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+    WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3041492.1788814219.nAZMDp
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+$ bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3041492.1788814219.nAZMDp
+    queue after acknowledgement: 0 row(s)
+
+===== B. a structurally unusable row (lost its trailing fields) queued alongside a usable one =====
+
+state/.wake-queue (verbatim):
+    1788814221<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+    1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+
+$ bin/fm-guard.sh
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    ●  WATCHER DOWN - SUPERVISION IS OFF
+    ●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+    ●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+    ●  This is a supervision warning only; the guarded operation WILL still run.
+    ●  After draining queued wakes, watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+    ●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+$ bin/fm-wake-drain.sh
+    wake drain: retired 1 unusable queue row(s) that carried no sequence to present or acknowledge:
+    wake drain:   1788792074	574	stale	fleet:w2:p3
+    1788814221	1	signal	task-a.status	signal: task-a
+    WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3044355.1788814221.7RuLMS
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+    WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+    queue now holds 1 row(s):
+      1788814221<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+
+$ bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 3044355.1788814221.7RuLMS
+    queue after acknowledgement: 0 row(s)
+
+$ bin/fm-guard.sh   # is the queue finally quiet?
+    WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+
+    queue holds 0 row(s)
+    guard counts a row as drainable-by-main (ordinary warning): no
+    drain presents a row with an executable ack command:        no
+    INVARIANT HOLDS
+

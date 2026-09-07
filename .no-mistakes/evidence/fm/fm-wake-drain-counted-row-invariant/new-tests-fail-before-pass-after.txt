@@ -1,0 +1,17 @@
+Regression proof: the two new tests fail on the base commit and pass on the target commit
+=======================================================================================
+
+The new tests were extracted verbatim from tests/fm-wake-queue.test.sh and run against
+a clean export of the base commit (ffd2c899) so only the registration list differs.
+
+--- BASE ffd2c899: test_main_is_never_told_to_drain_rows_only_the_branch_owns ---
+ok - historical annotations replay nothing already announced and keep everything new
+not ok - main drain went silent instead of naming who holds the queued rows
+--- BASE ffd2c899: test_unconsumable_rows_are_retired_instead_of_wedging_the_queue ---
+ok - historical annotations replay nothing already announced and keep everything new
+not ok - main drain did not report the rows it retired
+
+--- TARGET 0227b23: bash tests/fm-wake-queue.test.sh (full suite) ---
+ok - a branch-held row raises no queued-wake warning for main, and the same row is presented and acknowledged once the grant clears
+ok - structurally unusable rows are retired by main alone, leaving every remaining row presentable and acknowledgeable
+suite exit code: 0
