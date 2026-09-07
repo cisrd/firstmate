@@ -63,7 +63,15 @@ fi
 SESSION_ID=$(printf '%s' "$PAYLOAD" | jq -er '
   .sessionId | select(type == "string" and length > 0)
 ' 2>/dev/null) || exit 0
-command -v grok >/dev/null 2>&1 || exit 0
+# Resolve grok's launcher instead of trusting the pane's PATH: `grok` is a
+# basename unrelated CLIs also install, and a hook that silently ran one of
+# those would drop the guard's forced resume without any signal.
+# bin/fm-grok-lib.sh owns that contract; an unresolvable launcher is the same
+# fail-open outcome the bare `command -v` check produced.
+# shellcheck source=bin/fm-grok-lib.sh
+# shellcheck disable=SC1091
+. "$ROOT/bin/fm-grok-lib.sh" 2>/dev/null || exit 0
+GROK_BIN=$(fm_grok_resolve_binary 2>/dev/null) || exit 0
 
 ERR=$(mktemp "${TMPDIR:-/tmp}/fm-turnend-grok.XXXXXX") || exit 0
 trap 'rm -f "$ERR"' EXIT
@@ -84,7 +92,7 @@ $REASON" \
 
 GROK_TURNEND_GUARD_ACTIVE=1 \
   GROK_HOME="${GROK_HOME:-$HOME/.grok}" \
-  grok --resume "$SESSION_ID" \
+  "$GROK_BIN" --resume "$SESSION_ID" \
     --cwd "$ROOT" \
     --output-format plain \
     -p "$PROMPT" >/dev/null 2>&1 || true

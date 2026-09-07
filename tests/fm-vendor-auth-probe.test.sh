@@ -80,6 +80,12 @@ esac
 exit 0
 SH
   chmod +x "$fakebin/grok"
+  # The script resolves the OFFICIAL Grok installation rather than trusting the
+  # `grok` basename on PATH (bin/fm-grok-lib.sh), so the fake vendor CLI is also
+  # installed as that installation's launcher. Without this the suite would
+  # resolve - and question - the developer's own real Grok CLI.
+  mkdir -p "$dir/grok-home/bin"
+  ln -sf "$fakebin/grok" "$dir/grok-home/bin/grok"
   printf '%s\n' "$fakebin"
 }
 
@@ -118,6 +124,7 @@ run_probe() {
     fi
   done
   out=$(env "PATH=$fakebin:$BASE_PATH" \
+    "GROK_HOME=$case_dir/grok-home" \
     "FM_FAKE_GROK_LOG=$RUN_GROK_LOG" \
     "FM_FAKE_GROK_STDIN=$RUN_GROK_STDIN" \
     "FM_FAKE_QUOTA_LOG=$RUN_QUOTA_LOG" \
@@ -268,8 +275,9 @@ test_missing_vendor_cli_is_reported_not_assumed() {
   case_dir="$TMP_ROOT/grok-absent"
   mkdir -p "$case_dir"
   fakebin=$(make_fakebin "$case_dir")
-  rm -f "$fakebin/grok"
+  rm -f "$fakebin/grok" "$case_dir/grok-home/bin/grok"
   line=$(env "PATH=$fakebin:$BASE_PATH" \
+    "GROK_HOME=$case_dir/grok-home" \
     "FM_FAKE_QUOTA_LOG=$case_dir/quota.log" \
     "$SCRIPT" grok </dev/null 2>/dev/null) || rc=$?
   expect_code 0 "$rc" "an absent vendor CLI is a fact, not a usage error"

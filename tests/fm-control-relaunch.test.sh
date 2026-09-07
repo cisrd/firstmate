@@ -21,6 +21,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/fixtures.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fixtures.sh"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-control-lib.sh"
 # shellcheck source=/dev/null
@@ -133,6 +135,10 @@ new_case() {
   printf 'claude' > "$dir/fake/becomes"
   printf '%s\n' "fm-$id" > "$dir/fake/windows"
   make_tmux_stub "$dir"
+  # run_control and run_spawn pin GROK_HOME here, and a grok relaunch resolves
+  # its launcher out of that installation root, so every case ships one instead
+  # of letting the developer's own PATH decide which `grok` a relaunch starts.
+  fm_test_fake_grok_install "$dir/grokhome" >/dev/null
   printf '%s\n' "$dir"
 }
 

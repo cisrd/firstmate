@@ -178,9 +178,12 @@ That zero is a prepaid balance, not the subscription window, and is never headro
 Verified 2026-07-30 on `grok 0.2.117 (f1c06093089f) [stable]`.
 
 ```sh
-grok --version
-grok models   # stdin closed, single attempt, hard-bounded
+"$GROK" --version
+"$GROK" models   # stdin closed, single attempt, hard-bounded
 ```
+
+`$GROK` is the launcher `bin/fm-grok-lib.sh` resolves, not a bare `grok`.
+Measured 2026-09-07 on the fleet host, `type -a grok` listed three same-named executables - `~/.local/bin/grok` and `~/.grok/bin/grok`, both symlinks at the official `grok 1.0.13 (5e9a58528b76) [stable]` download, plus `~/.nvm/versions/node/v24.19.0/bin/grok`, the unrelated `@vibe-kit/grok-cli` 1.0.1 - so a bare name would let `PATH` order decide which vendor the probe questioned.
 
 Observed:
 
@@ -197,6 +200,7 @@ Re-run the two commands above and update this section and the pinned version tog
 
 `tests/fm-vendor-auth-probe.test.sh` drives the real script against a fake vendor CLI that records every invocation's argv and anything readable on stdin.
 It asserts that the script accepts no harness, model, or provider input, never calls `quota-axi`, exits alike for every probe result because it renders no verdict, invokes only the two fixed non-destructive argv forms with stdin closed, holds a real bound even when the configured bound is zero or malformed, and never echoes raw vendor output.
+`tests/fm-grok-executable.test.sh` owns the executable-identity half: that the probe questions the official installation and reports `unavailable` rather than running an unrecognized same-name CLI.
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
 `tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake schema-5 snapshot per case, served as quota-axi's default TOON.

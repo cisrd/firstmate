@@ -56,9 +56,28 @@ FM_ROOT="${FM_ROOT_OVERRIDE:-$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd -P)}"
 . "$SCRIPT_DIR/fm-remote-job-lib.sh"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-grok-lib.sh
+. "$SCRIPT_DIR/fm-grok-lib.sh"
 REQUIRED_TOOLS=(git jq herdr tasks-axi treehouse)
 HARNESS_TOOLS=(claude codex opencode pi pi-signed grok kimi)
 OPTIONAL_TOOLS=(tmux no-mistakes gh)
+# `grok` is a basename unrelated CLIs also install, so presence on PATH is not
+# presence of the harness a spawn would actually launch. Readiness therefore asks
+# bin/fm-grok-lib.sh, the one owner of that identity, so this report answers the
+# same question bin/fm-spawn.sh will. For the same reason a version-manager
+# `grok` is never wrapped below: the official CLI is a downloaded platform binary
+# under its own installation root, never an npm, asdf, or mise package, so a
+# `grok` discovered in one of those trees is by construction a different CLI.
+harness_tool_path() { # <tool>; prints the launchable path, or returns 1
+  local tool=$1 resolved
+  if [ "$tool" = grok ]; then
+    fm_grok_resolve_binary 2>/dev/null || return 1
+    return 0
+  fi
+  resolved=$(command -v "$tool" 2>/dev/null || true)
+  [ -n "$resolved" ] && [ -x "$resolved" ] || return 1
+  printf '%s\n' "$resolved"
+}
 LAUNCH_AGENT_LABEL=dev.firstmate.herdr.fm-remote
 # The dedicated remote-secondmate session. The user's interactive Herdr work
 # remains in the separate default session, which this readiness check never
@@ -327,8 +346,7 @@ report_required_tools() {
     fi
   done
   for harness in "${HARNESS_TOOLS[@]}"; do
-    resolved=$(command -v "$harness" 2>/dev/null || true)
-    if [ -n "$resolved" ] && [ -x "$resolved" ]; then
+    if resolved=$(harness_tool_path "$harness"); then
       printf 'required harness=%s:%s\n' "$harness" "$resolved"
       return 0
     fi
@@ -425,15 +443,17 @@ repair_tool_wrapper() { # <tool>
 }
 
 repair_required_wrappers() {
-  local tool resolved
+  local tool
   for tool in "${REQUIRED_TOOLS[@]}"; do
     repair_tool_wrapper "$tool" || true
   done
   for tool in "${HARNESS_TOOLS[@]}"; do
-    resolved=$(command -v "$tool" 2>/dev/null || true)
-    [ -z "$resolved" ] || [ ! -x "$resolved" ] || return 0
+    if harness_tool_path "$tool" >/dev/null 2>&1; then
+      return 0
+    fi
   done
   for tool in "${HARNESS_TOOLS[@]}"; do
+    [ "$tool" != grok ] || continue
     fm_remote_job_manager_tool "${HOME:-}" "$tool" >/dev/null 2>&1 || continue
     repair_tool_wrapper "$tool" && return 0
   done

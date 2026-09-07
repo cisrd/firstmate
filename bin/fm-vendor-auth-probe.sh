@@ -27,6 +27,13 @@
 # command and its output discriminators are verified first-hand and recorded in
 # docs/verification/dispatch-auth.md.
 #
+# The probed executable is resolved, never named. `grok` is a basename unrelated
+# CLIs also install, so a bare name would let PATH order decide whose CLI gets
+# run and could send a credential prompt to an unrelated vendor; bin/fm-grok-lib.sh
+# owns that identity contract and refuses an unrecognized homonym, which lands
+# here as status=unavailable. The resolver's own diagnostic is discarded rather
+# than printed, because this script prints no paths.
+#
 # Registered probes:
 #   grok   `grok models` - the standalone Grok Build CLI. Verified on grok
 #          0.2.117: the command exits 0 in BOTH the authenticated and the
@@ -39,7 +46,8 @@
 #
 #   probe=            the requested probe name
 #   status=           authenticated | unauthenticated | indeterminate |
-#                     timeout | unavailable
+#                     timeout | unavailable ('unavailable' also covers a `grok`
+#                     on PATH that is not the official installation)
 #   version=          the probed CLI's version, or none
 #   versionVerified=  yes | no | none - whether the running CLI matches the
 #                     version whose discriminator strings were verified
@@ -85,7 +93,7 @@ status is evidence, never eligibility:
   unauthenticated  the vendor CLI reports no authenticated session
   indeterminate    output the verified discriminators do not cover
   timeout          the hard bound was hit
-  unavailable      the vendor CLI is not on PATH
+  unavailable      no official vendor CLI could be resolved
 Only authenticated and unauthenticated are ground truth; the other three
 establish nothing and must never be read as either outcome.
 
@@ -135,6 +143,10 @@ esac
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-timeout-lib.sh"
+# Executable identity for the grok probe.
+# shellcheck source=bin/fm-grok-lib.sh
+# shellcheck disable=SC1091
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-grok-lib.sh"
 
 STATUS=unavailable
 VERSION=none
@@ -146,17 +158,18 @@ emit() {
   exit 0
 }
 
-# The two argv forms below are literals in this file. Nothing the caller supplies
-# reaches the vendor CLI's argv or stdin.
-grok_version() {
-  local output
-  output=$(fm_run_timed "$TIMEOUT" grok --version 2>/dev/null </dev/null) || { printf 'none\n'; return 0; }
+# The two argv forms below are literals in this file, and argv[0] is the path
+# the deterministic resolver returned. Nothing the caller supplies reaches the
+# vendor CLI's argv or stdin.
+grok_version() {  # <resolved-binary>
+  local bin=$1 output
+  output=$(fm_run_timed "$TIMEOUT" "$bin" --version 2>/dev/null </dev/null) || { printf 'none\n'; return 0; }
   printf '%s\n' "$output" | sed -nE 's/.*[^0-9]([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' | head -n 1 | grep . || printf 'none\n'
 }
 
-probe_grok() {
-  local output first rc=0
-  output=$(fm_run_timed "$TIMEOUT" grok models 2>/dev/null </dev/null) || rc=$?
+probe_grok() {  # <resolved-binary>
+  local bin=$1 output first rc=0
+  output=$(fm_run_timed "$TIMEOUT" "$bin" models 2>/dev/null </dev/null) || rc=$?
   if [ "$rc" -eq 124 ]; then
     printf 'timeout\n'
     return 0
@@ -174,14 +187,14 @@ probe_grok() {
 
 case "$PROBE" in
   grok)
-    command -v grok >/dev/null 2>&1 || emit
-    VERSION=$(grok_version)
+    GROK_BIN=$(fm_grok_resolve_binary 2>/dev/null) || emit
+    VERSION=$(grok_version "$GROK_BIN")
     if [ "$VERSION" = "$VERIFIED_GROK_VERSION" ]; then
       VERSION_VERIFIED=yes
     else
       VERSION_VERIFIED=no
     fi
-    STATUS=$(probe_grok)
+    STATUS=$(probe_grok "$GROK_BIN")
     emit
     ;;
   *)

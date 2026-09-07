@@ -256,6 +256,7 @@
 #     __OPINPUT__   absolute path to the canonical operational-input encoder
 #     __WORKTREE__  absolute path to the task worktree
 #     __CURSORBIN__ resolved, cursor-verified executable for a cursor launch
+#     __GROKBIN__   resolved official Grok launcher for a grok launch
 #     __GEMINISETTINGS__ firstmate-owned per-task gemini settings file (busy-state hooks)
 #     __ROVOBIN__   resolved, rovo-verified executable for a rovo launch
 # Verified per-harness turn-end hooks are installed automatically where enabled; some live outside the worktree.
@@ -419,6 +420,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-busy-lib.sh"
 # shellcheck source=bin/fm-cursor-lib.sh
 . "$SCRIPT_DIR/fm-cursor-lib.sh"
+# shellcheck source=bin/fm-grok-lib.sh
+. "$SCRIPT_DIR/fm-grok-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
@@ -1459,7 +1462,10 @@ launch_template() {
     # --dangerously-skip-permissions. grok's turn-end signal does NOT ride the
     # launch command - it is a Stop-event hook installed below (global hook +
     # per-task pointer), so the template is identical for ship/scout/secondmate.
-    grok) printf '%s' 'grok --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
+    # The launcher is resolved rather than named, because `grok` is a basename
+    # unrelated CLIs also install and a bare name would let PATH order decide
+    # which one a pane starts; bin/fm-grok-lib.sh owns that contract.
+    grok) printf '%s' '__GROKBIN__ --always-approve __MODELFLAG____EFFORTFLAG__"$(__OPINPUT__ encode launch-brief < __BRIEF__)"' ;;
     # Cursor Agent CLI. --trust suppresses the workspace-trust prompt, which
     # --yolo does NOT cover and which would otherwise block every spawn, since
     # each task gets a fresh worktree path cursor has never seen. --yolo is the
@@ -1916,6 +1922,17 @@ case "$LAUNCH" in
   *__ROVOBIN__*)
     ROVO_BIN=$(resolve_rovo_binary) || exit 1
     LAUNCH=${LAUNCH//__ROVOBIN__/$(shell_quote "$ROVO_BIN")}
+    ;;
+esac
+
+# Resolve grok's launcher here rather than leaving a bare `grok` for the pane's
+# PATH to decide. bin/fm-grok-lib.sh refuses an unrecognized same-name
+# executable, so a spawn fails with a named diagnostic instead of starting an
+# unrelated CLI that cannot reach the captain's Grok subscription.
+case "$LAUNCH" in
+  *__GROKBIN__*)
+    GROK_BIN=$(fm_grok_resolve_binary) || exit 1
+    LAUNCH=${LAUNCH//__GROKBIN__/$(shell_quote "$GROK_BIN")}
     ;;
 esac
 

@@ -1335,6 +1335,17 @@ families_for_changed_path() {
       printf '%s\n' __script__:fm-procevent-when.test.sh
       printf '%s\n' __script__:fm-remote-reply.test.sh
       ;;
+    bin/fm-grok-lib.sh)
+      # Grok executable identity: the launch command, the authentication probe,
+      # and the remote readiness report all resolve through this one owner.
+      printf '%s\n' __script__:fm-grok-executable.test.sh
+      printf '%s\n' __script__:fm-grok-harness.test.sh
+      printf '%s\n' __script__:fm-spawn-dispatch-profile.test.sh
+      printf '%s\n' __script__:fm-vendor-auth-probe.test.sh
+      printf '%s\n' __script__:fm-remote-doctor.test.sh
+      printf '%s\n' __script__:fm-turnend-guard.test.sh
+      printf '%s\n' __script__:fm-control-relaunch.test.sh
+      ;;
     bin/fm-timeout-lib.sh)
       # The shared hard bound: session start's runtime bound, the fleet/bearings
       # snapshots, the vendor auth probe, the stow cascade's per-home step, and

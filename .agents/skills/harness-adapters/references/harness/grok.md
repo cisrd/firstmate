@@ -2,7 +2,9 @@
 
 The xAI `grok` TUI is Claude-Code-compatible.
 Verified initially on 2026-06-29 with 0.2.73, slash submission on 2026-07-03 with 0.2.82, effort on 2026-07-13 with 0.2.99, and exit on 2026-07-19 with 0.2.103.
-Launch shape: `grok --always-approve "$(cat <brief>)"`.
+Launch shape: `<launcher> --always-approve "$(cat <brief>)"`.
+The launcher is resolved, never named: `grok` is a basename unrelated CLIs also install, so a spawn takes the official installation launcher at `${GROK_HOME:-$HOME/.grok}/bin/grok` and refuses an unrecognized same-name executable from `PATH` rather than starting a CLI that cannot reach the captain's subscription.
+`../../../bin/fm-grok-lib.sh` owns that contract for the launch command, the authentication probe, and the remote readiness report alike.
 
 ## Operating facts
 

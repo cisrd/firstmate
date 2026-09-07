@@ -184,6 +184,7 @@ install_guard_scripts() {
   cp "$ROOT/bin/fm-supervision-lib.sh" "$dir/bin/fm-supervision-lib.sh"
   cp "$ROOT/bin/fm-wake-lib.sh" "$dir/bin/fm-wake-lib.sh"
   cp "$ROOT/bin/fm-hook-host-lib.sh" "$dir/bin/fm-hook-host-lib.sh"
+  cp "$ROOT/bin/fm-grok-lib.sh" "$dir/bin/fm-grok-lib.sh"
   mkdir -p "$dir/docs"
   cp -R "$ROOT/docs/supervision-protocols" "$dir/docs/supervision-protocols"
   chmod +x "$dir/bin/fm-turnend-guard.sh" "$dir/bin/fm-turnend-guard-grok.sh" "$dir/bin/fm-operational-input.sh" "$dir/bin/fm-supervision-instructions.sh" "$dir/bin/fm-harness.sh"
@@ -716,7 +717,7 @@ test_hook_runs_fast() {
 }
 
 test_grok_adapter_forces_one_resume_when_unhealthy() {
-  local dir fakebin log out status
+  local dir fakebin log out status grok_home
   dir=$(make_primary_dir "$TMP_ROOT/grok-adapter-block")
   : > "$dir/state/task1.meta"
   fakebin=$(fm_fakebin "$TMP_ROOT/grok-adapter-fakebin")
@@ -734,7 +735,13 @@ test_grok_adapter_forces_one_resume_when_unhealthy() {
 } >> "$log"
 EOF
   chmod +x "$fakebin/grok"
-  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  # The adapter resolves the OFFICIAL Grok launcher rather than trusting the
+  # `grok` basename on PATH, so the fake is installed as that launcher too;
+  # without this the hook would resume the developer's own real Grok session.
+  grok_home="$TMP_ROOT/grok-adapter-home"
+  mkdir -p "$grok_home/bin"
+  ln -sf "$fakebin/grok" "$grok_home/bin/grok"
+  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" GROK_HOME="$grok_home" GROK_WORKSPACE_ROOT="$dir" bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "grok adapter must fail open after queuing a forced resume"
   [ -z "$out" ] || fail "grok adapter printed output: $out"
   assert_contains "$(cat "$log")" 'active=1' "grok adapter must mark its forced resume as loop-guarded"
@@ -747,7 +754,7 @@ EOF
 }
 
 test_grok_adapter_loop_guard_skips_resume() {
-  local dir fakebin log out status
+  local dir fakebin log out status grok_home
   dir=$(make_primary_dir "$TMP_ROOT/grok-adapter-loop")
   : > "$dir/state/task1.meta"
   fakebin=$(fm_fakebin "$TMP_ROOT/grok-adapter-loop-fakebin")
@@ -757,7 +764,10 @@ test_grok_adapter_loop_guard_skips_resume() {
 printf 'called\n' >> "$log"
 EOF
   chmod +x "$fakebin/grok"
-  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" GROK_WORKSPACE_ROOT="$dir" GROK_TURNEND_GUARD_ACTIVE=1 bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
+  grok_home="$TMP_ROOT/grok-adapter-loop-home"
+  mkdir -p "$grok_home/bin"
+  ln -sf "$fakebin/grok" "$grok_home/bin/grok"
+  out=$(printf '{"sessionId":"session-test","hookEventName":"stop"}' | PATH="$fakebin:$PATH" GROK_HOME="$grok_home" GROK_WORKSPACE_ROOT="$dir" GROK_TURNEND_GUARD_ACTIVE=1 bash "$dir/bin/fm-turnend-guard-grok.sh" 2>&1); status=$?
   expect_code 0 "$status" "grok adapter must allow its own forced resume turn to end"
   [ -z "$out" ] || fail "grok adapter printed output while loop-guarded: $out"
   [ ! -e "$log" ] || fail "grok adapter spawned another resume while loop-guarded: $(cat "$log")"

@@ -236,6 +236,21 @@ fm_test_spawn_home() {
   fi
 }
 
+# fm_test_fake_grok_install <grok-home>
+# A fake OFFICIAL Grok installation, shaped like the real one: the launcher at
+# <root>/bin/grok is a symlink at a downloaded platform binary under
+# <root>/downloads/. A grok spawn resolves its launcher through
+# bin/fm-grok-lib.sh, so without this the suite would resolve whatever `grok`
+# the developer's own PATH happens to carry. Echoes the launcher path.
+fm_test_fake_grok_install() {
+  local grok_root=$1
+  mkdir -p "$grok_root/bin" "$grok_root/downloads"
+  printf '#!/bin/sh\necho "grok 1.0.13 (fake) [stable]"\n' > "$grok_root/downloads/grok-fake"
+  chmod +x "$grok_root/downloads/grok-fake"
+  ln -sf ../downloads/grok-fake "$grok_root/bin/grok"
+  printf '%s\n' "$grok_root/bin/grok"
+}
+
 # fm_test_spawn_brief <home> <id> [captain-intent]
 fm_test_spawn_brief() {
   local home=$1 id=$2 intent=${3:-brief for $2}

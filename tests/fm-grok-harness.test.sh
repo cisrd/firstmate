@@ -18,6 +18,9 @@ make_spawn_case() {
   grok_home="$case_dir/grok"
   id="grok-$name-x1"
   mkdir -p "$grok_home"
+  # The spawn resolves grok's launcher out of this installation root, so the
+  # suite must supply one rather than inheriting the developer's own PATH.
+  fm_test_fake_grok_install "$grok_home" >/dev/null
   fm_test_spawn_home "$home"
   fm_test_spawn_brief "$home" "$id" brief
   fm_git_worktree "$proj" "$wt" "fm/$id"
