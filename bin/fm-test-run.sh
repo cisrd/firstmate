@@ -83,7 +83,8 @@
 # Environment: ambient FM_CREW_STATE_META_OVERRIDE and
 # FM_CREW_STATE_STATUS_OVERRIDE are scrubbed before selection on every path;
 # a concurrent worker additionally scrubs FM_HOME, the FM_*_OVERRIDE set and
-# FM_BACKEND. Every other ambient variable reaches a script unchanged.
+# FM_BACKEND and runs under its own private TMPDIR/TMP. Every other ambient
+# variable reaches a script unchanged.
 #
 # Per-script machine-parseable markers (stdout):
 #   FM_TEST_BEGIN <iso8601> <script> family=<family> expected_gate_skip=<class>

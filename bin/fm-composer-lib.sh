@@ -335,7 +335,8 @@ fm_composer_strip_ghost() {
 # entry, not through this union or a composer verdict, and it pairs only with
 # the measured "Esc:cancel" footer - the legacy "Ctrl+c:cancel" build's
 # queueing behavior is unverified, so neither token may prove delivery on a
-# harness-less read. Both stay per-harness below; see
+# harness-less read. The legacy token stays per-harness below and the measured
+# "Esc:cancel" footer is matched nowhere; see
 # docs/verification/grok-queued-enter.md before widening this union.
 FM_DELIVERY_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working(\.\.\.|…)|ctrl\+c to stop'
 FM_DELIVERY_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
