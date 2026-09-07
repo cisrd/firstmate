@@ -540,3 +540,65 @@ FM_TEST_END 2026-08-29T01:01:30Z tests/fm-pi-branch-extension.test.sh exit=0 dur
 ```
 
 The real renderer comparison exercised twelve outcome lines and reported collapsed and expanded parity with Pi stock, zero visible rows under Calm, restored stock parity after toggling Calm off, and delegated stock HTML export fallback.
+
+## 2026-09-07 Pi 0.85.1 renderer and export-DOM verification
+
+This host tracks Pi latest, so the version this contract's evidence is pinned to moves.
+The renderer and lifecycle evidence below was taken against installed `@earendil-works/pi-coding-agent` 0.85.1 with `@earendil-works/pi-server` 0.85.0 also installed globally.
+
+Calm's rendered rows are unchanged across 0.84.4, 0.85.0, and 0.85.1.
+`FM_PI_PACKAGE_DIR` points `tests/fm-calm-pi-extension.test.sh` at an isolated install, so each comparison ran against its own temporary dependency tree and never mutated the globally installed packages.
+
+```text
+$ pi --version
+0.85.1
+
+$ npm ls -g --depth 0 @earendil-works/pi-coding-agent @earendil-works/pi-server
+├── @earendil-works/pi-coding-agent@0.85.1
+└── @earendil-works/pi-server@0.85.0
+```
+
+```text
+$ FM_PI_PACKAGE_DIR=<pi 0.84.4> tests/fm-calm-pi-extension.test.sh
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+$ FM_PI_PACKAGE_DIR=<pi 0.85.0> tests/fm-calm-pi-extension.test.sh
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+$ FM_PI_PACKAGE_DIR=<pi 0.85.1> tests/fm-calm-pi-extension.test.sh
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+```
+
+Pi 0.85.0 alone requires a package it does not declare.
+Its `dist/experimental/server.js` statically imports `@earendil-works/pi-server`, which is absent from 0.85.0's `dependencies`, `peerDependencies`, and `optionalDependencies`, so a clean install of 0.85.0 on its own cannot load Pi's interactive mode at all:
+
+```text
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@earendil-works/pi-server' imported from
+  .../node_modules/@earendil-works/pi-coding-agent/dist/experimental/server.js
+```
+
+Installing `@earendil-works/pi-server@0.85.0` beside it restores the identical Calm rendering, and 0.85.1 no longer reaches that import.
+That packaging gap is the reason the contract looked version-sensitive; the rendered rows themselves never diverged.
+
+The `could not render calm-mode HTML export DOM` failure was a headless-Chrome start-up flake, not a change in Pi's export shape.
+It appeared in exactly one of the thirteen most recent CI runs, and that run installed the same Pi 0.85.1 as the runs immediately before and after it, which both passed.
+The render step is a vendor-tool step: the assertions that follow it are what protect the Calm conversation boundary.
+It now retries a bounded number of Chrome start-ups on a fresh profile and, when every attempt fails, reports the Chrome binary, its version, the installed Pi version, each attempt's exit status, and Chrome's own stderr, so the next occurrence is diagnosable from the CI log alone.
+`test_export_dom_render_guard` in the same script pins that behavior with real processes and no browser.
+
+The complete Calm suite against installed Pi 0.85.1, with `FM_CHROME_BIN` naming the Chrome the render step used:
+
+```text
+$ FM_CHROME_BIN=<chrome> tests/fm-calm-pi-extension.test.sh
+ok - Pi calm resolves its persistent home independently of Pi's launch directory
+ok - Pi calm compatibility evidence never rejects a Pi version for being newer than 0.82.0, and still fails closed on a missing or malformed version
+ok - a missing collapsed-thinking presentation API degrades only that Calm adapter with a clear skip reason, while the rest of Calm still registers
+ok - missing Pi presentation class exports reach the independent adapter degradation path
+ok - Calm registers none of its 7 built-in tool wrappers at load while config/calm is off, and all 7 synchronously at load while config/calm is on
+ok - Calm's first same-session /calm activation claims every uncontested built-in, leaves a foreign bash tool fully intact and callable, warns prominently and logs the contested name, and only rows constructed before that activation - the documented bound - fail to retroactively collapse
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+ok - Pi calm on collapses mid-turn assistant working notes to zero height while Calm off keeps them, leaves streaming, truncated-final, and genuine final replies untouched, never mutates the messages, ignores every /calm argument, and restores a legacy persisted max as ordinary Calm on
+ok - Pi operational follow-up E2E processes exact user-role notifications once while Calm hides current and adjacent rows, Calm off and absent render them, and restart preserves semantics
+ok - Pi Calm native /skill:ahoy geometry keeps every collapsed thinking and tool block at zero height while preserving expansion, history, restart, and Calm-off rendering
+ok - Pi Calm working ship moves on a slow independent cadence over faster fixed-cell blue water, paints the complete boat standard yellow with balanced resets, keeps ANSI-stripped width exact, flips the directional sail on the exact bounce at both edges and every width, clamps visible and hidden resizes, falls back deterministically when narrow, freezes and resumes column/direction across settle/start without hidden-time jumps or duplicate timers, resets only on a fresh session, and installs and removes one scheduler-owning widget across starts, settle, abort, failure, shutdown, reload, replacement, and Calm toggles while leaving Calm-off visibility untouched
+ok - the rendered-export-DOM guard renders in one pass, retries a bounded number of Chrome start-up failures, and reports the Chrome binary, Chrome version, Pi version, exit status, and Chrome diagnostic when every attempt fails
+ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior
+```
