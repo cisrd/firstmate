@@ -1,0 +1,90 @@
+### escape-1
+harness table lookup: fm_control_interrupt_key claude -> Escape  (repeat 1)
+active-turn footer (Esc:cancel) present at send time: no
+grok pid: 1135858   tool child: 1482152 (age 41s)
+
+--- pane immediately BEFORE the key ---
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1YJDNW5ZS47JQ70GGC0VZF3 (worktree of ~/.no-mistakes/repos)                                         ◆ 1 │ 37K / 500K
+     ▾ Tasks 1
+     ⁙ Task Run exact foreground sleep 60                                                                                                                             26s [↗][✗]
+     ❯ Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim completion until the command has actually exited.                   9:23 PM
+     ◆ Thought for 2.1s
+     I'll run sleep 60 in the foreground and wait until it actually exits before I reply.                                                                                9:23 PM
+     ◆ Task started: Run exact foreground sleep 60  [hooks: 5]
+     ◆ Thought for 0.9s
+     The sleep is still running; I'll wait for it to finish before I reply.                                                                                              9:24 PM
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+    ◎ 1 command still running · send a message to interrupt
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+
+--- pane IMMEDIATELY after one Escape ---
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1YJDNW5ZS47JQ70GGC0VZF3 (worktree of ~/.no-mistakes/repos)                                         ◆ 1 │ 37K / 500K
+     ▾ Tasks 1
+     ⸬ Task Run exact foreground sleep 60                                                                                                                             27s [↗][✗]
+     ❯ Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim completion until the command has actually exited.                   9:23 PM
+     ◆ Thought for 2.1s
+     I'll run sleep 60 in the foreground and wait until it actually exits before I reply.                                                                                9:23 PM
+     ◆ Task started: Run exact foreground sleep 60  [hooks: 5]
+     ◆ Thought for 0.9s
+     The sleep is still running; I'll wait for it to finish before I reply.                                                                                              9:24 PM
+     Turn cancelled by user in 48s.
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+    ◎ 1 command still running
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+
+--- pane 3s later (settled) ---
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1YJDNW5ZS47JQ70GGC0VZF3 (worktree of ~/.no-mistakes/repos)                                         ◆ 1 │ 37K / 500K
+     ▾ Tasks 1
+     ⋅ Task Run exact foreground sleep 60                                                                                                                             30s [↗][✗]
+     ❯ Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim completion until the command has actually exited.                   9:23 PM
+     ◆ Thought for 2.1s
+     I'll run sleep 60 in the foreground and wait until it actually exits before I reply.                                                                                9:23 PM
+     ◆ Task started: Run exact foreground sleep 60  [hooks: 5]
+     ◆ Thought for 0.9s
+     The sleep is still running; I'll wait for it to finish before I reply.                                                                                              9:24 PM
+     Turn cancelled by user in 48s.
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+    ○ 1 command still running
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+
+grok process alive: yes
+tool child 1482152 still running: yes

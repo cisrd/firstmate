@@ -1,0 +1,15 @@
+### Live grok 1.0.13 busy-pane classification (production launch shape)
+
+Pane tail captured while a turn was genuinely in flight:
+
+                                                                                                                                                                                   █
+    ⠦ Thinking… 1.0s                                                                                                                                            2.0s ⇣38.0k [stop]
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+x:shortcuts
+
+fm_busy_grok_tail_busy (crew-state fallback, grok* arm) -> idle grok-regex
+fm_busy_lines_match grok (delivery/injection guard)      -> not-busy
+fm_busy_lines_match "" (union default used by submit)    -> not-busy
+signature searched: Ctrl\+c:cancel

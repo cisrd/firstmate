@@ -1,0 +1,138 @@
+### ctrlc-1
+harness table lookup: fm_control_interrupt_key grok -> C-c  (repeat 1)
+grok pid: 1135858   tool child: 1367394 (age 23s)
+
+--- pane immediately BEFORE the key ---
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1YJDNW5ZS47JQ70GGC0VZF3 (worktree of ~/.no-mistakes/repos)                                         ◆ 1 │ 36K / 500K
+     ▾ Tasks 1
+     ⁙ Task Run exact foreground sleep 60                                                                                                                            8.9s [↗][✗]
+     ❯ Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim completion until the command has actually exited.                   9:22 PM
+     ◆ Thought for 2.8s
+     I'll run sleep 60 in the foreground and wait until it actually exits before I reply.                                                                                9:22 PM
+     ◆ Task started: Run exact foreground sleep 60  [hooks: 5]
+     ◆ Thought for 0.5s
+     The sleep is still running; I'll wait for it to finish before I reply.                                                                                              9:22 PM   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+    ◎ 1 command still running · send a message to interrupt
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+
+--- pane IMMEDIATELY after one C-c ---
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1YJDNW5ZS47JQ70GGC0VZF3 (worktree of ~/.no-mistakes/repos)                                         ◆ 1 │ 36K / 500K
+     ▾ Tasks 1
+     ⸬ Task Run exact foreground sleep 60                                                                                                                            9.9s [↗][✗]
+     ❯ Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim completion until the command has actually exited.                   9:22 PM
+     ◆ Thought for 2.8s
+     I'll run sleep 60 in the foreground and wait until it actually exits before I reply.                                                                                9:22 PM
+     ◆ Task started: Run exact foreground sleep 60  [hooks: 5]
+     ◆ Thought for 0.5s
+     The sleep is still running; I'll wait for it to finish before I reply.                                                                                              9:22 PM   █
+                                                                                                                                                                                   █
+     Turn cancelled by user in 30s.                                                                                                                                                █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+    ◎ 1 command still running
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+
+--- pane 3s later (settled) ---
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1YJDNW5ZS47JQ70GGC0VZF3 (worktree of ~/.no-mistakes/repos)                                         ◆ 1 │ 36K / 500K
+     ▾ Tasks 1
+     ⋅ Task Run exact foreground sleep 60                                                                                                                             12s [↗][✗]
+     ❯ Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim completion until the command has actually exited.                   9:22 PM
+     ◆ Thought for 2.8s
+     I'll run sleep 60 in the foreground and wait until it actually exits before I reply.                                                                                9:22 PM
+     ◆ Task started: Run exact foreground sleep 60  [hooks: 5]
+     ◆ Thought for 0.5s
+     The sleep is still running; I'll wait for it to finish before I reply.                                                                                              9:22 PM   █
+                                                                                                                                                                                   █
+     Turn cancelled by user in 30s.                                                                                                                                                █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+    ◉ 1 command still running
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+
+grok process alive: yes
+tool child 1367394 still running: yes
+
+--- follow-up after the C-c interrupt, same session ---
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1YJDNW5ZS47JQ70GGC0VZF3 (worktree of ~/.no-mistakes/repos)                                               37K / 500K
+     ❯ Reply with exactly READY and nothing else.                                                                                                                        9:23 PM
+     ◆ Thought for 3.2s
+     ◆ Task completed in 45s: Run exact foreground sleep 60
+     READY                                                                                                                                                               9:23 PM
+     Worked for 4.8s                                                                                                                                            stop  [hooks: 4]
+     ◆ Thought for 7.8s
+     Captain, shipshape.                                                                                                                                                 9:23 PM
+     ◆ stop  [hooks: 4]
+     Worked for 12s
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+                                                                                                                                                                                   █
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                            │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
