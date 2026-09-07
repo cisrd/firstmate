@@ -18,13 +18,13 @@ This record preserves the live evidence gathered before deciding whether to chan
 | Launch flags | `--always-approve --no-alt-screen` for the first lot, then the production spawn shape `--always-approve` for the re-capture lot |
 | Escape trials | Three independent `--no-alt-screen` turns with a real foreground `sleep 30`, interrupted after 23, 27, and 30 seconds; then four independent production-shape turns with a real foreground `sleep 60`, interrupted after 27, 27, 28, and 29 seconds |
 | Control trials | One `--no-alt-screen` and one production-shape real foreground turn, interrupted with `C-c` after 27 and 28 seconds |
-| Verdict | Escape visibly cancels the turn and preserves an interactive session under both shapes, but so does `C-c`, and neither key reliably stops the already-running tool child, so there is no discriminator favouring Escape and Firstmate retains `C-c` |
+| Verdict | Escape visibly cancels the turn and preserves an interactive session under both shapes, but so does `C-c`, and neither key reliably stops the already-running tool child; Escape stopped it in two production-shape trials and left it running in another, and no `C-c` control was captured in the pane state where it died, so the two keys are untied on that axis rather than tied and Firstmate retains `C-c` as the established path |
 
 The PATH inventory was captured with `type -a grok`, `readlink -f`, and each candidate's `--version` output before the live trials.
 The live session invoked the PATH winner through `exec grok`, which resolved to the 1.0.13 native executable shown above.
 The `--no-alt-screen` flag was accepted by the installed CLI and made pane capture deterministic.
 Firstmate's own spawn shape in `bin/fm-spawn.sh` omits that flag, so the first lot differed from the fleet launch in exactly one flag, and identical `tmux send-keys` delivery would not have established identical handling: the 0.2.73 premise under revision is precisely that Escape focused the scrollback, and scrollback ownership is what the alternate screen changes hands over.
-Both the Escape observations and the footer literals were therefore re-captured under the production launch shape, recorded below; the two shapes agree on the cancellation behavior, on the absent `Ctrl+c:cancel` literal, and on the idle bar.
+Both the Escape observations and the footer literals were therefore re-captured under the production launch shape, recorded below; the two shapes agree on the visible cancellation, on the absent `Ctrl+c:cancel` literal, and on the idle bar, but not on the tool child, which survived all three `--no-alt-screen` Escapes and died in two of the production-shape ones.
 
 ## Method and expected behavior
 
@@ -122,8 +122,8 @@ Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
 
 The idle bar was `Shift+Tab:mode  │  Ctrl+x:shortcuts`, matching the first lot.
 So the production shape reproduces the `--no-alt-screen` result rather than contradicting it: one Escape cancels a genuinely in-flight turn and leaves an interactive session that accepts a follow-up.
-It also reproduces the limit. Neither key terminates an already-running child tool process reliably: the `escape-1` and `C-c` control trials both left the `sleep 60` child running behind the same `1 command still running` residue.
-`C-c` therefore matches Escape on every measured axis under the production shape, leaving no discriminator that favours switching keys.
+Neither key reliably stops already-running tool work. `escape-1` and the `C-c` control both left the `sleep 60` child running behind the same `1 command still running` residue, while `escape-2` and `escape-3` were followed three seconds later by a gone child that a 12-13s-old `sleep 60` cannot have exited on its own, so Escape did stop the child in those two trials.
+The two keys were not compared in that state: `escape-1` and both `C-c` controls were sent while the pane read `Thinking...`, and no `C-c` control was ever captured while a tool was the active work. Tool-child termination is therefore untied between the keys rather than matched, and the remaining measured axes - visible cancellation, surviving Grok process, restored interactive composer, accepted follow-up - are the same for both, so no discriminator favours switching keys.
 
 ## History and disconfirming evidence
 
@@ -142,7 +142,8 @@ Grok busy detection is therefore known stale on 1.0.13; widening or version-scop
 
 An Escape-is-safe conclusion would require repeated active-turn captures under the production launch shape where one Escape cancels the turn and the active tool work also stops cleanly, the Grok process remains interactive, and a follow-up is accepted.
 It would be falsified by any repeatable capture where Escape only changes scrollback focus, leaves the turn generating, leaves active work running, exits or wedges the Grok process, fails to restore an interactive composer, or prevents a follow-up.
-The production-shape lot meets every clause except the active work one, which `escape-1` falsifies, so Escape is not established as safe; and because the `C-c` control fails that same clause identically, the incumbent key is not shown to be worse either.
+The production-shape lot meets every clause except the active work one: `escape-1` falsifies it and `escape-2` and `escape-3` satisfy it, so Escape's effect on running tool work is state-dependent and not established as clean.
+The incumbent key is not shown to be worse either: the one `C-c` control also left the child running, and it was never sent in the tool-active state where Escape stopped it, so the comparison on that axis is missing rather than decided.
 
 Firstmate consequently retains one `C-c` for Grok, and the harness guidance records that 1.0.13 also cancels on Escape without giving a reason to switch.
 The portable public-control regression remains `tests/fm-control.test.sh`, which verifies the key delivered by `bin/fm-control.sh` rather than asserting implementation source text.
