@@ -1,0 +1,16 @@
+pane BEFORE the steer (grok mid-turn, tool running):
+  │ ❯                                                                                                                                    │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) ─╯
+  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+x:shortcuts
+  composer state: empty
+  harness-less busy state (what fm_tmux_submit_core reads): idle
+
+fm_tmux_submit_core <pane> '<steer>' 3 0.5 0.5  ->  verdict:
+  empty
+
+pane 1s AFTER the submit core returned:
+   Queued · Enter to send now
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                    │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) ─╯
+  Enter:send now  │  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+;:queue  │  Ctrl+x:shortcuts

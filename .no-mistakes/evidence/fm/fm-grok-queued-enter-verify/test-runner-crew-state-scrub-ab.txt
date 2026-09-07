@@ -1,0 +1,25 @@
+Ambient contamination this shell really carries (a shell started inside a live Firstmate session):
+  FM_CREW_STATE_META_OVERRIDE=/tmp/fm-fleet-tasks.s1nMak/rn-flux-trois-modules-analyse.meta
+  FM_CREW_STATE_STATUS_OVERRIDE=/tmp/fm-fleet-tasks.s1nMak/rn-flux-trois-modules-analyse.status
+  -> /tmp/fm-fleet-tasks.s1nMak/rn-flux-trois-modules-analyse.meta  (path does NOT exist)
+  -> /tmp/fm-fleet-tasks.s1nMak/rn-flux-trois-modules-analyse.status  (path does NOT exist)
+
+$ bin/fm-test-run.base.sh tests/fm-backend-orca.test.sh    # base 0b9f518 runner, byte-identical copy
+not ok - crew-state should report the stale Orca terminal as gone (missing: 'backend target gone: term-stale')
+state: unknown · source: none · no metadata for orcareaderrz7
+FM_TEST_END 2026-09-07T19:30:01Z tests/fm-backend-orca.test.sh exit=1 duration_ms=14512 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=1 skipped_gate=0 duration_ms=14569
+  exit=1
+
+$ bin/fm-test-run.sh tests/fm-backend-orca.test.sh          # this change, same shell, same ambient overrides
+ok - fm-peek/fm-send/fm-crew-state route through backend=orca metadata and its durable inbox
+ok - fm-peek/fm-crew-state: Orca read error JSON fails closed
+FM_TEST_END 2026-09-07T19:30:37Z tests/fm-backend-orca.test.sh exit=0 duration_ms=28032 gate_skip=false
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=28107
+  exit=0
+
+The base runner passed the stale exported override straight through to the
+script, so the REAL bin/fm-crew-state.sh read a deleted /tmp path instead of the
+fixture's own metadata and answered "no metadata" for a crew whose fixture file
+was right there. This change unsets those two names once, before selection, on
+the path both the serial and the concurrent lane pass through.

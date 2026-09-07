@@ -1,0 +1,17 @@
+grok CLI under test: grok 1.0.13 (5e9a58528b76) [stable]
+
+--- 1. REAL grok pane, mid-turn (tool running) ---
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) ─╯
+  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
+  fm_pane_busy_state <pane>          (harness-less, the shared union fm_tmux_submit_core reads) -> idle
+  fm_pane_busy_state <pane> grok     (per-harness grok signature)                               -> idle
+
+--- 2. Synthetic pane rendering the OLDER recorded grok footer ---
+Ctrl+c:cancel
+  fm_pane_busy_state <pane>          (harness-less union)  -> idle
+  fm_pane_busy_state <pane> grok     (per-harness grok)    -> busy
+  fm_pane_busy_state <pane> claude   (per-harness claude)  -> idle
+
+--- 3. Control: a claude-shaped busy footer is still carried by the union ---
+* Herding... (12s esc to interrupt)
+  fm_pane_busy_state <pane>          (harness-less union)  -> busy
