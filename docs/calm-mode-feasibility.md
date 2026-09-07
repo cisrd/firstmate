@@ -17,6 +17,7 @@ Pi 0.81.1 was installed when Calm was first built, and Pi 0.82.0 was the later r
 The inspected Pi CHANGELOG shows no relevant presentation API introduced at either version, so those versions remain verification evidence rather than compatibility bounds.
 The exported classes used by the adapters (`AssistantMessageComponent` and `InteractiveMode`) are undocumented internals with no stated version guarantee.
 `tests/fm-calm-pi-extension.test.sh` records the installed Pi version as evidence without gating on it and covers both newer synthetic versions and an unavailable adapter seam.
+This host tracks Pi latest, so the version the evidence is pinned to moves; the [2026-09-07 record](#2026-09-07-pi-0851-renderer-and-export-dom-verification) owns the currently pinned version and the renderer comparison behind it.
 
 ### Built-in tool override constraints
 
@@ -237,12 +238,12 @@ The test fixture enumerates every class below through the centralized policy, an
 | `system-notice` | `showStatus`, `showError`, compaction, retry, and startup warning rows | Unsupported boundary; remains visible. |
 | `cache-notice` | Non-persisted cache-miss `Text` row | Unsupported boundary; remains visible. |
 | `project-trust-warning` | Non-persisted startup `Text` row | Unsupported boundary; remains visible. |
-| `synthetic-user` | Firstmate extension `sendUserMessage`, terminal-injected input, Firstmate-generated Pi positional brief, or the already non-displayed session-start nudge | Canonically classified text-only operational user messages stay ordinary semantic user messages but render through the zero-height adapter (verified on Pi 0.81.1 through 0.82.0) under Calm; legacy entries stay gaplessly controllable, and the session-start nudge retains its existing non-displayed custom-message path. |
+| `synthetic-user` | Firstmate extension `sendUserMessage`, terminal-injected input, Firstmate-generated Pi positional brief, or the already non-displayed session-start nudge | Canonically classified text-only operational user messages stay ordinary semantic user messages but render through the zero-height adapter under Calm; legacy entries stay gaplessly controllable, and the session-start nudge retains its existing non-displayed custom-message path. |
 | `synthetic-assistant` | No authoritative Firstmate source found | Policy-hidden, but Pi exposes no generic assistant-role renderer. |
 | `unknown` | Future or unclassified transcript component | Policy-hidden, but no generic renderer exists; never claimed as covered. |
 
 The installed extension API has no supported global transcript filter, user-message renderer, assistant-message renderer, chat-container API, or generic custom-tool wrapper.
-Pi 0.81.1 through 0.82.0 and Pi 0.84.4 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses separate idempotent, API-probed adapters for assistant thinking layout and the complete operational-user transcript row while leaving all message data and non-Calm rendering unchanged; see the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports is handled.
+Pi 0.81.1 through 0.82.0, Pi 0.84.4, and Pi 0.85.1 export `AssistantMessageComponent` and `InteractiveMode`, so Calm uses separate idempotent, API-probed adapters for assistant thinking layout and the complete operational-user transcript row while leaving all message data and non-Calm rendering unchanged; see the [compatibility contract](calm.md#pi-compatibility) for how a future Pi lacking one of those exports is handled.
 General component replacement, ANSI cursor erasure, provider-context mutation, and installed-file patching remain rejected as unsupported or preservation-breaking workarounds.
 
 ## Cross-harness verification record
@@ -286,7 +287,7 @@ The operational provider path covers Calm loaded on, loaded off, default prefere
 It asserts one persisted and rendered captain answer, exact user-role operational envelopes in order, no replacement custom messages, one processing result, zero operational transcript rows, and the two-row neighboring-assistant geometry for live, adjacent, and restart paths.
 Quoted current markers, ASCII-only labels, ordinary text before a marker, unrelated U+2063 placement, and image-bearing input remain visible in component and native transcript checks.
 `tests/fm-pi-primary-live-e2e.test.sh` also proves the working ship replaces the built-in `Working...` row while Calm is active on the credentialed provider path, and that it clears when the run settles, before continuing its ordinary watcher lifecycle.
-`tests/fm-pi-primary-types.test.sh` performs strict no-emit TypeScript checking against the installed Pi declarations, currently package version 0.84.4.
+`tests/fm-pi-primary-types.test.sh` performs strict no-emit TypeScript checking against whichever Pi declarations are installed, without pinning a version of its own.
 
 The relevant commands are:
 
@@ -571,7 +572,7 @@ Reaching that parity on 0.85 took one contract adaptation, landed earlier in 85a
 Pi 0.84 and older silently substituted a built-in's stock definition when a `ToolExecutionComponent` was constructed without one, so the calm-off equivalence baseline could be built definition-less and still read as stock.
 Pi 0.85 removed that substitution, so the definition-less baseline renders Pi's generic text fallback instead - which is what produced `read collapsed rendering changed while calm mode was off`.
 The renderer change was real, and it was the contract's baseline that had to adapt, not Calm's wrappers: the wrapped rows matched Pi stock before and after.
-`tests/fm-calm-pi-extension.test.sh` now builds each baseline from the real stock factory, `stockDefinitions[name](process.cwd())` out of `dist/core/tools/index.js`, which reads as stock on 0.84.4 and on 0.85.x alike and no longer depends on the removed substitution.
+`tests/fm-calm-pi-extension.test.sh` now builds each baseline from the real stock tool-definition factories that `dist/core/tools/index.js` exports, calling the built-in's own factory with `process.cwd()`, which reads as stock on 0.84.4 and on 0.85.x alike and no longer depends on the removed substitution.
 
 Pi 0.85.0 alone requires a package it does not declare.
 Its `dist/experimental/server.js` statically imports `@earendil-works/pi-server`, which is absent from 0.85.0's `dependencies`, `peerDependencies`, and `optionalDependencies`, so a clean install of 0.85.0 on its own cannot load Pi's interactive mode at all:
