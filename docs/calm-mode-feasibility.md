@@ -587,7 +587,7 @@ That packaging gap is a separate installation defect, not the renderer change ab
 The `could not render calm-mode HTML export DOM` failure was a headless-Chrome start-up flake, not a change in Pi's export shape.
 It appeared in exactly one of the thirteen most recent CI runs, and that run installed the same Pi 0.85.1 as the runs immediately before and after it, which both passed.
 The render step is a vendor-tool step: the assertions that follow it are what protect the Calm conversation boundary.
-It now retries a bounded number of Chrome start-ups on a fresh profile and, when every attempt fails, reports the Chrome binary, its version, the installed Pi version, each attempt's exit status, and Chrome's own stderr, so the next occurrence is diagnosable from the CI log alone.
+It now retries a bounded number of Chrome start-ups on a fresh profile and, when every attempt fails, reports the Chrome binary, its version, the installed Pi version, each attempt's exit status, whether that attempt was timed out, and Chrome's own stderr, so the next occurrence is diagnosable from the CI log alone.
 `test_export_dom_render_guard` in the same script pins that behavior with real processes and no browser.
 
 The complete Calm suite against installed Pi 0.85.1, with `FM_CHROME_BIN` naming the Chrome the render step used:
