@@ -80,11 +80,6 @@
 #                   sinks that block finalization are explicitly out of scope.
 #   -h, --help      print this header
 #
-# Environment: ambient FM_HOME, FM_*_OVERRIDE, FM_BACKEND, and crew-state path
-# overrides are scrubbed before selection on every path, so passing one to this
-# runner has no effect; each script owns its own fixtures. The scrub site in
-# this script owns why (a live Firstmate session exports task-scoped overrides).
-#
 # Per-script machine-parseable markers (stdout):
 #   FM_TEST_BEGIN <iso8601> <script> family=<family> expected_gate_skip=<class>
 #   FM_TEST_END <iso8601> <script> exit=<code> duration_ms=<n> gate_skip=<true|false>
@@ -146,18 +141,6 @@ RUN_STARTED_MS=$(now_ms)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
-
-# Every selected script runs against ITS OWN fixtures, so an ambient Firstmate
-# override inherited from the caller's shell is never an input - it is
-# contamination. A live Firstmate session exports task-scoped overrides
-# (fm-fleet-snapshot passes FM_CREW_STATE_*_OVERRIDE for the task it is
-# projecting), so an agent that runs this suite from inside a supervised session
-# would otherwise have every fm-crew-state read redirected at that unrelated
-# task's metadata path. Scrubbed once here, before selection, so the serial and
-# concurrent paths cannot disagree about what a script inherits.
-unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-  FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND \
-  FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE 2>/dev/null || true
 
 MODE=
 LIST_ONLY=0
@@ -2352,6 +2335,9 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
+      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
+        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND \
+        FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
       set +e

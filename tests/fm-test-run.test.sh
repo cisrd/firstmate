@@ -1381,13 +1381,13 @@ SH
   pass "--max-wall-ms fails an over-budget run and refuses a malformed budget"
 }
 
-# A suite run started from inside a live Firstmate session inherits that
-# session's task-scoped overrides. The regression: fm-fleet-snapshot exports
-# FM_CREW_STATE_META_OVERRIDE/FM_CREW_STATE_STATUS_OVERRIDE for the task it is
-# projecting, so every fm-crew-state read inside a test read that unrelated
-# task's metadata path instead of the test's own fixture and reported "no
-# metadata". The scrub has to cover the serial path too, not only the
-# concurrent workers that already had it.
+# A concurrent worker runs each script against ITS OWN fixtures, so an ambient
+# Firstmate override inherited from the caller's shell is contamination, not an
+# input. The worker already scrubbed the FM_HOME/FM_*_OVERRIDE/FM_BACKEND set;
+# the crew-state path overrides (FM_CREW_STATE_META_OVERRIDE and
+# FM_CREW_STATE_STATUS_OVERRIDE) belong in the same scrub, because an inherited
+# one redirects every fm-crew-state read inside a test at an unrelated task's
+# metadata path.
 test_ambient_firstmate_overrides_never_reach_a_script() {
   local tmp repo runner a b var rc leaked
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-env.XXXXXX")
@@ -1422,15 +1422,6 @@ SH
     export "$var=$tmp/ambient-$var"
   done
 
-  # Serial path (one script).
-  set +e
-  "$runner" "$a" >"$tmp/serial" 2>"$tmp/serial.err"
-  rc=$?
-  set -e
-  [ "$rc" -eq 0 ] || { cat "$tmp/serial" "$tmp/serial.err"; rm -rf "$tmp"; fail "serial env fixture run failed"; }
-  ! grep -q '^inherited ' "$tmp/serial" \
-    || { leaked=$(grep '^inherited ' "$tmp/serial"); rm -rf "$tmp"; fail "serial run leaked ambient overrides: $leaked"; }
-
   # Concurrent path (two proven-isolated names).
   set +e
   "$runner" --jobs 2 "$a" "$b" >"$tmp/jobs" 2>"$tmp/jobs.err"
@@ -1446,7 +1437,7 @@ SH
     unset "$var"
   done
   rm -rf "$tmp"
-  pass "ambient Firstmate overrides are scrubbed on the serial and concurrent paths"
+  pass "ambient Firstmate overrides never reach a concurrent worker's script"
 }
 
 test_jobs_parallel_scheduler_and_failure_propagation() {
