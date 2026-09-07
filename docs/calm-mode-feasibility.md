@@ -567,6 +567,12 @@ $ FM_PI_PACKAGE_DIR=<pi 0.85.1> tests/fm-calm-pi-extension.test.sh
 ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
 ```
 
+Reaching that parity on 0.85 took one contract adaptation, landed earlier in 85ad5e7.
+Pi 0.84 and older silently substituted a built-in's stock definition when a `ToolExecutionComponent` was constructed without one, so the calm-off equivalence baseline could be built definition-less and still read as stock.
+Pi 0.85 removed that substitution, so the definition-less baseline renders Pi's generic text fallback instead - which is what produced `read collapsed rendering changed while calm mode was off`.
+The renderer change was real, and it was the contract's baseline that had to adapt, not Calm's wrappers: the wrapped rows matched Pi stock before and after.
+`tests/fm-calm-pi-extension.test.sh` now builds each baseline from the real stock factory, `stockDefinitions[name](process.cwd())` out of `dist/core/tools/index.js`, which reads as stock on 0.84.4 and on 0.85.x alike and no longer depends on the removed substitution.
+
 Pi 0.85.0 alone requires a package it does not declare.
 Its `dist/experimental/server.js` statically imports `@earendil-works/pi-server`, which is absent from 0.85.0's `dependencies`, `peerDependencies`, and `optionalDependencies`, so a clean install of 0.85.0 on its own cannot load Pi's interactive mode at all:
 
@@ -576,7 +582,7 @@ Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@earendil-works/pi-server' im
 ```
 
 Installing `@earendil-works/pi-server@0.85.0` beside it restores the identical Calm rendering, and 0.85.1 no longer reaches that import.
-That packaging gap is the reason the contract looked version-sensitive; the rendered rows themselves never diverged.
+That packaging gap is a separate installation defect, not the renderer change above: it stops Pi from loading at all rather than altering any rendered row.
 
 The `could not render calm-mode HTML export DOM` failure was a headless-Chrome start-up flake, not a change in Pi's export shape.
 It appeared in exactly one of the thirteen most recent CI runs, and that run installed the same Pi 0.85.1 as the runs immediately before and after it, which both passed.
