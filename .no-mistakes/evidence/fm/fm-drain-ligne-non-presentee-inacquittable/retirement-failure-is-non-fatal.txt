@@ -1,0 +1,20 @@
+# Retirement that cannot be performed is reported and never fatal
+
+--- the queue cannot be read (mode 000), so retirement cannot be performed ---
+--- $ bin/fm-wake-drain.sh ---
+drain exit=0
+awk: cannot open "/tmp/fm-drain-repro3.nC0A4K/retire-failure/state/.wake-queue" (Permission denied)
+wake drain: unusable queue row(s) could not be retired (check that /tmp/fm-drain-repro3.nC0A4K/retire-failure/state/.wake-queue is readable and /tmp/fm-drain-repro3.nC0A4K/retire-failure/state is writable); continuing with the rows that remain usable
+awk: cannot open "/tmp/fm-drain-repro3.nC0A4K/retire-failure/state/.wake-queue" (Permission denied)
+awk: cannot open "/tmp/fm-drain-repro3.nC0A4K/retire-failure/state/.wake-queue" (Permission denied)
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+--- $ bin/fm-guard.sh (an unreadable queue is never read as 'nothing queued') ---
+awk: cannot open "/tmp/fm-drain-repro3.nC0A4K/retire-failure/state/.wake-queue" (Permission denied)
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+--- the row is still there; permissions restored, the next drain retires it ---
+drain exit=0
+wake drain: retired 1 unusable queue row(s) that carried no sequence to present or acknowledge:
+wake drain:   1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1828292.1788800547.kOoKEV
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+--- leftover retire temp files in state/: 0 ---

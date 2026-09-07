@@ -1,0 +1,63 @@
+# Reported wedge: a counted row that no drain ever presents
+
+Reported 2026-09-07 in the fmverif second-mate home: the guard warned
+'queued wakes pending', the drain printed no row and no WAKE_ACK_REQUIRED,
+and the queue still held sequence 574 for fleet:w2:p3.
+
+Root cause reproduced below: the row was reserved by a live
+supervision-branch grant, which a main drain excludes from presentation by
+design, while the guard counted it as pending for main.
+
+Same queue state, same commands, pre-fix (d4eb228) vs post-fix (2eee686).
+
+==================================================================
+== before-fix   (/tmp/fm-base/bin)
+==================================================================
+--- the durable queue holds exactly the reported row ---
+1788800544<TAB>574<TAB>stale<TAB>fleet:w2:p3<TAB>stale: fleet:w2:p3 (paused 7227s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+
+--- $ bin/fm-guard.sh   (what an operator sees on any guarded command) ---
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+--- $ bin/fm-wake-drain.sh   (stdout = presented rows, stderr = ack contract) ---
+[stdout]
+[stderr]
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+--- is the row still queued after the drain? ---
+YES - row 574 is still queued
+
+
+==================================================================
+== after-fix   (/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M1YBFZ9JP5CZA8DPGT8026PH/bin)
+==================================================================
+--- the durable queue holds exactly the reported row ---
+1788800544<TAB>574<TAB>stale<TAB>fleet:w2:p3<TAB>stale: fleet:w2:p3 (paused 7227s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+
+--- $ bin/fm-guard.sh   (what an operator sees on any guarded command) ---
+
+--- $ bin/fm-wake-drain.sh   (stdout = presented rows, stderr = ack contract) ---
+[stdout]
+WAKE ROWS HELD BY SUPERVISION BRANCH: 1 queued row(s) (574) are granted to the live supervision branch, which presents and acknowledges them.
+[stderr]
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+
+--- is the row still queued after the drain? ---
+YES - row 574 is still queued
+
+--- the supervision branch finishes and releases its grant ---
+--- $ bin/fm-wake-drain.sh ---
+[stdout]
+1788800544<TAB>574<TAB>stale<TAB>fleet:w2:p3<TAB>stale: fleet:w2:p3 (paused 7227s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+[stderr]
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 574 --recovery-generation 1824140.1788800544.ezlL0i
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+--- $ bin/fm-wake-drain.sh --ack-through 574 --recovery-generation 1824140.1788800544.ezlL0i ---
+queue after acknowledgement: empty - the wake is fully consumed
+
+--- $ bin/fm-guard.sh   (after the queue drained) ---
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+

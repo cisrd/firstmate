@@ -1,0 +1,65 @@
+# The same invariant for a structurally unusable row
+
+A row that lost its fifth field or its numeric sequence can never be
+claimed, presented, or named by an --ack-through cutoff, while it still
+counts as queued. Pre-fix it wedges the queue permanently.
+
+==================================================================
+== before-fix   (/tmp/fm-base/bin)
+==================================================================
+--- the durable queue: one usable row, two structurally unusable ones ---
+1788800546<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+1788792075<TAB>not-a-sequence<TAB>stale<TAB>fleet:w2:p4<TAB>stale: fleet:w2:p4
+
+--- $ bin/fm-guard.sh ---
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+--- $ bin/fm-wake-drain.sh ---
+exit=0
+[stdout]
+1788800546<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+[stderr]
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1826642.1788800546.1PbByw
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+--- $ bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1826642.1788800546.1PbByw ---
+
+--- queue after the acknowledgement ---
+STILL QUEUED (unacknowledgeable - the queue is wedged):
+1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+1788792075<TAB>not-a-sequence<TAB>stale<TAB>fleet:w2:p4<TAB>stale: fleet:w2:p4
+--- $ bin/fm-guard.sh (after the acknowledgement) ---
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+==================================================================
+== after-fix   (/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M1YBFZ9JP5CZA8DPGT8026PH/bin)
+==================================================================
+--- the durable queue: one usable row, two structurally unusable ones ---
+1788800546<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+1788792075<TAB>not-a-sequence<TAB>stale<TAB>fleet:w2:p4<TAB>stale: fleet:w2:p4
+
+--- $ bin/fm-guard.sh ---
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+--- $ bin/fm-wake-drain.sh ---
+exit=0
+[stdout]
+1788800546<TAB>1<TAB>signal<TAB>task-a.status<TAB>signal: task-a
+[stderr]
+wake drain: retired 2 unusable queue row(s) that carried no sequence to present or acknowledge:
+wake drain:   1788792074<TAB>574<TAB>stale<TAB>fleet:w2:p3
+wake drain:   1788792075<TAB>not-a-sequence<TAB>stale<TAB>fleet:w2:p4<TAB>stale: fleet:w2:p4
+WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1827514.1788800546.Z776F6
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+WARNING: queued wakes pending - drain them with bin/fm-wake-drain.sh before anything else.
+
+--- $ bin/fm-wake-drain.sh --ack-through 1 --recovery-generation 1827514.1788800546.Z776F6 ---
+
+--- queue after the acknowledgement ---
+empty
+--- $ bin/fm-guard.sh (after the acknowledgement) ---
+(no queued-wake warning)
+

@@ -1,0 +1,9 @@
+# The two new regression tests run against the pre-fix sources (d4eb228)
+
+$ bash tests/fm-wake-queue.test.sh  # trimmed to the two new cases, base sources
+not ok - main drain went silent instead of naming who holds the queued rows
+exit=1
+
+$ bash tests/fm-wake-queue.test.sh  # retirement case alone, base sources
+not ok - main drain did not report the rows it retired
+exit=1
