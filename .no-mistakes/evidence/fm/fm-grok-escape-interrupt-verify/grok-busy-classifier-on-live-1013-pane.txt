@@ -1,0 +1,11 @@
+Input: live tmux capture of a genuinely BUSY grok 1.0.13 pane (production launch shape),
+       taken while a foreground 'sleep 60' tool child was running. Footer row:
+  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
+
+fm_busy_lines_match grok      (delivery/injection guard)   -> NOT BUSY (busy turn read as idle)
+fm_busy_lines_match ''        (union default, submit reads) -> NOT BUSY (busy turn read as idle)
+fm_busy_grok_tail_busy        (crew-state classifier arm)  -> NOT BUSY (busy turn read as idle)
+
+Control - the 0.2.73 footer the maintained signature was written against:
+fm_busy_lines_match grok on 0.2.73-style footer            -> BUSY
+fm_busy_grok_tail_busy on 0.2.73-style footer              -> BUSY

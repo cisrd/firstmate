@@ -1,0 +1,40 @@
+
+   detached worktree ~/.no-mistakes/worktrees/a03e7f5d4084/01M1XHW6CWCH1X01V0RA2C5TD1 (worktree of ~/.no-… 35K / 500K
+
+
+     ❯ Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim        11:56 AM   █
+       completion until the command has actually exited.                                                               █
+                                                                                                                       █
+                                                                                                                       █
+     ◆ Thought for 25.0s                                                                                               █
+                                                                                                                       █
+     I'll run the required session start, then keep sleep 60 in the foreground until it actually exits.     11:56 AM   █
+                                                                                                                       █
+     ◆ Run firstmate session-start digest  [hooks: 5]                                                                  █
+     ◆ Run Foreground sleep for 60 seconds  [hooks: 5]                                                                 █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+
+    ⠙ Foreground sleep for 60 seconds… 0.6s                                                       29s ⇣35.8k [↓][stop]
+
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+
+  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
+

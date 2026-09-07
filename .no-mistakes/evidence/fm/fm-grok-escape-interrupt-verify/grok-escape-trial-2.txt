@@ -1,0 +1,52 @@
+### Trial: key=Escape  session=fmtrial-esc2
+version: grok 1.0.13 (5e9a58528b76) [stable]
+launch:  grok --always-approve "<sleep-60 prompt>"   (production shape, no --no-alt-screen)
+
+--- BEFORE KEY (active turn) ---
+                                                                                                                       █
+    ⠴ Run sleep 60 in the foreground… 12s                                                         27s ⇣34.9k [↓][stop]
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
+--- live tool child before key ---
+2138535 sleep 60
+--- sending exactly one Escape ---
+
+--- IMMEDIATELY AFTER Escape ---
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+    ⠴ Cancelling… 0.0s                                                                               28s ⇣34.9k [stop]
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+
+--- 3s AFTER Escape ---
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
+--- grok process alive? ---
+2136748 grok --always-approve Use the bash tool to execute exactly the foreground command sleep 60. Do not respond or claim completion until the command has actually exited.
+--- tool child still running? ---
+(none: tool child gone)
+
+--- FOLLOW-UP IN SAME SESSION (post-interrupt) ---
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+                                                                                                                       █
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+  Shift+Tab:mode  │  Ctrl+x:shortcuts
