@@ -26,8 +26,9 @@ The `--no-alt-screen` flag was accepted by the installed CLI and made pane captu
 Firstmate's own spawn shape in `bin/fm-spawn.sh` omits that flag, so the first lot differed from the fleet launch in exactly one flag, and identical `tmux send-keys` delivery would not have established identical handling: the 0.2.73 premise under revision is precisely that Escape focused the scrollback, and scrollback ownership is what the alternate screen changes hands over.
 Both the Escape observations and the footer literals were therefore re-captured under the production launch shape, recorded below; the two shapes agree on the visible cancellation, on the absent `Ctrl+c:cancel` literal, and on the idle bar.
 They are uncompared on the tool child rather than disagreeing, because the lots sampled different displayed pane states.
-A live tool child existed in every qualifying trial of both lots; what differs is the pane's displayed active item at the moment the key was sent, which was the tool call itself only in the production `escape-2` and `escape-3` trials and never in the `--no-alt-screen` lot.
-Every trial sent in a comparable displayed state matches across the shapes.
+A live tool child existed in every qualifying trial of both lots; what differs is the pane's displayed active item at the moment the key was sent, which was the tool call itself in the production `escape-2`, `escape-3`, and `escape-4` trials and never in the `--no-alt-screen` lot.
+Of those three, only `escape-2` and `escape-3` had their tool child read afterwards, and both killed it; `escape-4`'s child was not read.
+Every trial sent in a displayed state the other lot also sampled matches across the shapes.
 
 ## Method and expected behavior
 
@@ -126,7 +127,7 @@ Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
 The idle bar was `Shift+Tab:mode  │  Ctrl+x:shortcuts`, matching the first lot.
 So the production shape reproduces the `--no-alt-screen` result rather than contradicting it: one Escape cancels a genuinely in-flight turn and leaves an interactive session that accepts a follow-up.
 Neither key reliably stops already-running tool work. `escape-1` and the `C-c` control both left the `sleep 60` child running behind the same `1 command still running` residue, while `escape-2` and `escape-3` were followed three seconds later by a gone child that a 12-13s-old `sleep 60` cannot have exited on its own, so Escape did stop the child in those two trials.
-The two keys were not compared in that state: `escape-1` and both `C-c` controls were sent while the pane read `Thinking...`, and no `C-c` control was ever captured with the tool call as the pane's displayed active item. Tool-child termination is therefore untied between the keys rather than matched, and the remaining axes measured for both keys - visible cancellation, surviving Grok process, restored interactive composer - are the same, with an accepted follow-up recorded only after Escape and never after a `C-c` control, so no discriminator favours switching keys.
+The two keys were not compared in that state: `escape-1` and both `C-c` controls were sent while the pane read `Thinking...`, and no `C-c` control was ever captured with the tool call as the pane's displayed active item, the state `escape-2`, `escape-3`, and `escape-4` were sent in. Tool-child termination is therefore untied between the keys rather than matched, and the remaining axes measured for both keys - visible cancellation, surviving Grok process, restored interactive composer - are the same, with an accepted follow-up recorded only after Escape and never after a `C-c` control, so no discriminator favours switching keys.
 
 ## History and disconfirming evidence
 
