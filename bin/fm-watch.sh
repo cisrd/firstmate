@@ -683,12 +683,15 @@ secondmate_in_active_turn() {  # <task> <window>
 }
 
 # Surface one durable parent check when the foreign queue's drain position has
-# not advanced for the bounded interval. The progress marker starts or resets
-# the timer whenever the oldest actionable sequence increases; row creation time
-# is deliberately irrelevant. Progress ends an alerted episode and starts a new
-# observation interval, so a newly-oldest row cannot alert immediately while a
-# later genuine freeze remains visible. A mate demonstrably inside an active turn
-# never escalates, so the interval is only the backstop behind that gate.
+# not moved for the bounded interval. The progress marker starts or resets the
+# timer whenever the oldest actionable sequence changes at all - it advances as
+# the mate drains, and it restarts lower when a retired mate is reprovisioned
+# under the same task id, and neither is a continued no-progress episode; row
+# creation time is deliberately irrelevant. A moved position ends an alerted
+# episode and starts a new observation interval, so a newly-oldest row cannot
+# alert immediately while a later genuine freeze remains visible. A mate
+# demonstrably inside an active turn never escalates, so the interval is only
+# the backstop behind that gate.
 # Receipts close the append-before-marker crash window without changing the
 # foreign queue.
 secondmate_wake_stall_tick() {
@@ -743,7 +746,7 @@ EOF
     case "$observed_at" in ''|*[!0-9]*) observed_at= ;; esac
     case "$observed_seq" in ''|*[!0-9]*) observed_seq= ;; esac
     if [ -z "$observed_at" ] || [ -z "$observed_seq" ] \
-      || [ "$now" -lt "$observed_at" ] || [ "$seq" -gt "$observed_seq" ]; then
+      || [ "$now" -lt "$observed_at" ] || [ "$seq" -ne "$observed_seq" ]; then
       fm_wake_secondmate_progress_marker_write "$task" "$now" "$seq" || return 1
       [ "$episode_alerted" -eq 0 ] || rm -f "$marker" || return 1
       continue

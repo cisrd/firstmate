@@ -371,6 +371,67 @@ EOF
   pass "declared external-wait pause rows do not feed secondmate wake-loop escalation"
 }
 
+# A retired mate reprovisioned under the same task id gets a fresh home, so its
+# wake-queue sequence restarts BELOW the position the parent last recorded. That
+# lower restart is a new queue generation, not the continuation of the previous
+# generation's no-progress interval: inheriting that interval fires a wake-loop
+# stall against a queue the mate has only just created.
+test_secondmate_reprovisioned_queue_starts_a_fresh_interval() {
+  local dir state sub fakebin real_date
+  dir=$(make_case secondmate-reprovisioned-queue)
+  state="$dir/state"
+  sub="$dir/secondmate"
+  mkdir -p "$sub/state"
+  printf 'mate\n' > "$sub/.fm-secondmate-home"
+  printf 'window=firstmate:fm-mate\nkind=secondmate\nharness=claude\nbackend=tmux\nhome=%s\n' \
+    "$sub" > "$state/mate.meta"
+  fakebin="$dir/fakebin"
+  real_date=$(command -v date)
+  cat > "$fakebin/date" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = +%s ]; then
+  cat "\${FM_FAKE_NOW_FILE:?}"
+else
+  exec "$real_date" "\$@"
+fi
+SH
+  chmod +x "$fakebin/date"
+
+  # The retired generation's last observation records sequence 9.
+  printf '1000\n' > "$dir/now"
+  printf '100\t9\tcheck\told\tcheck: retired generation row\n' > "$sub/state/.wake-queue"
+  PATH="$fakebin:$PATH" FM_FAKE_NOW_FILE="$dir/now" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 1 > "$dir/watch-old.out" 2> "$dir/watch-old.err" || true
+  [ ! -s "$state/.wake-queue" ] || fail "the first observation of the retired generation alerted"
+
+  # Reprovisioning under the same task id restarts the sequence below 9, long
+  # after the recorded observation. That first sight of the new queue cannot
+  # inherit the old generation's idle interval.
+  printf '1010\n' > "$dir/now"
+  printf '200\t3\tcheck\tregen\tcheck: reprovisioned row\n' > "$sub/state/.wake-queue"
+  PATH="$fakebin:$PATH" FM_FAKE_NOW_FILE="$dir/now" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 1 > "$dir/watch-regen.out" 2> "$dir/watch-regen.err" || true
+  [ ! -s "$state/.wake-queue" ] \
+    || fail "a reprovisioned queue generation inherited the retired generation's idle interval and alerted"
+
+  # The restarted generation still earns its own honest no-progress episode.
+  printf '1012\n' > "$dir/now"
+  PATH="$fakebin:$PATH" FM_FAKE_NOW_FILE="$dir/now" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
+    FM_SECONDMATE_WAKE_STALL_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 1 > "$dir/watch-regen-frozen.out" 2> "$dir/watch-regen-frozen.err" || true
+  grep -F 'check: secondmate wake-loop stalled: mate=mate row=3 idle=2s' "$dir/watch-regen-frozen.out" >/dev/null \
+    || fail "a frozen reprovisioned queue generation was hidden: $(cat "$dir/watch-regen-frozen.out")"
+  pass "a reprovisioned queue generation starts a fresh no-progress interval"
+}
+
 # A healthy mate drains its wake queue BETWEEN turns, not inside one, so a queue
 # that has not advanced while the mate is provably mid-turn is not a stalled wake
 # loop - it is the normal state of a busy mate, and the measured false alarms
@@ -1692,6 +1753,7 @@ test_live_presentation_holder_is_deadlined_without_weakening_ack
 test_malformed_presentation_lock_reports_acquire_failure
 test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once
 test_secondmate_declared_pause_rows_do_not_feed_stall_escalation
+test_secondmate_reprovisioned_queue_starts_a_fresh_interval
 test_secondmate_active_turn_defers_stall_until_the_turn_ends
 test_secondmate_stall_marker_rejects_symlink
 test_acknowledged_stall_publication_survives_pre_marker_crash
