@@ -1825,18 +1825,20 @@ fm_wake_actor_pending_count() {  # <actor> [<rows-file> <owner-file>]
       BEGIN { while ((getline line < seqs) > 0) keep[line] = 1 }
       NF >= 5 && $2 ~ /^[0-9]+$/ && ($2 in keep) { n++ }
       END { print n + 0 }
-    ' "$FM_WAKE_QUEUE")
+    ' "$FM_WAKE_QUEUE") || count=''
   else
     count=$(awk -F '\t' -v seqs="$grant" '
       BEGIN { if (seqs != "") while ((getline line < seqs) > 0) reserved[line] = 1 }
       NF < 5 || $2 !~ /^[0-9]+$/ { n++; next }
       !($2 in reserved) { n++ }
       END { print n + 0 }
-    ' "$FM_WAKE_QUEUE")
+    ' "$FM_WAKE_QUEUE") || count=''
   fi
   # A queue that exists but cannot be counted (unreadable file, unreadable
   # state/) is not evidence of an empty queue: report a pending row so callers
-  # still raise the alarm on a queue nobody can prove is drained.
+  # still raise the alarm on a queue nobody can prove is drained. A failed count
+  # is decided by awk's exit status, not by what it printed, because an awk that
+  # reaches END after failing to open the queue would otherwise report 0 rows.
   case "$count" in ''|*[!0-9]*) count=1 ;; esac
   printf '%s\n' "$count"
 }
