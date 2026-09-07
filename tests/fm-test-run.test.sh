@@ -1440,6 +1440,52 @@ SH
   pass "ambient Firstmate overrides never reach a concurrent worker's script"
 }
 
+# JOBS defaults to 1, so a focused single-script run executes on the serial path
+# and never enters a concurrent worker. A shell started inside a live Firstmate
+# session carries exported crew-state path overrides (observed pointing at a
+# deleted /tmp path), and bin/fm-crew-state.sh resolves its metadata from them:
+# an unscrubbed serial run reports "no metadata" for a crew whose fixture
+# metadata is right there, which fails one assertion and satisfies a weaker
+# "state: unknown" assertion elsewhere for the wrong reason.
+test_serial_run_never_inherits_crew_state_overrides() {
+  local tmp repo runner a id rc out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-serial-crew.XXXXXX")
+  repo="$tmp/repo"
+  runner="$repo/bin/fm-test-run.sh"
+  a=tests/fm-brief.test.sh
+  id=serialenvcrew1
+  mkdir -p "$repo/bin" "$repo/tests" "$tmp/state"
+  cp "$RUNNER" "$runner"
+  cp "$ROOT/bin/fm-timeout-lib.sh" "$repo/bin/fm-timeout-lib.sh"
+  printf 'worktree=%s\nkind=ship\nharness=claude\n' "$tmp/gone" >"$tmp/state/$id.meta"
+  # The fixture asks the REAL fm-crew-state.sh about a crew whose metadata it
+  # owns, so the assertion is about which metadata a serial run resolves.
+  cat >"$repo/$a" <<SH
+#!/usr/bin/env bash
+printf 'crew-state: %s\n' "\$(FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$tmp/state" "$ROOT/bin/fm-crew-state.sh" "$id")"
+echo "ok - serial crew-state fixture"
+SH
+  chmod +x "$runner" "$repo/$a"
+
+  export FM_CREW_STATE_META_OVERRIDE="$tmp/ambient-$id.meta"
+  export FM_CREW_STATE_STATUS_OVERRIDE="$tmp/ambient-$id.status"
+  set +e
+  "$runner" "$a" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
+  out=$(cat "$tmp/out")
+  [ "$rc" -eq 0 ] || { cat "$tmp/out" "$tmp/err"; rm -rf "$tmp"; fail "serial crew-state fixture run failed"; }
+  rm -rf "$tmp"
+  case "$out" in
+    *"no metadata for $id"*)
+      fail "serial run let an ambient crew-state override replace fixture metadata: $out" ;;
+  esac
+  assert_contains "$out" "worktree gone" \
+    "serial run must resolve the fixture's own crew metadata"
+  pass "a serial single-script run resolves fixture crew metadata, not ambient overrides"
+}
+
 test_jobs_parallel_scheduler_and_failure_propagation() {
   local tmp repo runner evidence fake_bin a b c d rc begin_n end_n
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-jobs-sched.XXXXXX")
@@ -1682,6 +1728,7 @@ test_concurrent_runs_are_ordered_longest_first
 test_per_script_timeout_bounds_a_hang
 test_max_wall_ms_is_a_result_not_advice
 test_ambient_firstmate_overrides_never_reach_a_script
+test_serial_run_never_inherits_crew_state_overrides
 test_jobs_parallel_scheduler_and_failure_propagation
 test_herdr_ci_family_run_has_a_step_timeout
 test_aggregate_json
