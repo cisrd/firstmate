@@ -88,7 +88,7 @@ reclaim_stale_branch_grant_locked() {
 # reported and never fatal: the usable rows are still presentable and
 # acknowledgeable, and failing the whole drain would strand them too.
 retire_unconsumable_rows_locked() {
-  local retired unusable
+  local retired unusable queued kept
   [ -f "$FM_WAKE_QUEUE" ] || return 0
   if DRAIN_TMP=$(mktemp "$STATE/.wake-queue.retire.XXXXXX") \
     && chmod 0600 "$DRAIN_TMP" \
@@ -97,7 +97,9 @@ retire_unconsumable_rows_locked() {
       { shown++; if (shown <= 20) printf "wake drain:   %s\n", $0 }
       END { if (shown > 20) printf "wake drain:   ... %d further unusable row(s) not shown\n", shown - 20 }
     ' "$FM_WAKE_QUEUE"); then
-    retired=$(( $(awk 'END { print NR }' "$FM_WAKE_QUEUE") - $(awk 'END { print NR }' "$DRAIN_TMP") ))
+    queued=$(awk 'END { print NR }' "$FM_WAKE_QUEUE")
+    kept=$(awk 'END { print NR }' "$DRAIN_TMP")
+    retired=$(( queued - kept ))
     if [ "$retired" -eq 0 ]; then
       rm -f -- "$DRAIN_TMP"
       DRAIN_TMP=
