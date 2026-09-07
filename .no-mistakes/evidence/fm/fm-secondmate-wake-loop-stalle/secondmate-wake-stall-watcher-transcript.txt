@@ -1,0 +1,138 @@
+Secondmate wake-loop stall detector - end-to-end watcher transcript
+Each 'tick' below is a real bin/fm-watch-checkpoint.sh run against a real
+secondmate home; the arrow lines are the watcher's own stdout, i.e. exactly
+what wakes the firstmate and costs the captain a supervision turn.
+base commit 0b9f518 (before) vs target commit 1d86e30 (after).
+
+############################################################
+# BEFORE the fix (base commit 0b9f518)
+############################################################
+
+== A. Defect 1: fmverif drains its queue NORMALLY, one row per real ~70s turn
+   rows 409/434/436 queued at 12:00:00; default FM_SECONDMATE_WAKE_STALL_SECS
+   t=+0s   mid-turn, oldest queued row unchanged
+      (quiet - no supervision turn)
+   t=+60s  mid-turn, oldest queued row unchanged
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=409 age=60s
+   t=+70s  fmverif finished a turn and drained row 409 (oldest is now 434)
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=434 age=70s
+   t=+130s mid-turn, oldest queued row unchanged
+      (quiet - no supervision turn)
+   t=+140s fmverif finished a turn and drained row 434 (oldest is now 436)
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=436 age=140s
+   t=+200s mid-turn, oldest queued row unchanged
+      (quiet - no supervision turn)
+   t=+210s fmverif finished a turn and drained row 436 (queue empty)
+      (quiet - no supervision turn)
+
+== B. Defect 2: two workers paused ON PURPOSE, PRs awaiting upstream review
+   queue: 1757246400	11	stale	fleet:w2:p4	stale: fleet:w2:p4 (paused 3613s, awaiting external - declared paused)
+   queue: 1757246400	12	stale	fleet:w2:p3	stale: fleet:w2:p3 (paused 3615s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   t=+0s     (0h into a multi-day upstream review)
+      (quiet - no supervision turn)
+   t=+3600s  (1h into a multi-day upstream review)
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=11 age=3600s
+   t=+7200s  (2h into a multi-day upstream review)
+      (quiet - no supervision turn)
+
+== C. Safety: the wake loop is GENUINELY frozen and fmverif is idle
+   (default threshold, nothing configured - it must sit above a real ~70s turn)
+   t=+0s    nothing ever drains
+      (quiet - no supervision turn)
+   t=+100s  nothing ever drains
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=501 age=100s
+   t=+200s  nothing ever drains
+      (quiet - no supervision turn)
+   t=+400s  nothing ever drains
+      (quiet - no supervision turn)
+
+== C2. Same frozen queue with the operator override FM_SECONDMATE_WAKE_STALL_SECS=90
+   t=+0s    nothing ever drains
+      (quiet - no supervision turn)
+   t=+100s  nothing ever drains
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=501 age=100s
+
+############################################################
+# AFTER the fix (target commit 1d86e30)
+############################################################
+
+== A. Defect 1: fmverif drains its queue NORMALLY, one row per real ~70s turn
+   rows 409/434/436 queued at 12:00:00; default FM_SECONDMATE_WAKE_STALL_SECS
+   t=+0s   mid-turn, oldest queued row unchanged
+      (quiet - no supervision turn)
+   t=+60s  mid-turn, oldest queued row unchanged
+      (quiet - no supervision turn)
+   t=+70s  fmverif finished a turn and drained row 409 (oldest is now 434)
+      (quiet - no supervision turn)
+   t=+130s mid-turn, oldest queued row unchanged
+      (quiet - no supervision turn)
+   t=+140s fmverif finished a turn and drained row 434 (oldest is now 436)
+      (quiet - no supervision turn)
+   t=+200s mid-turn, oldest queued row unchanged
+      (quiet - no supervision turn)
+   t=+210s fmverif finished a turn and drained row 436 (queue empty)
+      (quiet - no supervision turn)
+
+== B. Defect 2: two workers paused ON PURPOSE, PRs awaiting upstream review
+   queue: 1757246400	11	stale	fleet:w2:p4	stale: fleet:w2:p4 (paused 3613s, awaiting external - declared paused)
+   queue: 1757246400	12	stale	fleet:w2:p3	stale: fleet:w2:p3 (paused 3615s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)
+   t=+0s     (0h into a multi-day upstream review)
+      (quiet - no supervision turn)
+   t=+3600s  (1h into a multi-day upstream review)
+      (quiet - no supervision turn)
+   t=+7200s  (2h into a multi-day upstream review)
+      (quiet - no supervision turn)
+
+== C. Safety: the wake loop is GENUINELY frozen and fmverif is idle
+   (default threshold, nothing configured - it must sit above a real ~70s turn)
+   t=+0s    nothing ever drains
+      (quiet - no supervision turn)
+   t=+100s  nothing ever drains
+      (quiet - no supervision turn)
+   t=+200s  nothing ever drains
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=501 idle=200s
+   t=+400s  nothing ever drains
+      (quiet - no supervision turn)
+
+== C2. Same frozen queue with the operator override FM_SECONDMATE_WAKE_STALL_SECS=90
+   t=+0s    nothing ever drains
+      (quiet - no supervision turn)
+   t=+100s  nothing ever drains
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=501 idle=100s
+
+############################################################
+# BEFORE the fix (base commit 0b9f518)
+############################################################
+== D. 17:14: row 409 is 70s old and has not advanced,
+      but fmverif has a live worker mid-implementation
+   fmverif pane: * Implementing the review fixes... (esc to interrupt)
+   fmverif is inside an active turn:
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=409 age=70s
+      (quiet - no supervision turn)
+   the turn ends (claude Stop hook) and the queue STILL has not advanced:
+      (quiet - no supervision turn)
+
+############################################################
+# AFTER the fix (target commit 1d86e30)
+############################################################
+== D. 17:14: row 409 is 70s old and has not advanced,
+      but fmverif has a live worker mid-implementation
+   fmverif pane: * Implementing the review fixes... (esc to interrupt)
+   fmverif is inside an active turn:
+      (quiet - no supervision turn)
+      (quiet - no supervision turn)
+   the turn ends (claude Stop hook) and the queue STILL has not advanced:
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=409 idle=5s
+
+############################################################
+# AFTER the fix - rollout state (target commit 1d86e30)
+############################################################
+   pre-upgrade parent state: fmverif.meta
+   pre-upgrade parent state: .secondmate-wake-stall-fmverif
+== E. Rollout: leftover stall marker, no progress marker, queue frozen forever
+   t=+0s    nothing ever drains
+      (quiet - no supervision turn)
+   t=+200s  nothing ever drains
+      firstmate is woken -> check: secondmate wake-loop stalled: mate=fmverif row=501 idle=200s
+   t=+400s  nothing ever drains
+      (quiet - no supervision turn)

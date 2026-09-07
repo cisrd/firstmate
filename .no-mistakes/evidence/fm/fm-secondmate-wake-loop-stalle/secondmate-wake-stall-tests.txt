@@ -1,0 +1,13 @@
+$ bash tests/fm-wake-queue.test.sh   # secondmate wake-stall cases only
+
+ok - foreign secondmate queue alerts once per no-progress episode without age-only or cascade noise
+ok - declared external-wait pause rows do not feed secondmate wake-loop escalation
+ok - an active turn defers the secondmate stall escalation without cancelling it
+ok - secondmate stall markers reject symlinks without touching their targets
+ok - stall publication acknowledgement closes the pre-marker crash window
+ok - empty prefix mate cleanup preserves another mate's stall receipt
+
+# The same three new cases run against the base commit (0b9f518) bin/:
+not ok - the first observation of an old foreign row produced an age-only alert
+not ok - declared external-wait rows fed the secondmate wake-loop escalation
+not ok - a mate inside an active turn was escalated as a stalled wake loop: check: secondmate wake-loop stalled: mate=mate row=7 age=11s
