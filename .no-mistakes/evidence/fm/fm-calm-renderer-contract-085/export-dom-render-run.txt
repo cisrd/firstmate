@@ -1,0 +1,32 @@
+Calm export-DOM render step, real runs on this host
+(Pi 0.85.1; tests/fm-calm-pi-extension.test.sh :: test_interactive_terminal_e2e)
+
+1) FM_CHROME_BIN=/tmp/fmchrome/chrome   (full 'Google Chrome for Testing 145.0.7632.6')
+   The new diagnostic named the Chrome binary, its version and the installed Pi version, and
+   showed all three attempts timing out with an empty DOM - Chrome never rendered anything,
+   so this is not a change in Pi's export shape:
+
+   not ok - could not render calm-mode HTML export DOM: chrome=/tmp/fmchrome/chrome chrome_version=Google Chrome for Testing 145.0.7632.6  pi=0
+   .85.1; attempt 1: exit=0 timed_out=yes bytes=0 stderr=/registration_request.cc:290] Registration response error message: PHONE_REGISTRATION_
+   ERROR [906863:906924:0907/235113.953341:ERROR:google_apis/gcm/engine/registration_request.cc:290] Registration response error message: PHONE
+   _REGISTRATION_ERROR [906863:906924:0907/235113.979339:ERROR:google_apis/gcm/engine/registration_request.cc:290] Registration response error 
+   message: PHONE_REGISTRATION_ERROR  attempt 2: exit=0 timed_out=yes bytes=0 stderr=ngine/registration_request.cc:290] Registration response e
+   rror message: PHONE_REGISTRATION_ERROR [921274:921309:0907/235145.318039:ERROR:google_apis/gcm/engine/registration_request.cc:290] Registrat
+   ion response error message: PHONE_REGISTRATION_ERROR [921274:921309:0907/235212.798649:ERROR:google_apis/gcm/engine/registration_request.cc:
+   290] Registration response error message: DEPRECATED_ENDPOINT  attempt 3: exit=0 timed_out=yes bytes=0 stderr=/registration_request.cc:290] 
+   Registration response error message: PHONE_REGISTRATION_ERROR [940001:940041:0907/235216.784732:ERROR:google_apis/gcm/engine/registration_re
+   quest.cc:290] Registration response error message: PHONE_REGISTRATION_ERROR [940001:940041:0907/235216.784866:ERROR:google_apis/gcm/engine/r
+   egistration_request.cc:290] Registration response error message: PHONE_REGISTRATION_ERROR  
+
+   Confirmed to be that Chrome binary, independently of Pi and Calm - it also hangs on a
+   trivial local file:
+   $ /tmp/fmchrome/chrome --headless=new --disable-gpu --no-sandbox --disable-dev-shm-usage \
+         --disable-background-networking --user-data-dir=<fresh> --virtual-time-budget=2000 \
+         --dump-dom file:///tmp/fm-probe.html
+   -> SIGKILLed at 60s, 0 bytes of DOM
+
+2) FM_CHROME_BIN=/tmp/fmheadlessshell/chrome   (chrome-headless-shell 145.0.7632.6)
+   Same command on the same file returns the DOM immediately, and the whole E2E passes,
+   including the rendered-DOM Calm conversation-boundary assertions:
+
+   ok - Pi calm native E2E replaces the stock working row with a moving, resize-clamped working ship that freezes and resumes across two working periods in one Pi session, clears on abort, keeps captain turns visible, hides exact operational user rows without changing persistence, restores stock rendering Calm-off, survives restart, and preserves export plus Ctrl+O behavior

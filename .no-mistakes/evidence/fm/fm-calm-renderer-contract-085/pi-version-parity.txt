@@ -1,0 +1,18 @@
+$ pi --version
+0.85.1
+
+$ npm ls -g --depth 0 @earendil-works/pi-coding-agent @earendil-works/pi-server
+├── @earendil-works/pi-coding-agent@0.85.1
+└── @earendil-works/pi-server@0.85.0
+
+
+$ node -p "require('/tmp/fm-pi-0844/node_modules/@earendil-works/pi-coding-agent/package.json').version"
+0.84.4
+
+$ FM_PI_PACKAGE_DIR=<pi 0.84.4> tests/fm-calm-pi-extension.test.sh  # renderer/lifecycle contract
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+exit=0
+
+$ tests/fm-calm-pi-extension.test.sh  # renderer/lifecycle contract, installed Pi 0.85.1
+ok - Pi calm centralizes transcript visibility, preserves execution/export data, keeps Pi's stock working row visible while no run is active, and persists its choice across session starts
+exit=0

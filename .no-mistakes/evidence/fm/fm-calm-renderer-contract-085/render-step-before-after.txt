@@ -1,0 +1,10 @@
+### BEFORE (base ffd2c89 inline render step, single unattended attempt, stderr discarded)
+not ok - could not render calm-mode HTML export DOM
+chrome start-ups: 1 | rendered DOM bytes: 0
+
+### AFTER (this branch's render_export_dom, same fake Chrome)
+ok - rendered the calm-mode HTML export DOM
+chrome start-ups: 3 | rendered DOM bytes: 51
+
+### AFTER, Chrome that never renders (what CI now prints instead of a bare failure)
+not ok - could not render calm-mode HTML export DOM: chrome=/tmp/fm-render-demo.vkINsz/chrome-broken chrome_version=FakeChrome 1.2.3 pi=0.85.1; attempt 1: exit=9 timed_out=no bytes=0 stderr=chrome start-up crashed: Failed to create /dev/shm mapping  attempt 2: exit=9 timed_out=no bytes=0 stderr=chrome start-up crashed: Failed to create /dev/shm mapping  attempt 3: exit=9 timed_out=no bytes=0 stderr=chrome start-up crashed: Failed to create /dev/shm mapping  
