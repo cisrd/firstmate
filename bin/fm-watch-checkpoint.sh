@@ -63,19 +63,12 @@ run_with_perl_timeout() {
     }
     local $SIG{ALRM} = sub {
       kill "TERM", -$pid;
-      my $grace = $ENV{FM_SIGNAL_GRACE} || 5;
-      local $SIG{ALRM} = sub {
-        kill "KILL", -$pid;
-        waitpid $pid, 0;
-        exit 124;
-      };
-      alarm $grace;
-      waitpid $pid, 0;
+      select undef, undef, undef, 0.2;
+      kill "KILL", -$pid;
       exit 124;
     };
     alarm $seconds;
     waitpid $pid, 0;
-    alarm 0;
     exit($? >> 8);
   ' "$SECONDS_ARG" "$SCRIPT_DIR/fm-watch.sh"
 }

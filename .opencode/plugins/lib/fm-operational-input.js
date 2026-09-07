@@ -13,10 +13,7 @@ export function encodeFirstmateOperationalInput(root, kind, content) {
     const script = existsSync(requested)
       ? requested
       : `${adapterRoot}/bin/fm-operational-input.sh`;
-    const invocation = process.platform === "win32"
-      ? { command: "bash", args: [script, "encode", kind] }
-      : { command: script, args: ["encode", kind] };
-    const child = spawn(invocation.command, invocation.args, {
+    const child = spawn(script, ["encode", kind], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let stdout = "";

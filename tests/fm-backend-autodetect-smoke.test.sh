@@ -90,14 +90,7 @@ mkdir -p "$STATE" "$DATA/$ID" "$CONFIG"
 # Backend auto-detection is what is under test here, so opt out of the default-on
 # presentation projection and keep the assertions on the flat per-home workspace.
 printf 'off\n' > "$CONFIG/herdr-presentation-spaces"
-cat > "$DATA/$ID/brief.md" <<'EOF'
-# Task
-## Captain's intent
-Exercise Herdr backend auto-detection.
-
-## Firstmate spec
-Verify the real spawn path selects Herdr.
-EOF
+printf 'trivial autodetect-smoke brief: nothing to do.\n' > "$DATA/$ID/brief.md"
 
 PROJ="$TMP_ROOT/scratch-project"
 mkdir -p "$PROJ"
