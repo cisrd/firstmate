@@ -1,0 +1,144 @@
+Replay of the 2026-09-07 fmverif secondmate wake-loop false alarms.
+Each block drives the real captain-facing supervision entry point,
+bin/fm-watch-checkpoint.sh, against a fixture reproducing the measured state.
+
+  "captain sees | ..."        verbatim stdout of the supervision checkpoint
+  "check: secondmate ..."     the stall escalation under test - one per supervision turn
+  "check: rearm-resurface"    the watcher re-surfacing the parent's OWN already-published,
+                              undrained wake queue. Not a new stall finding, not counted.
+  "checkpoint: no actionable wake within 2s"
+                              the checkpoint was quiet - the captain is not interrupted
+
+  "supervision turns"         durable secondmate-wake-loop-fmverif-* rows in the firstmate's
+                              own wake queue. One row = one supervision turn the captain pays.
+
+--------------------------------------------------------------------------
+== BASE watcher (d4eb228) ==
+--------------------------------------------------------------------------
+
+### BASE watcher - defect 1 replay: fmverif drains normally at a ~70s turn cadence
+    (measured rows 409/434/436; FM_SECONDMATE_WAKE_STALL_SECS unset = this build default)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1000s  queue=[409,434]  oldest row age 63s
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=409 age=63s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1070s  mate drained 409, queue=[434]  oldest row age 75s
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=434 age=75s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1140s  mate drained 434, queue=[436]  oldest row age 60s
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=436 age=60s
+
+    => supervision turns the captain pays for this HEALTHY session: 3
+
+### BASE watcher - defect 2 replay: two declared external waits (upstream review)
+    (verbatim measured rows; AGENTS.md section 8 says a declared pause needs no firstmate action)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # first hourly poll, rows paused 3613s/3615s
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=7 age=3613s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # next hourly poll, still nothing but the declared wait
+    captain sees | check: rearm-resurface
+
+    => supervision turns the captain pays, every hour, for days: 1
+
+### BASE watcher - a GENUINELY frozen wake loop, mate not in a turn
+    (queue never advances; FM_SECONDMATE_WAKE_STALL_SECS unset = this build default)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1000s  first observation
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=409 age=100s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1070s  70s with no drain progress - exactly one real turn
+    captain sees | check: rearm-resurface
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1260s  260s with no drain progress - well past any turn
+    captain sees | check: rearm-resurface
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1460s  still frozen - must not storm
+    captain sees | check: rearm-resurface
+
+    => supervision turns for this REAL stall: 1 (want exactly 1)
+
+### BASE watcher - frozen queue while a live worker is mid-turn, then the turn ends
+    (FM_SECONDMATE_WAKE_STALL_SECS=1, so only the active-turn gate can hold the alert back)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # fmverif is mid-turn with a live worker implementing
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=409 age=300s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # still mid-turn, queue still frozen
+    captain sees | check: rearm-resurface
+    => supervision turns while the mate is demonstrably working: 1
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # the turn ended and the queue is STILL frozen
+    captain sees | check: rearm-resurface
+
+    => supervision turns after the turn ended: 1 (the alert is deferred, not cancelled)
+
+### BASE watcher - upgrade rollout: a stall marker already on disk, no progress baseline yet
+    (the state a real host is in the moment this build ships; the queue is genuinely frozen)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1000s  first observation after the upgrade
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=409 age=100s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1260s  260s with no drain progress
+    captain sees | check: rearm-resurface
+
+    => supervision turns for this REAL stall despite the pre-existing marker: 1 (want exactly 1)
+
+--------------------------------------------------------------------------
+== TARGET watcher (96930cb) ==
+--------------------------------------------------------------------------
+
+### TARGET watcher - defect 1 replay: fmverif drains normally at a ~70s turn cadence
+    (measured rows 409/434/436; FM_SECONDMATE_WAKE_STALL_SECS unset = this build default)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1000s  queue=[409,434]  oldest row age 63s
+    captain sees | checkpoint: no actionable wake within 2s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1070s  mate drained 409, queue=[434]  oldest row age 75s
+    captain sees | check: rearm-resurface
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1140s  mate drained 434, queue=[436]  oldest row age 60s
+    captain sees | check: rearm-resurface
+
+    => supervision turns the captain pays for this HEALTHY session: 0
+
+### TARGET watcher - defect 2 replay: two declared external waits (upstream review)
+    (verbatim measured rows; AGENTS.md section 8 says a declared pause needs no firstmate action)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # first hourly poll, rows paused 3613s/3615s
+    captain sees | checkpoint: no actionable wake within 2s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # next hourly poll, still nothing but the declared wait
+    captain sees | check: rearm-resurface
+
+    => supervision turns the captain pays, every hour, for days: 0
+
+### TARGET watcher - a GENUINELY frozen wake loop, mate not in a turn
+    (queue never advances; FM_SECONDMATE_WAKE_STALL_SECS unset = this build default)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1000s  first observation
+    captain sees | checkpoint: no actionable wake within 2s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1070s  70s with no drain progress - exactly one real turn
+    captain sees | check: rearm-resurface
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1260s  260s with no drain progress - well past any turn
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=409 idle=260s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1460s  still frozen - must not storm
+    captain sees | check: rearm-resurface
+
+    => supervision turns for this REAL stall: 1 (want exactly 1)
+
+### TARGET watcher - frozen queue while a live worker is mid-turn, then the turn ends
+    (FM_SECONDMATE_WAKE_STALL_SECS=1, so only the active-turn gate can hold the alert back)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # fmverif is mid-turn with a live worker implementing
+    captain sees | checkpoint: no actionable wake within 2s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # still mid-turn, queue still frozen
+    captain sees | check: rearm-resurface
+    => supervision turns while the mate is demonstrably working: 0
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # the turn ended and the queue is STILL frozen
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=409 idle=3s
+
+    => supervision turns after the turn ended: 1 (the alert is deferred, not cancelled)
+
+### TARGET watcher - upgrade rollout: a stall marker already on disk, no progress baseline yet
+    (the state a real host is in the moment this build ships; the queue is genuinely frozen)
+
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1000s  first observation after the upgrade
+    captain sees | checkpoint: no actionable wake within 2s
+  $ bin/fm-watch-checkpoint.sh --seconds 2      # t=1260s  260s with no drain progress
+    captain sees | check: secondmate wake-loop stalled: mate=fmverif row=409 idle=260s
+
+    => supervision turns for this REAL stall despite the pre-existing marker: 1 (want exactly 1)
+
+--------------------------------------------------------------------------
+no desktop notification was fired during this replay (alarm seam log): 0 line(s)

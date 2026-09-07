@@ -1,0 +1,12 @@
+Regression proof: the three new behavioral tests, run against the BASE watcher (d4eb228)
+with the CHANGE's test file. Each reproduces a measured 2026-09-07 false alarm and fails.
+
+$ bash tests/fm-wake-queue.test.sh   # test_secondmate_foreign_queue_stall_tracks_progress_and_alerts_once   [against base bin/]
+  not ok - the first observation of an old foreign row produced an age-only alert
+
+$ bash tests/fm-wake-queue.test.sh   # test_secondmate_declared_pause_rows_do_not_feed_stall_escalation   [against base bin/]
+  not ok - declared external-wait rows fed the secondmate wake-loop escalation
+
+$ bash tests/fm-wake-queue.test.sh   # test_secondmate_active_turn_defers_stall_until_the_turn_ends   [against base bin/]
+  not ok - a mate inside an active turn was escalated as a stalled wake loop: check: secondmate wake-loop stalled: mate=mate row=7 age=10s
+
