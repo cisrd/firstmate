@@ -82,10 +82,11 @@
 #   check: secondmate wake-loop stalled: mate=<id> row=<seq> idle=<seconds>s
 #                          an actionable row in an endpoint-recorded local
 #                          secondmate home's durable wake queue did not advance
-#                          between observations for FM_SECONDMATE_WAKE_STALL_SECS;
-#                          declared external-wait pause rows do not feed this
-#                          escalation, observation is read-only, and one parent
-#                          notification covers each no-progress episode
+#                          between observations for FM_SECONDMATE_WAKE_STALL_SECS
+#                          while the mate was not in an active turn; declared
+#                          external-wait pause rows do not feed this escalation,
+#                          observation is read-only, and one parent notification
+#                          covers each no-progress episode
 # For normal supervision, resume the session-start primary-harness protocol
 # after each printed reason. Direct duplicate invocations of this script still
 # no-op through the watcher singleton lock.
@@ -219,7 +220,11 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A local secondmate's foreign queue is checked on every poll, but only after this
 # bounded interval with no drain progress can it produce a parent notification.
-SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-60}
+# A healthy mate drains its queue between turns, not inside one, so this default
+# sits above a real turn; it is only the backstop behind the active-turn gate in
+# secondmate_wake_stall_tick, never a substitute for it.
+SECONDMATE_WAKE_STALL_SECS=${FM_SECONDMATE_WAKE_STALL_SECS:-}
+case "$SECONDMATE_WAKE_STALL_SECS" in ''|*[!0-9]*|0) SECONDMATE_WAKE_STALL_SECS=180 ;; esac
 # A crew that declared a pause is idling on a known external wait, so its stale
 # pane is absorbed rather than wedge-escalated.
 # A captain-held or paused crew whose agent has confidently exited uses the same
@@ -647,7 +652,7 @@ secondmate_oldest_queue_row() {  # <queue-path>
   awk -F '\t' '
     function declared_external_pause(kind, payload) {
       return kind == "stale" \
-        && payload ~ /^stale: .*\(paused [0-9]+s, awaiting external - declared pause(d)?([,)]|$)/
+        && payload ~ /^stale: .*\(paused [0-9]+s, awaiting external - declared (pause,|paused\))/
     }
     NF >= 5 && $1 ~ /^[0-9]+$/ && $2 ~ /^[0-9]+$/ \
       && !declared_external_pause($3, $5) {
@@ -661,18 +666,35 @@ secondmate_oldest_queue_row() {  # <queue-path>
   ' "$queue" 2>/dev/null || true
 }
 
+# 0 iff <task> is demonstrably inside an active turn, through the watcher's own
+# busy-state knowledge: an exact busy verdict from the semantic contract, bounded
+# by the same BUSY_TURN_MAX_SECS that stops a busy pane from proving liveness
+# forever. A mate mid-turn has not stopped draining its queue - it simply drains
+# between turns - so this gate, not the elapsed interval, is what separates a
+# healthy mate from a frozen wake loop. Any absence of proof (no window, a failed
+# capture, an idle or unknown verdict, a busy pane past the bound) is NOT an
+# active turn, so a frozen queue still escalates.
+secondmate_in_active_turn() {  # <task> <window>
+  local task=$1 w=$2 tail40
+  [ -n "$w" ] || return 1
+  ! busy_turn_over_age "$task" || return 1
+  tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || return 1
+  window_is_busy "$w" "$tail40"
+}
+
 # Surface one durable parent check when the foreign queue's drain position has
 # not advanced for the bounded interval. The progress marker starts or resets
 # the timer whenever the oldest actionable sequence increases; row creation time
 # is deliberately irrelevant. Progress ends an alerted episode and starts a new
 # observation interval, so a newly-oldest row cannot alert immediately while a
-# later genuine freeze remains visible. Receipts close the append-before-marker
-# crash window without changing the foreign queue.
+# later genuine freeze remains visible. A mate demonstrably inside an active turn
+# never escalates, so the interval is only the backstop behind that gate.
+# Receipts close the append-before-marker crash window without changing the
+# foreign queue.
 secondmate_wake_stall_tick() {
   local now=$(( $(date +%s) )) threshold=$SECONDMATE_WAKE_STALL_SECS
   local meta task kind remote_host home queue row epoch seq row_key marker progress_marker progress observed_at observed_seq
   local receipt receipt_dir notify_key queued idle reason episode_alerted
-  case "$threshold" in ''|*[!0-9]*|0) threshold=60 ;; esac
   # Endpoint metadata admits this queue-loop check; secondmate-liveness owns registered mates whose endpoint is missing or dead.
   for meta in "$STATE"/*.meta; do
     [ -e "$meta" ] || continue
@@ -721,11 +743,7 @@ EOF
     case "$observed_at" in ''|*[!0-9]*) observed_at= ;; esac
     case "$observed_seq" in ''|*[!0-9]*) observed_seq= ;; esac
     if [ -z "$observed_at" ] || [ -z "$observed_seq" ] \
-      || [ "$now" -lt "$observed_at" ]; then
-      fm_wake_secondmate_progress_marker_write "$task" "$now" "$seq" || return 1
-      continue
-    fi
-    if [ "$seq" -gt "$observed_seq" ]; then
+      || [ "$now" -lt "$observed_at" ] || [ "$seq" -gt "$observed_seq" ]; then
       fm_wake_secondmate_progress_marker_write "$task" "$now" "$seq" || return 1
       [ "$episode_alerted" -eq 0 ] || rm -f "$marker" || return 1
       continue
@@ -733,6 +751,7 @@ EOF
     [ "$episode_alerted" -eq 0 ] || continue
     idle=$((now - observed_at))
     [ "$idle" -ge "$threshold" ] || continue
+    ! secondmate_in_active_turn "$task" "$(fm_backend_target_of_meta "$meta")" || continue
     row_key="$epoch-$seq"
     receipt="$receipt_dir/$row_key"
     if [ "$(cat "$receipt" 2>/dev/null || true)" = "$row_key" ]; then
