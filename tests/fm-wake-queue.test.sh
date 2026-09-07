@@ -372,10 +372,11 @@ EOF
 }
 
 # A retired mate reprovisioned under the same task id gets a fresh home, so its
-# wake-queue sequence restarts BELOW the position the parent last recorded. That
-# lower restart is a new queue generation, not the continuation of the previous
-# generation's no-progress interval: inheriting that interval fires a wake-loop
-# stall against a queue the mate has only just created.
+# wake-queue sequence restarts from scratch and can land on the very position the
+# parent last recorded for the retired generation. Those are different rows in
+# different queue generations, not the continuation of the previous generation's
+# no-progress interval: inheriting that interval fires a wake-loop stall against
+# a queue the mate has only just created.
 test_secondmate_reprovisioned_queue_starts_a_fresh_interval() {
   local dir state sub fakebin real_date
   dir=$(make_case secondmate-reprovisioned-queue)
@@ -407,11 +408,11 @@ SH
     "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 1 > "$dir/watch-old.out" 2> "$dir/watch-old.err" || true
   [ ! -s "$state/.wake-queue" ] || fail "the first observation of the retired generation alerted"
 
-  # Reprovisioning under the same task id restarts the sequence below 9, long
+  # Reprovisioning under the same task id restarts the sequence on 9 again, long
   # after the recorded observation. That first sight of the new queue cannot
   # inherit the old generation's idle interval.
   printf '1010\n' > "$dir/now"
-  printf '200\t3\tcheck\tregen\tcheck: reprovisioned row\n' > "$sub/state/.wake-queue"
+  printf '200\t9\tcheck\tregen\tcheck: reprovisioned row\n' > "$sub/state/.wake-queue"
   PATH="$fakebin:$PATH" FM_FAKE_NOW_FILE="$dir/now" FM_HOME="$dir" FM_ROOT_OVERRIDE="$ROOT" \
     FM_STATE_OVERRIDE="$state" FM_FAKE_TMUX_WINDOW='firstmate:fm-mate' \
     FM_SECONDMATE_WAKE_STALL_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
@@ -427,7 +428,7 @@ SH
     FM_SECONDMATE_WAKE_STALL_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
     FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
     "$ROOT/bin/fm-watch-checkpoint.sh" --seconds 1 > "$dir/watch-regen-frozen.out" 2> "$dir/watch-regen-frozen.err" || true
-  grep -F 'check: secondmate wake-loop stalled: mate=mate row=3 idle=2s' "$dir/watch-regen-frozen.out" >/dev/null \
+  grep -F 'check: secondmate wake-loop stalled: mate=mate row=9 idle=2s' "$dir/watch-regen-frozen.out" >/dev/null \
     || fail "a frozen reprovisioned queue generation was hidden: $(cat "$dir/watch-regen-frozen.out")"
   pass "a reprovisioned queue generation starts a fresh no-progress interval"
 }
@@ -489,19 +490,20 @@ SH
 }
 
 test_secondmate_stall_marker_rejects_symlink() {
-  local dir state sub fakebin marker outside expected
+  local dir state sub fakebin marker outside expected epoch
   dir=$(make_case secondmate-stall-marker-symlink)
   state="$dir/state"
   sub="$dir/secondmate"
   mkdir -p "$sub/state"
   printf 'mate\n' > "$sub/.fm-secondmate-home"
   printf 'window=firstmate:fm-mate\nkind=secondmate\nhome=%s\n' "$sub" > "$state/mate.meta"
-  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$(( $(date +%s) - 10 ))" > "$sub/state/.wake-queue"
+  epoch=$(( $(date +%s) - 10 ))
+  printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$epoch" > "$sub/state/.wake-queue"
   outside="$dir/outside"
   expected='must remain unchanged'
   printf '%s\n' "$expected" > "$outside"
   marker="$state/.secondmate-wake-stall-mate"
-  printf '%s\t7\n' "$(( $(date +%s) - 2 ))" > "$state/.secondmate-wake-progress-mate"
+  printf '%s\t%s-7\n' "$(( $(date +%s) - 2 ))" "$epoch" > "$state/.secondmate-wake-progress-mate"
   ln -s "$outside" "$marker"
   fakebin="$dir/fakebin"
   cat > "$fakebin/tmux" <<'SH'
@@ -539,7 +541,7 @@ test_acknowledged_stall_publication_survives_pre_marker_crash() {
   printf '%s\t7\tcheck\trouted\tcheck: routed row\n' "$epoch" > "$sub/state/.wake-queue"
   row_before="$dir/foreign-before"
   cp "$sub/state/.wake-queue" "$row_before"
-  printf '%s\t7\n' "$(( $(date +%s) - 2 ))" > "$state/.secondmate-wake-progress-mate"
+  printf '%s\t%s-7\n' "$(( $(date +%s) - 2 ))" "$epoch" > "$state/.secondmate-wake-progress-mate"
   append_wake "$state" check "secondmate-wake-loop-mate-$epoch-7" \
     "check: secondmate wake-loop stalled: mate=mate row=7 idle=2s" \
     || fail "could not seed the pre-marker crash publication"
@@ -581,7 +583,7 @@ test_empty_prefix_mate_preserves_other_mate_receipt() {
   printf '%s\t9\tcheck\trouted\tcheck: routed row\n' "$epoch" > "$stalled/state/.wake-queue"
   row_before="$dir/foreign-before"
   cp "$stalled/state/.wake-queue" "$row_before"
-  printf '%s\t9\n' "$(( $(date +%s) - 2 ))" > "$state/.secondmate-wake-progress-ios-ui"
+  printf '%s\t%s-9\n' "$(( $(date +%s) - 2 ))" "$epoch" > "$state/.secondmate-wake-progress-ios-ui"
   append_wake "$state" check "secondmate-wake-loop-ios-ui-$epoch-9" \
     "check: secondmate wake-loop stalled: mate=ios-ui row=9 idle=2s" \
     || fail "could not seed the ios-ui stall publication"

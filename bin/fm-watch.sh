@@ -683,20 +683,21 @@ secondmate_in_active_turn() {  # <task> <window>
 }
 
 # Surface one durable parent check when the foreign queue's drain position has
-# not moved for the bounded interval. The progress marker starts or resets the
-# timer whenever the oldest actionable sequence changes at all - it advances as
-# the mate drains, and it restarts lower when a retired mate is reprovisioned
-# under the same task id, and neither is a continued no-progress episode; row
-# creation time is deliberately irrelevant. A moved position ends an alerted
-# episode and starts a new observation interval, so a newly-oldest row cannot
-# alert immediately while a later genuine freeze remains visible. A mate
-# demonstrably inside an active turn never escalates, so the interval is only
-# the backstop behind that gate.
+# not moved for the bounded interval. The progress marker records that position
+# as the same epoch-sequence row identity the stall receipts use, so the timer
+# restarts whenever a different row becomes the oldest actionable one - as the
+# mate drains, and as a queue reprovisioned under the same task id starts its
+# own generation of rows at whatever sequence it restarts, and neither is a
+# continued no-progress episode; row creation time belongs to that identity but
+# never to the interval. A moved position ends an alerted episode and starts a
+# new observation interval, so a newly-oldest row cannot alert immediately while
+# a later genuine freeze remains visible. A mate demonstrably inside an active
+# turn never escalates, so the interval is only the backstop behind that gate.
 # Receipts close the append-before-marker crash window without changing the
 # foreign queue.
 secondmate_wake_stall_tick() {
   local now=$(( $(date +%s) )) threshold=$SECONDMATE_WAKE_STALL_SECS
-  local meta task kind remote_host home queue row epoch seq row_key marker progress_marker progress observed_at observed_seq
+  local meta task kind remote_host home queue row epoch seq row_key marker progress_marker progress observed_at observed_key
   local receipt receipt_dir notify_key queued idle reason episode_alerted
   # Endpoint metadata admits this queue-loop check; secondmate-liveness owns registered mates whose endpoint is missing or dead.
   for meta in "$STATE"/*.meta; do
@@ -730,6 +731,7 @@ $row
 EOF
     case "$epoch" in ''|*[!0-9]*) continue ;; esac
     case "$seq" in ''|*[!0-9]*) continue ;; esac
+    row_key="$epoch-$seq"
     episode_alerted=0
     if [ -e "$marker" ] || [ -L "$marker" ]; then
       [ -f "$marker" ] && [ ! -L "$marker" ] || return 1
@@ -737,17 +739,17 @@ EOF
     fi
     progress=$(cat "$progress_marker" 2>/dev/null || true)
     observed_at=${progress%%[[:space:]]*}
-    observed_seq=${progress#*[[:space:]]}
+    observed_key=${progress#*[[:space:]]}
     if [ "$observed_at" = "$progress" ]; then
-      observed_seq=
+      observed_key=
     else
-      observed_seq=${observed_seq%%[[:space:]]*}
+      observed_key=${observed_key%%[[:space:]]*}
     fi
     case "$observed_at" in ''|*[!0-9]*) observed_at= ;; esac
-    case "$observed_seq" in ''|*[!0-9]*) observed_seq= ;; esac
-    if [ -z "$observed_at" ] || [ -z "$observed_seq" ] \
-      || [ "$now" -lt "$observed_at" ] || [ "$seq" -ne "$observed_seq" ]; then
-      fm_wake_secondmate_progress_marker_write "$task" "$now" "$seq" || return 1
+    case "$observed_key" in ''|*[!0-9-]*) observed_key= ;; esac
+    if [ -z "$observed_at" ] || [ -z "$observed_key" ] \
+      || [ "$now" -lt "$observed_at" ] || [ "$row_key" != "$observed_key" ]; then
+      fm_wake_secondmate_progress_marker_write "$task" "$now" "$row_key" || return 1
       [ "$episode_alerted" -eq 0 ] || rm -f "$marker" || return 1
       continue
     fi
@@ -755,7 +757,6 @@ EOF
     idle=$((now - observed_at))
     [ "$idle" -ge "$threshold" ] || continue
     ! secondmate_in_active_turn "$task" "$(fm_backend_target_of_meta "$meta")" || continue
-    row_key="$epoch-$seq"
     receipt="$receipt_dir/$row_key"
     if [ "$(cat "$receipt" 2>/dev/null || true)" = "$row_key" ]; then
       fm_wake_secondmate_stall_marker_write "$task" "$row_key" || return 1
