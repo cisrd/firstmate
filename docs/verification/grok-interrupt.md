@@ -24,7 +24,8 @@ The PATH inventory was captured with `type -a grok`, `readlink -f`, and each can
 The live session invoked the PATH winner through `exec grok`, which resolved to the 1.0.13 native executable shown above.
 The `--no-alt-screen` flag was accepted by the installed CLI and made pane capture deterministic.
 Firstmate's own spawn shape in `bin/fm-spawn.sh` omits that flag, so the first lot differed from the fleet launch in exactly one flag, and identical `tmux send-keys` delivery would not have established identical handling: the 0.2.73 premise under revision is precisely that Escape focused the scrollback, and scrollback ownership is what the alternate screen changes hands over.
-Both the Escape observations and the footer literals were therefore re-captured under the production launch shape, recorded below; the two shapes agree on the visible cancellation, on the absent `Ctrl+c:cancel` literal, and on the idle bar, but not on the tool child, which survived all three `--no-alt-screen` Escapes and died in two of the production-shape ones.
+Both the Escape observations and the footer literals were therefore re-captured under the production launch shape, recorded below; the two shapes agree on the visible cancellation, on the absent `Ctrl+c:cancel` literal, and on the idle bar.
+They are uncompared on the tool child rather than disagreeing, because the lots sampled different pane states: no `--no-alt-screen` Escape was captured while a tool was the active work, and every trial sent in a comparable pane state matches across the shapes.
 
 ## Method and expected behavior
 
@@ -123,7 +124,7 @@ Shift+Tab:mode  │  Esc:cancel  │  Ctrl+b:send to bg  │  Ctrl+x:shortcuts
 The idle bar was `Shift+Tab:mode  │  Ctrl+x:shortcuts`, matching the first lot.
 So the production shape reproduces the `--no-alt-screen` result rather than contradicting it: one Escape cancels a genuinely in-flight turn and leaves an interactive session that accepts a follow-up.
 Neither key reliably stops already-running tool work. `escape-1` and the `C-c` control both left the `sleep 60` child running behind the same `1 command still running` residue, while `escape-2` and `escape-3` were followed three seconds later by a gone child that a 12-13s-old `sleep 60` cannot have exited on its own, so Escape did stop the child in those two trials.
-The two keys were not compared in that state: `escape-1` and both `C-c` controls were sent while the pane read `Thinking...`, and no `C-c` control was ever captured while a tool was the active work. Tool-child termination is therefore untied between the keys rather than matched, and the remaining measured axes - visible cancellation, surviving Grok process, restored interactive composer, accepted follow-up - are the same for both, so no discriminator favours switching keys.
+The two keys were not compared in that state: `escape-1` and both `C-c` controls were sent while the pane read `Thinking...`, and no `C-c` control was ever captured while a tool was the active work. Tool-child termination is therefore untied between the keys rather than matched, and the remaining axes measured for both keys - visible cancellation, surviving Grok process, restored interactive composer - are the same, with an accepted follow-up recorded only after Escape and never after a `C-c` control, so no discriminator favours switching keys.
 
 ## History and disconfirming evidence
 
@@ -132,7 +133,7 @@ The earlier 1.0.13 ancillary Escape observation was not treated as complete unti
 The separate queued-Enter experiment at `https://github.com/kunchenguid/firstmate/pull/3868` is not required for this result and is not causal evidence.
 The captures also disconfirm the maintained Grok busy signature, which is a separate defect this interrupt-scoped verification records rather than fixes.
 `FM_DELIVERY_GROK_BUSY_REGEX_DEFAULT` is `Ctrl\+c:cancel` in `bin/fm-composer-lib.sh`, grepped by `fm_busy_grok_tail_busy` in `bin/fm-busy-lib.sh` for the `grok*` classifier arm.
-That literal is absent from every 1.0.13 active footer captured above under either launch shape, so on this build the rendered-tail fallback prints `idle grok-regex` for a genuinely busy turn with no error, and the 1.0.13 idle bar is `Shift+Tab:mode │ Ctrl+x:shortcuts` rather than the recorded `Shift+Tab:mode │ Ctrl+.:shortcuts`.
+That literal is absent from every 1.0.13 active footer captured above under either launch shape, so on this build the rendered-tail fallback prints `idle grok-regex` for a genuinely busy turn with no error on every backend except herdr, the only one whose native busy verdict short-circuits ahead of that fallback, and the 1.0.13 idle bar is `Shift+Tab:mode │ Ctrl+x:shortcuts` rather than the recorded `Shift+Tab:mode │ Ctrl+.:shortcuts`.
 The same variable is also the delivery guard `fm_busy_lines_match` in `bin/fm-composer-lib.sh`, selected only when a caller passes `grok`, which reaches two further paths.
 `pane_is_busy` in `bin/fm-supervise-daemon.sh` takes its harness from `fm_daemon_primary_harness` and, per its own contract, reads only the supervisor pane during away-mode injection, so the hazard there is a grok 1.0.13 PRIMARY pane read as not-busy and injected mid-turn, not a recorded worker task.
 `fm_pending_reply_backend_observation` in `bin/fm-pending-reply-lib.sh` is called with the recorded harness, so a busy grok secondmate yields `fallback-idle`, which becomes `idle` after its grace window, stamps the turn completed, and lets `fm_pending_reply_send_recovery` resend into a still-running turn.
