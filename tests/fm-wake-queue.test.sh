@@ -912,6 +912,10 @@ test_main_is_never_told_to_drain_rows_only_the_branch_owns() {
   FM_STATE_OVERRIDE="$state" "$GUARD" 2> "$dir/guard-held.err" || fail "guard failed while the branch held the rows"
   ! grep -Fq 'queued wakes pending' "$dir/guard-held.err" \
     || fail "guard counted branch-held rows as pending for main"
+  grep -Fq 'wake rows held by the live supervision branch' "$dir/guard-held.err" \
+    || fail "guard went silent about a non-empty queue instead of naming the branch as its holder"
+  grep -Fq 'do not drain them from here' "$dir/guard-held.err" \
+    || fail "the held advisory did not say the rows must not be drained from here"
   grep -Fq "$(printf '\tstale\tfleet:w2:p3\t')" "$state/.wake-queue" \
     || fail "the branch-held row must stay durable for its own owner"
 
@@ -929,6 +933,8 @@ test_main_is_never_told_to_drain_rows_only_the_branch_owns() {
   generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$err")
   [ -n "$sequence" ] && [ -n "$generation" ] || fail "the released row was presented without an acknowledgement command"
   grep -Fq 'queued wakes pending' "$err" || fail "guard stopped warning about a row main can actually drain"
+  ! grep -Fq 'wake rows held by the live supervision branch' "$err" \
+    || fail "guard kept advising about a hold that was already released"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
     || fail "acknowledgement of the released row failed"
   [ ! -s "$state/.wake-queue" ] || fail "the acknowledged row stayed queued"
@@ -962,6 +968,8 @@ test_unconsumable_rows_are_retired_instead_of_wedging_the_queue() {
   FM_STATE_OVERRIDE="$state" "$GUARD" 2> "$dir/guard-before.err" || fail "guard failed with unusable rows queued"
   grep -Fq 'queued wakes pending' "$dir/guard-before.err" \
     || fail "guard stayed silent about rows main still has to clear"
+  ! grep -Fq 'wake rows held by the live supervision branch' "$dir/guard-before.err" \
+    || fail "guard advised a branch hold for rows no grant covers"
 
   out="$dir/main.out"
   err="$dir/main.err"
