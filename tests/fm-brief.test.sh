@@ -388,7 +388,7 @@ test_active_no_mistakes_validation_cannot_be_deferred() {
     "no-mistakes brief did not define the only status-polling stop conditions"
   assert_grep "An accepted response or a status that still reports active work is not a stopping point; the same continuation rule applies after starting or reattaching to a run." "$brief" \
     "no-mistakes brief did not extend the continuation rule past a gate response to starting and reattaching"
-  assert_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active and rule 7's daemon checks have not established a real block." "$brief" \
+  assert_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active, unless the attributed run presents a genuine ask-user decision - escalate it and stop - or rule 7's daemon checks have established a real block." "$brief" \
     "no-mistakes brief still permits deferring an active validation run"
   pass "fm-brief.sh: active no-mistakes validation continues in the same turn through the next real transition"
 }
@@ -420,7 +420,7 @@ test_direct_pr_requires_forge_proof_and_diagnosis() {
   for unaffected in "$scout" "$charter" "$local_brief"; do
     assert_no_grep "diagnose the forge failure first" "$unaffected" \
       "an unaffected scaffold received the direct-PR forge contract"
-    assert_no_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active and rule 7's daemon checks have not established a real block." "$unaffected" \
+    assert_no_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active, unless the attributed run presents a genuine ask-user decision - escalate it and stop - or rule 7's daemon checks have established a real block." "$unaffected" \
       "an unaffected scaffold received the no-mistakes active-run contract"
   done
   pass "fm-brief.sh: direct-PR completion requires forge diagnosis, a pushed branch, and a verified full URL"

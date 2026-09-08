@@ -243,7 +243,7 @@ A killed or timed-out call is never evidence the daemon died: the daemon accepts
 Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.
 After every \`no-mistakes axi respond\`, continue in the same turn with bounded calls to the structured \`no-mistakes axi status\` interface until the attributed run changes step, reaches a terminal outcome, presents a genuine ask-user decision, or rule 7's daemon checks establish a real block.
 An accepted response or a status that still reports active work is not a stopping point; the same continuation rule applies after starting or reattaching to a run.
-Never end your turn or promise to resume or check later while structured status shows that validation is active and rule 7's daemon checks have not established a real block.
+Never end your turn or promise to resume or check later while structured status shows that validation is active, unless the attributed run presents a genuine ask-user decision - escalate it and stop - or rule 7's daemon checks have established a real block.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate using rule 6's ask-user format and stop.
