@@ -1,0 +1,23 @@
+######  captain-held transfer of a reserved decision key  ######
+tree : BEFORE (base d42016a)
+
+$ cat state/sample-reserved-review.status
+blocked [key=pending-reply-abcdef0123456789]: pending-reply-missed: task=sample-reserved-review request=ship it
+
+$ bin/fm-captain-hold.sh hold sample-reserved-call --origin sample-reserved-review ...
+[exit 0] captain-held task sample-reserved-call registered
+
+$ bin/fm-captain-hold.sh complete sample-reserved-review sample-reserved-call
+  complete: sample-reserved-review captain-call inventory reviewed (sample-reserved-call)
+[exit 0]
+
+$ cat state/sample-reserved-review.status        # the transfer line written by the gate
+blocked [key=pending-reply-abcdef0123456789]: pending-reply-missed: task=sample-reserved-review request=ship it
+captain-held [key=pending-reply-abcdef0123456789]: tracked by sample-reserved-call
+
+$ status_open_decisions state/sample-reserved-review.status   # is the key still open beside its hold?
+pending-reply-abcdef0123456789	blocked	pending-reply-missed: task=sample-reserved-review request=ship it
+>>> STILL OPEN: the decision is tracked BOTH as a captain-held task and as an open status decision
+
+$ bin/fm-captain-hold.sh verify sample-reserved-review
+[exit 1]

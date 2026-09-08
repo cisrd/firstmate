@@ -1,0 +1,69 @@
+######  firstmate reserved-decision-key captain transcript  ######
+tree      : BEFORE (base d42016a)
+reserved  : FM_CLASSIFY_RESERVED_KEY_PREFIXES="pending-reply- secret-"
+
+===============================================================
+SCENARIO A - the captain answers a reserved key that the OPEN DECISIONS fold itself listed as blocked
+===============================================================
+
+$ cat state/t1.status
+blocked [key=secret-abc]: secret-held: cannot ship until the captain rules
+
+$ bin/fm-wake-drain.sh          # what the captain sees before answering
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+t1 [key=secret-abc] blocked: secret-held: cannot ship until the captain rules
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ bin/fm-send.sh t1 --resolve-key secret-abc 'ship it, the hold is cleared'
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+error: --resolve-key 'secret-abc' cannot take effect: this key is reserved for its owning library, and this send cannot produce a close note that library's fold will accept. Refusing rather than writing a silent no-op; nothing was sent.
+[exit 1]
+
+$ cat state/t1.status                       # did the close get written?
+blocked [key=secret-abc]: secret-held: cannot ship until the captain rules
+
+$ cat state/t1.inbox/001.msg                # was the answer delivered?
+cat: /tmp/fm-evidence.M0n9cY/A/state/t1.inbox/001.msg: No such file or directory
+(no inbox record - nothing was delivered)
+
+$ bin/fm-wake-drain.sh          # is the decision gone from the captain's list?
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+t1 [key=secret-abc] blocked: secret-held: cannot ship until the captain rules
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+>>> STILL OPEN
+
+===============================================================
+SCENARIO B - a mate writes the documented explicit resolution by hand on a reserved key
+===============================================================
+
+$ cat state/ios.status
+blocked [key=pending-reply-abcdef0123456789]: pending-reply-missed: task=ios pending-reply-id=abcdef0123456789 request=ship it
+resolved [key=pending-reply-abcdef0123456789]: all good now
+
+$ bin/fm-wake-drain.sh          # captain-facing surfaces after the manual line
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+ios [key=pending-reply-abcdef0123456789] blocked: pending-reply-missed: task=ios pending-reply-id=abcdef0123456789 request=ship it
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+$ status_span_first_actionable_record over the manual line  # what the watcher classifies
+rc=1
+events=187	strong:34:7111622:2026-09-08 17:28:34.767742647 +0200
+needs_decision=0
+
+(rc=1 / no events = the manual resolution was a SILENT no-op;
+ needs_decision=1 = the reconciliation error routes to the captain, not the Pi supervision branch)
+
+===============================================================
+SCENARIO C - vocabulary written by an authoritative captain-held transfer
+===============================================================
+
+$ status_decision_close_note <verb> pending-reply-abcdef0123456789 "tracked by sample-call"
+(status_decision_close_note does not exist in this tree)

@@ -1,0 +1,15 @@
+### the change's new tests run against BASE d42016a (regression reproduction)
+
+$ (base tree) bash tests/fm-classify-decision-key.test.sh
+ok - a stated [key=X] opens X whether it precedes or follows the verb colon
+ok - a keyless needs-decision still opens and closes the default key
+ok - a resolution closes its decision regardless of either line's key position
+ok - blocked [key=X] opens X in both key positions
+not ok - a rejected foreign transfer must produce an actionable diagnostic (missing: 'reconciliation-required: captain-held [key=pending-reply-abcdef0123456789]')
+--- output ---
+
+
+$ (base tree) the two new watcher-routing cases from tests/fm-watch-triage.test.sh
+ok - a rejected captain-held transfer keeps its main-only routing marker
+not ok - a rejected reserved resolution was not payload-marked for branch exclusion: 1788881394	1	signal	task.status	signal: /tmp/fm-watch-triage-tests.KNNpQE/rejected-resolution-payload/state/task.status
+1788881394	2	signal	task.status	signal: /tmp/fm-watch-triage-tests.KNNpQE/rejected-resolution-payload/state/task.status

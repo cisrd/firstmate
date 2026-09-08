@@ -1,0 +1,69 @@
+######  firstmate reserved-decision-key captain transcript  ######
+tree      : AFTER (22a1b7a)
+reserved  : FM_CLASSIFY_RESERVED_KEY_PREFIXES="pending-reply- secret-"
+
+===============================================================
+SCENARIO A - the captain answers a reserved key that the OPEN DECISIONS fold itself listed as blocked
+===============================================================
+
+$ cat state/t1.status
+blocked [key=secret-abc]: secret-held: cannot ship until the captain rules
+
+$ bin/fm-wake-drain.sh          # what the captain sees before answering
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+t1 [key=secret-abc] blocked: secret-held: cannot ship until the captain rules
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  watcher supervision needs Stop-owned automatic recovery; inspect the hook registration and startup status before ending the turn.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+$ bin/fm-send.sh t1 --resolve-key secret-abc 'ship it, the hold is cleared'
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+[exit 0]
+
+$ cat state/t1.status                       # did the close get written?
+blocked [key=secret-abc]: secret-held: cannot ship until the captain rules
+resolved [key=secret-abc]: secret-resolved: answered: ship it, the hold is cleared
+
+$ cat state/t1.inbox/001.msg                # was the answer delivered?
+schema=fm-task-inbox.v1
+at=2026-09-08T15:29:36Z
+--
+ship it, the hold is cleared
+$ bin/fm-wake-drain.sh          # is the decision gone from the captain's list?
+(no OPEN DECISIONS section - the reserved key is closed)
+
+===============================================================
+SCENARIO B - a mate writes the documented explicit resolution by hand on a reserved key
+===============================================================
+
+$ cat state/ios.status
+blocked [key=pending-reply-abcdef0123456789]: pending-reply-missed: task=ios pending-reply-id=abcdef0123456789 request=ship it
+resolved [key=pending-reply-abcdef0123456789]: all good now
+
+$ bin/fm-wake-drain.sh          # captain-facing surfaces after the manual line
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+ios resolved [key=pending-reply-abcdef0123456789]: all good now
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+ios [key=pending-reply-abcdef0123456789] blocked: pending-reply-missed: task=ios pending-reply-id=abcdef0123456789 request=ship it
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+$ status_span_first_actionable_record over the manual line  # what the watcher classifies
+rc=0
+events=187	strong:34:7111912:2026-09-08 17:29:37.211693719 +0200	reconciliation-required: resolved [key=pending-reply-abcdef0123456789]: all good now
+needs_decision=1
+
+(rc=1 / no events = the manual resolution was a SILENT no-op;
+ needs_decision=1 = the reconciliation error routes to the captain, not the Pi supervision branch)
+
+===============================================================
+SCENARIO C - vocabulary written by an authoritative captain-held transfer
+===============================================================
+
+$ status_decision_close_note <verb> pending-reply-abcdef0123456789 "tracked by sample-call"
+resolved      -> pending-reply-resolved: tracked by sample-call
+captain-held  -> pending-reply-captain-held: tracked by sample-call
