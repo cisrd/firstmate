@@ -3109,7 +3109,7 @@ test_local_work_home_emit_path_is_unchanged() {
 # executable suite's real exit status and verify that its trap reaps the worker
 # before removing the fixture root.
 test_remote_worker_cleanup_fixture() {
-  local home remote pid_file
+  local home remote pid_file pid pgid
   remote_fixture_prepare
   home=$(make_home cleanup-child)
   remote=$(make_remote_route "$home" cleanup-mate)
@@ -3119,36 +3119,57 @@ test_remote_worker_cleanup_fixture() {
     || fail "the cleanup fixture could not start its remote worker"
   pid_file="$REMOTE_FIXTURE_JOBS/worker.pid"
   [ -s "$pid_file" ] || fail "the cleanup fixture did not publish its worker PID"
+  pid=$(cat "$pid_file")
+  # worker.pid records the serving child, which a leaking teardown kills and the
+  # supervisor above it simply replaces. The group leader is that supervisor, so
+  # it is the target the parent has to watch.
+  pgid=$(fm_remote_job_process_pgid "$pid") \
+    || fail "the cleanup fixture could not resolve its worker process group"
+  [ "$pgid" != "$pid" ] \
+    || fail "the cleanup fixture's worker has no supervisor above its serving child"
   [ -n "${PF_TEST_ROOT_MARKER:-}" ] || fail "the cleanup fixture has no root marker"
+  [ -n "${PF_TEST_SUPERVISOR_MARKER:-}" ] || fail "the cleanup fixture has no supervisor marker"
   printf '%s\n' "$TMP_ROOT" > "$PF_TEST_ROOT_MARKER"
-  printf '%s\n' "$(cat "$pid_file")" > "$PF_TEST_WORKER_MARKER"
+  printf '%s\n' "$pgid" > "$PF_TEST_SUPERVISOR_MARKER"
   pass "remote worker cleanup fixture completed"
 }
 
 test_suite_exit_status_and_remote_cleanup() {
-  local tmp out rc root pid command
+  local tmp out rc root supervisor command i=0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-public-followup-cleanup.XXXXXX")
   set +e
-  PF_TEST_ROOT_MARKER="$tmp/root" PF_TEST_WORKER_MARKER="$tmp/pid" \
+  PF_TEST_ROOT_MARKER="$tmp/root" PF_TEST_SUPERVISOR_MARKER="$tmp/supervisor" \
     FM_TEST_ONLY=test_remote_worker_cleanup_fixture \
     "$BASH" "${BASH_SOURCE[0]}" >"$tmp/out" 2>"$tmp/err"
   rc=$?
   set -e
   out=$(cat "$tmp/out" "$tmp/err")
-  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "a green executable suite must exit 0: $out"; }
   root=$(cat "$tmp/root" 2>/dev/null || true)
-  pid=$(cat "$tmp/pid" 2>/dev/null || true)
+  supervisor=$(cat "$tmp/supervisor" 2>/dev/null || true)
+  case "$supervisor" in ''|*[!0-9]*) supervisor= ;; esac
+  while [ -n "$supervisor" ] && [ "$i" -lt 50 ]; do
+    kill -0 -- "-$supervisor" 2>/dev/null || break
+    i=$((i + 1))
+    sleep 0.1
+  done
+  command=$(ps -p "${supervisor:-1}" -o command= 2>/dev/null || true)
+  case "$command" in
+    *fm-remote-job-worker.sh*) kill -KILL -- "-$supervisor" 2>/dev/null || true ;;
+  esac
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "a green executable suite must exit 0: $out"; }
   [ -n "$root" ] || { rm -rf "$tmp"; fail "the cleanup fixture did not record its temporary root: $out"; }
-  [ -n "$pid" ] || { rm -rf "$tmp"; fail "the cleanup fixture did not record its worker PID: $out"; }
+  [ -n "$supervisor" ] \
+    || { rm -rf "$tmp"; fail "the cleanup fixture did not record its worker process group: $out"; }
   [ ! -e "$root" ] || { rm -rf "$tmp"; fail "the green executable suite leaked fixture files: $root"; }
-  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
   case "$command" in
     *fm-remote-job-worker.sh*)
       rm -rf "$tmp"
-      fail "the green executable suite leaked its remote worker: $command" ;;
+      fail "the green executable suite leaked its remote worker supervisor: $command" ;;
   esac
+  kill -0 -- "-$supervisor" 2>/dev/null \
+    && { rm -rf "$tmp"; fail "the green executable suite leaked members of its remote worker group"; }
   rm -rf "$tmp"
-  pass "a green executable suite returns 0 and leaves no remote worker or fixture files"
+  pass "a green executable suite returns 0 and leaves no remote worker tree or fixture files"
 }
 
 # CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2 empty-lock
