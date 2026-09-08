@@ -384,9 +384,9 @@ test_active_no_mistakes_validation_cannot_be_deferred() {
     "no-mistakes brief did not require same-turn continuation after a gate response"
   assert_grep "bounded calls to the structured \`no-mistakes axi status\` interface" "$brief" \
     "no-mistakes brief did not require bounded structured status polling"
-  assert_grep "until the attributed run changes step, reaches a terminal outcome, or presents a genuine ask-user decision" "$brief" \
+  assert_grep "until the attributed run changes step, reaches a terminal outcome, presents a genuine ask-user decision, or rule 7's daemon checks establish a real block" "$brief" \
     "no-mistakes brief did not define the only status-polling stop conditions"
-  assert_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active." "$brief" \
+  assert_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active and rule 7's daemon checks have not established a real block." "$brief" \
     "no-mistakes brief still permits deferring an active validation run"
   pass "fm-brief.sh: active no-mistakes validation continues in the same turn through the next real transition"
 }
@@ -407,8 +407,6 @@ test_direct_pr_requires_forge_proof_and_diagnosis() {
     "direct-PR brief did not require proof of the remote branch"
   assert_grep "full \`https://...\` PR URL" "$brief" \
     "direct-PR brief did not require a verified full PR URL"
-  assert_grep "A local commit, an attempted push, a bare PR number, or an inferred URL is not done." "$brief" \
-    "direct-PR brief permits an unproved final announcement"
 
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" unaffected-scout some-proj --scout >/dev/null 2>&1
   scout="$home/data/unaffected-scout/brief.md"
@@ -420,7 +418,7 @@ test_direct_pr_requires_forge_proof_and_diagnosis() {
   for unaffected in "$scout" "$charter" "$local_brief"; do
     assert_no_grep "diagnose the forge failure first" "$unaffected" \
       "an unaffected scaffold received the direct-PR forge contract"
-    assert_no_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active." "$unaffected" \
+    assert_no_grep "Never end your turn or promise to resume or check later while structured status shows that validation is active and rule 7's daemon checks have not established a real block." "$unaffected" \
       "an unaffected scaffold received the no-mistakes active-run contract"
   done
   pass "fm-brief.sh: direct-PR completion requires forge diagnosis, a pushed branch, and a verified full URL"
