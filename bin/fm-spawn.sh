@@ -39,9 +39,13 @@
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), refuses unless the endpoint's shell is sitting in the recorded
-#   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   or herdr). The control plane verifies the live occupied directory before
+#   stopping the previous agent; after stop, the idle shell may have returned
+#   to the backend's launch directory (Herdr's frozen pane.cwd), so this
+#   script cds into the recorded worktree rather than trusting that launch
+#   path, and refuses if the pane still cannot enter the copy holding the
+#   work. It clears the previous harness's per-task wiring before arming the
+#   new incarnation.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -175,6 +179,10 @@
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from both the spawning project and its repository's
 #   primary checkout, including when the spawning project is a linked worktree.
+#   A project path of `.` or `..` is resolved to that repository's primary
+#   working tree (fm-tangle-lib.sh) before isolation comparisons, so a linked
+#   firstmate worktree is not treated as the primary and a genuine treehouse
+#   copy is not refused.
 #   On the backends that discover that path by reading the task pane's own cwd,
 #   the same isolation test screens every read: a pane still showing the project
 #   or the repository primary while `treehouse get` prepares the slot is waited
@@ -423,6 +431,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -1963,9 +1973,20 @@ resolved_existing_dir() {
 }
 
 resolve_project_dir_arg() {
-  local path=$1
+  local path=$1 abs primary
   case "$path" in
-    projects/*) printf '%s/%s\n' "$PROJECTS" "${path#projects/}" ;;
+    projects/*) printf '%s/%s\n' "$PROJECTS" "${path#projects/}"; return 0 ;;
+    .|..)
+      abs=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || {
+        printf '%s\n' "$path"
+        return 0
+      }
+      if primary=$(fm_git_primary_workdir "$abs"); then
+        printf '%s\n' "$primary"
+        return 0
+      fi
+      printf '%s\n' "$abs"
+      ;;
     *) printf '%s\n' "$path" ;;
   esac
 }
@@ -2142,7 +2163,7 @@ if [ "$KIND" = secondmate ]; then
     BRIEF="$DATA/$ID/brief.md"
   fi
 else
-  PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
+  PROJ_ABS="$(CDPATH='' cd -- "$(resolve_project_dir_arg "$PROJ")" && pwd -P)"
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
@@ -2993,17 +3014,21 @@ rovo_endpoint_cleanup() {
 }
 
 if [ "$RELAUNCH" -eq 1 ]; then
-  # No worktree is acquired: the recorded one is reused as-is. What must be
-  # proven instead is that the adopted endpoint's shell is actually sitting in
-  # that worktree, so the replacement agent starts where the work is rather
-  # than wherever the pane happened to drift.
+  # No worktree is acquired: the recorded one is reused as-is. After the
+  # previous agent stops, the idle shell may sit in the backend's launch
+  # directory (Herdr pane.cwd is frozen there). Enter the recorded copy
+  # rather than trusting that launch path.
   relaunch_wt_real=$(real_path_or_raw "$WT")
-  relaunch_seen=
-  for _ in $(seq 1 10); do
-    relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
-    [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
-    sleep 0.5
-  done
+  relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
+  if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
+    spawn_send_text_line "$WT_TARGET" "cd $(shell_quote "$relaunch_wt_real")"
+    relaunch_seen=
+    for _ in $(seq 1 10); do
+      relaunch_seen=$(spawn_current_path "$WT_TARGET" || true)
+      [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ] || break
+      sleep 0.5
+    done
+  fi
   if [ -z "$relaunch_seen" ] || [ "$(real_path_or_raw "$relaunch_seen")" != "$relaunch_wt_real" ]; then
     echo "error: task $ID's endpoint is in '${relaunch_seen:-unknown}', not its recorded worktree '$WT'; refusing to relaunch an agent outside the copy holding its work" >&2
     exit 1

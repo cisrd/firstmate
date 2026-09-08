@@ -46,12 +46,15 @@
 #              inherits the local copy but none of the conversation; a
 #              secondmate reconciles its own home's records at startup, so its
 #              standing charter is never rewritten.
-#              Records a durable checkpoint and that note, exits the old agent,
-#              then delegates the launch to its single owner,
-#              bin/fm-spawn.sh --relaunch. A failure before publication keeps
-#              the prior durable record in place and reports the concrete
-#              state; it never leaves a half-transitioned task claiming to be
-#              running.
+#              Records a durable checkpoint and that note, verifies the live
+#              occupied directory is the recorded worktree (Herdr's frozen
+#              launch cwd is not that proof), exits the old agent, then
+#              delegates the launch to its single owner,
+#              bin/fm-spawn.sh --relaunch. An unverifiable or mismatched live
+#              cwd refuses before the agent is stopped. A failure before
+#              publication keeps the prior durable record in place and reports
+#              the concrete state; it never leaves a half-transitioned task
+#              claiming to be running.
 #
 # Teardown and discard are NOT verbs here and never will be. `exit` stops an
 # agent and preserves everything else; removing a worktree, killing an
@@ -684,6 +687,37 @@ resolve_relaunch_profile() {
   fi
 }
 
+# require_relaunch_occupied_worktree: prove, before the running agent is
+# stopped, that the live shell occupies the recorded worktree. Herdr's
+# pane.cwd is the launch directory and does not update; the backend current-
+# path read is the foreground process. An empty or unreadable cwd preserves
+# the agent. Path identity uses the physical directory.
+require_relaunch_occupied_worktree() {
+  local seen seen_real wt_real seen_ino wt_ino
+  wt_real=$(CDPATH='' cd -- "$WT" 2>/dev/null && pwd -P) \
+    || die "task $ID's recorded worktree $WT cannot be resolved"
+  seen=$(fm_backend_current_path "$BACKEND" "$T" 2>/dev/null) || seen=
+  seen=$(printf '%s' "$seen" | tr -d '\r')
+  if [ -z "$seen" ]; then
+    die "task $ID's live working directory cannot be verified; refusing to stop the agent without proof it occupies $WT"
+  fi
+  seen_real=$(CDPATH='' cd -- "$seen" 2>/dev/null && pwd -P) || seen_real=
+  if [ -n "$seen_real" ] && [ "$seen_real" = "$wt_real" ]; then
+    return 0
+  fi
+  if [ "$(uname -s)" = Darwin ]; then
+    seen_ino=$(stat -f '%d:%i' "$seen" 2>/dev/null || true)
+    wt_ino=$(stat -f '%d:%i' "$wt_real" 2>/dev/null || true)
+  else
+    seen_ino=$(stat -c '%d:%i' "$seen" 2>/dev/null || true)
+    wt_ino=$(stat -c '%d:%i' "$wt_real" 2>/dev/null || true)
+  fi
+  if [ -n "$seen_ino" ] && [ "$seen_ino" = "$wt_ino" ]; then
+    return 0
+  fi
+  die "task $ID's live shell is in ${seen_real:-$seen}, not its recorded worktree $WT; refusing to stop the agent"
+}
+
 # safe_checkpoint: prove, before anything is stopped, that the work a relaunch
 # must preserve is actually there and recoverable afterwards. Fills
 # CHECKPOINT_LINES with the journal lines describing what it proved, and
@@ -814,6 +848,7 @@ do_relaunch() {
     note_line="note=none"
   fi
   safe_checkpoint
+  require_relaunch_occupied_worktree
   cp -p "$META" "$META_PRIOR" || die "could not preserve task $ID's durable record before relaunching"
   RELAUNCH_ACTIVE=1
   journal_write checkpoint "${CHECKPOINT_LINES[@]}" "$note_line"

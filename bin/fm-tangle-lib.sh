@@ -35,6 +35,23 @@ fm_default_branch() {
   return 1
 }
 
+# The primary working tree of the repository that <dir> belongs to.
+# For a linked worktree this is the directory whose git dir is the common dir,
+# not <dir> itself. Equality of pwd and git-toplevel cannot find that primary:
+# both names are the current worktree root in the primary and in a linked copy.
+# Echoes an absolute physical path, or returns 1 if it cannot be resolved.
+fm_git_primary_workdir() {
+  local abs common parent parent_git
+  abs=$(CDPATH='' cd -- "$1" 2>/dev/null && pwd -P) || return 1
+  common=$(git -C "$abs" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
+  common=$(CDPATH='' cd -- "$common" 2>/dev/null && pwd -P) || return 1
+  parent=$(dirname "$common")
+  parent_git=$(git -C "$parent" rev-parse --path-format=absolute --absolute-git-dir 2>/dev/null) || return 1
+  parent_git=$(CDPATH='' cd -- "$parent_git" 2>/dev/null && pwd -P) || return 1
+  [ "$parent_git" = "$common" ] || return 1
+  printf '%s\n' "$parent"
+}
+
 # If the git checkout at <root> is tangled - on a NAMED branch that is not its
 # default branch - echo the offending branch name and return 0. For every healthy
 # state (not a git work tree, detached HEAD, or already on the default branch)

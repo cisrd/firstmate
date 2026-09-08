@@ -74,14 +74,20 @@
 # name a slot a DIFFERENT live task now holds. Cleanup kills every process under
 # that path and hard-resets it before returning it, so releasing a slot that is
 # not genuinely this task's destroys another worker's live work. Before the first
-# cleanup step, teardown verifies record exclusivity: no OTHER task record in
-# this home or any locally registered Firstmate home may name the same live path
-# in its worktree= or home=. One live path with two task records is the reuse
-# collision itself, whichever record is stale. The recorded endpoint's exact
-# task identity and the record's spawn incarnation are validated separately
-# before cleanup. Its current working directory is only incidental process
-# state: the same worker remains the owner after changing directory, so cwd can
-# never veto teardown of that exact recorded endpoint.
+# cleanup step, teardown verifies copy exclusivity against every other live
+# claim: no OTHER task record in this home or any locally registered Firstmate
+# home may name the same copy in its worktree= or home=. Identity is the
+# complete copy, not a single path spelling: physical directory, device:inode,
+# and git worktree git-dir. A git-dir path and a working-tree path for the same
+# linked worktree are one claim. The check runs for any ship or scout worktree
+# being removed, not only a recognized pool slot, so a shared ordinary
+# worktree is refused before any process is signalled. One live copy with two
+# task records is the reuse collision itself, whichever record is stale. The
+# recorded endpoint's exact task identity and the record's spawn incarnation
+# are validated separately before cleanup. Its current working directory is
+# only incidental process state: the same worker remains the owner after
+# changing directory, so cwd can never veto teardown of that exact recorded
+# endpoint.
 # The scan and destructive return hold a project-identity lock in the local root
 # Firstmate home's state directory, as resolved by bin/fm-wake-lib.sh's
 # fm_firstmate_root_home; a home seeded from another machine is its own local
@@ -202,9 +208,14 @@
 #     hours with no live task meta to attribute them to once teardown had
 #     already removed it). reap_task_worktree_processes finds every process
 #     whose CURRENT WORKING DIRECTORY is this task's own worktree or tasktmp
-#     root via `lsof -a -d cwd` (cheap: bounded by process count, not by
-#     walking the worktree's file tree) and sends TERM, then KILL after a short
-#     grace period to any survivor whose process identity still matches. Both
+#     root. The scan is bounded by process count, never by walking the
+#     worktree's file tree, and never selects by process name. A bounded
+#     Linux-compatible `/proc/<pid>/cwd` read (or FM_PROC_ROOT_OVERRIDE in
+#     tests) is preferred because it is a kernel fact and needs no optional
+#     tool; `lsof -a -d cwd` is the portable fallback on hosts such as macOS.
+#     This identifies the processes on the first cleanup so a leaked descendant
+#     does not force a failed return before it can be reaped. A host with
+#     neither cwd source uses the backend process-group fallback. Both
 #     roots are unique per task and never
 #     shared, so this can never reach another task's or the primary's
 #     processes. Idempotent: nothing left to find is a silent no-op.
@@ -1479,6 +1490,44 @@ canonical_existing_dir() {
   ( cd "$target" && pwd -P )
 }
 
+dir_inode_id() {  # <dir>
+  if [ "$(uname -s)" = Darwin ]; then
+    stat -f '%d:%i' "$1" 2>/dev/null
+  else
+    stat -c '%d:%i' "$1" 2>/dev/null
+  fi
+}
+
+# Absolute git dir of a working tree or of a git-dir path, physically resolved.
+dir_git_id() {  # <dir>
+  local g
+  if g=$(git -C "$1" rev-parse --path-format=absolute --absolute-git-dir 2>/dev/null); then
+    CDPATH='' cd -- "$g" 2>/dev/null && pwd -P
+    return 0
+  fi
+  if g=$(git --git-dir="$1" rev-parse --path-format=absolute --absolute-git-dir 2>/dev/null); then
+    CDPATH='' cd -- "$g" 2>/dev/null && pwd -P
+    return 0
+  fi
+  return 1
+}
+
+# True when <dir-a> and <dir-b> name the same live copy: physical path, inode,
+# or git worktree identity. A working tree and its git-dir path match.
+worktree_copies_match() {  # <dir-a> <dir-b>
+  local a=$1 b=$2 a_path b_path a_ino b_ino a_git b_git
+  a_path=$(canonical_existing_dir "$a") || return 1
+  b_path=$(canonical_existing_dir "$b") || return 1
+  [ "$a_path" = "$b_path" ] && return 0
+  a_ino=$(dir_inode_id "$a_path") || a_ino=
+  b_ino=$(dir_inode_id "$b_path") || b_ino=
+  [ -n "$a_ino" ] && [ "$a_ino" = "$b_ino" ] && return 0
+  a_git=$(dir_git_id "$a_path") || a_git=
+  b_git=$(dir_git_id "$b_path") || b_git=
+  [ -n "$a_git" ] && [ "$a_git" = "$b_git" ] && return 0
+  return 1
+}
+
 retry_wait_secs_is_valid() {
   [[ "$1" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]
 }
@@ -1816,15 +1865,74 @@ conclude_task_no_mistakes_run() {  # <worktree>
   return 1
 }
 
-# Fix 2 (see script header): pids of every process whose CURRENT WORKING
-# DIRECTORY is exactly $1 or under it, from one bounded system-wide `lsof -a
-# -d cwd` scan (never the recursive +D file-tree walk, which lsof itself
-# documents as slow). Never $$ (this script's own pid). Empty output when
-# nothing matches; failure means the scan could not establish a safe result.
-pids_with_cwd_under() {  # <dir>
-  local dir=$1 out pid path line
+# True when a Linux-compatible /proc cwd scan can identify processes without
+# lsof. FM_PROC_ROOT_OVERRIDE is the test seam; production uses /proc.
+proc_cwd_scan_available() {
+  local proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc} here probe seen seen_real
+  [ -d "$proc_root" ] || return 1
+  here=$(pwd -P 2>/dev/null) || return 1
+  probe="$proc_root/$$/cwd"
+  [ -L "$probe" ] || return 1
+  seen=$(readlink "$probe" 2>/dev/null) || return 1
+  seen_real=$(CDPATH='' cd -- "$seen" 2>/dev/null && pwd -P) || return 1
+  [ "$seen_real" = "$here" ]
+}
+
+# The shells that invoked this teardown are the cleanup control plane, not
+# leftovers. Resolve only their exact pid chain; descendants remain eligible.
+teardown_ancestor_pids() {
+  local current=$$ parent hops=0
+  while [ "$hops" -lt 64 ]; do
+    parent=$(ps -o ppid= -p "$current" 2>/dev/null) || return 0
+    parent=$(printf '%s' "$parent" | tr -d '[:space:]')
+    case "$parent" in ''|*[!0-9]*|0|1) return 0 ;; esac
+    printf '%s\n' "$parent"
+    current=$parent
+    hops=$((hops + 1))
+  done
+}
+
+pid_list_has() {  # <list> <pid>
+  printf '%s\n' "$1" | grep -Fxq "$2"
+}
+
+# Bounded /proc/<pid>/cwd scan: process count, never a file-tree walk, never
+# a process-name match, never another home's processes. Only pids whose cwd
+# is exactly <dir> or under it. Never this teardown or its invoking shells.
+pids_with_cwd_under_proc() {  # <dir> <ancestor-pids>
+  local dir=$1 ancestors=$2 proc_root pid pid_dir cwd cwd_real
+  proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   dir=$(cd "$dir" && pwd -P) || return 1
+  for pid_dir in "$proc_root"/[0-9]*; do
+    [ -e "$pid_dir" ] || continue
+    pid=${pid_dir##*/}
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    [ "$pid" != "$$" ] || continue
+    pid_list_has "$ancestors" "$pid" && continue
+    cwd=$(readlink "$pid_dir/cwd" 2>/dev/null) || continue
+    cwd_real=$(CDPATH='' cd -- "$cwd" 2>/dev/null && pwd -P) || cwd_real=$cwd
+    case "$cwd_real" in
+      "$dir"|"$dir"/*) printf '%s\n' "$pid" ;;
+    esac
+  done
+}
+
+# Fix 2 (see script header): pids of every process whose CURRENT WORKING
+# DIRECTORY is exactly $1 or under it, from one bounded scan (never a
+# recursive file-tree walk). Prefer Linux-compatible /proc/<pid>/cwd; use lsof
+# as the portable fallback. Never $$. Empty output when nothing matches; failure means the scan could
+# not establish a safe result.
+pids_with_cwd_under() {  # <dir>
+  local dir=$1 out pid path line ancestors
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  dir=$(cd "$dir" && pwd -P) || return 1
+  ancestors=$(teardown_ancestor_pids)
+  if proc_cwd_scan_available; then
+    pids_with_cwd_under_proc "$dir" "$ancestors"
+    return 0
+  fi
+  command -v lsof >/dev/null 2>&1 || return 1
   out=$(lsof -a -d cwd -Fpn 2>/dev/null) || return 1
   [ -n "$out" ] || return 0
   pid=
@@ -1840,7 +1948,10 @@ pids_with_cwd_under() {  # <dir>
         path=${line#n}
         case "$path" in
           "$dir"|"$dir"/*)
-            [ -n "$pid" ] && [ "$pid" != "$$" ] && printf '%s\n' "$pid"
+            if [ -n "$pid" ] && [ "$pid" != "$$" ] \
+               && ! pid_list_has "$ancestors" "$pid"; then
+              printf '%s\n' "$pid"
+            fi
             ;;
         esac
         ;;
@@ -1946,13 +2057,25 @@ reap_task_backend_process_group() {  # <label>
 # - both unique per task and never shared - before either is removed. TERM
 # first, then KILL after a short grace period for anything still alive; a
 # process that exits on its own between the two passes is simply absent from
-# the recheck. A missing lsof uses the backend process-group fallback; an lsof
-# scan error refuses before destructive teardown.
+# the recheck. The scan runs from outside the roots and excludes the exact
+# invoker ancestry, so neither cleanup helpers nor the shell that invoked
+# teardown are mistaken for leftovers. A missing lsof uses /proc cwd when that
+# scan is available, else the backend process-group fallback; an lsof scan
+# error refuses before destructive teardown.
 reap_task_worktree_processes() {  # <label> <dir>...
+  local previous rc=0
+  previous=$(pwd -P 2>/dev/null) || previous=/
+  CDPATH='' cd -- / 2>/dev/null || true
+  _reap_task_worktree_processes "$@" || rc=$?
+  CDPATH='' cd -- "$previous" 2>/dev/null || true
+  return "$rc"
+}
+
+_reap_task_worktree_processes() {  # <label> <dir>...
   local label=$1 pids pid identity current_pids i pass=1 max_passes=3
   local -a tracked_pids tracked_identities remaining_pids remaining_identities
   shift
-  if ! command -v lsof >/dev/null 2>&1; then
+  if ! command -v lsof >/dev/null 2>&1 && ! proc_cwd_scan_available; then
     reap_task_backend_process_group "$label"
     return 0
   fi
@@ -2130,7 +2253,7 @@ collect_local_firstmate_states() {
 
 require_exclusive_worktree_slot_record() {
   local record_meta=$1 record_id=$2 record_state=$3 worktree=$4
-  local slot state_dir other other_id field other_path other_slot
+  local slot state_dir other other_id field other_path
   slot=$(canonical_existing_dir "$worktree") || return 0
   collect_local_firstmate_states "$record_state" || return 1
   for state_dir in "${TREEHOUSE_OWNER_STATES[@]}"; do
@@ -2141,10 +2264,9 @@ require_exclusive_worktree_slot_record() {
       for field in worktree home; do
         other_path=$(fm_meta_get "$other" "$field")
         [ -n "$other_path" ] || continue
-        other_slot=$(canonical_existing_dir "$other_path") || continue
-        [ "$other_slot" = "$slot" ] || continue
+        worktree_copies_match "$slot" "$other_path" || continue
         echo "REFUSED: task $record_id's recorded worktree $slot is also task $other_id's recorded $field." >&2
-        echo "Returning that pool slot would kill $other_id's processes and reset its copy, so nothing was changed - not even with --force." >&2
+        echo "Returning that copy would kill $other_id's processes and reset its work, so nothing was changed - not even with --force." >&2
         echo "Reconcile whichever record is wrong (bin/fm-crew-state.sh $record_id; bin/fm-crew-state.sh $other_id), then re-run teardown." >&2
         return 1
       done
@@ -2153,9 +2275,9 @@ require_exclusive_worktree_slot_record() {
 }
 
 require_exclusive_task_worktree_slot() {
-  local slot
-  slot=$(teardown_live_slot_path) || return 0
-  require_exclusive_worktree_slot_record "$META" "$ID" "$STATE" "$slot"
+  [ "$KIND" != secondmate ] || return 0
+  [ -n "$WT" ] && [ -d "$WT" ] || return 0
+  require_exclusive_worktree_slot_record "$META" "$ID" "$STATE" "$WT"
 }
 
 firstmate_home_has_treehouse_slot() {

@@ -48,6 +48,11 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# Project paths are resolved before that assertion is written: `.` becomes the
+# repository's primary working tree (fm-tangle-lib.sh), so a linked firstmate
+# worktree is not described as the primary and a treehouse copy is not told to
+# stop. The assertion uses a Git discriminant (git-dir vs git-common-dir);
+# equality of pwd and git-toplevel does not prove isolation.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -90,6 +95,8 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -310,6 +317,18 @@ exit 0
 fi
 
 REPO=${POS[1]}
+REPO_PRIMARY=
+REPO_LABEL=$REPO
+if [ -d "$REPO" ] || [ "$REPO" = . ] || [ "$REPO" = .. ]; then
+  if REPO_ABS=$(CDPATH='' cd -- "$REPO" 2>/dev/null && pwd -P); then
+    REPO_PRIMARY=$(fm_git_primary_workdir "$REPO_ABS" 2>/dev/null) || REPO_PRIMARY=$REPO_ABS
+    REPO_LABEL=$(basename "$REPO_PRIMARY")
+  fi
+fi
+PRIMARY_CLAUSE=
+if [ -n "$REPO_PRIMARY" ]; then
+  PRIMARY_CLAUSE=", which is \`$REPO_PRIMARY\`"
+fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -446,11 +465,12 @@ $TASK_SECTION
 $HERDR_SECTION
 
 # Setup
-You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
+You are in a disposable git worktree of $REPO_LABEL, at a detached HEAD on a clean default branch.
 
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+**Verify isolation before anything else.** Run \`pwd -P\`. It must be this disposable task worktree (a treehouse pool path or an Orca-managed worktree), not the project's primary checkout${PRIMARY_CLAUSE}.
+Equality of \`pwd\` and \`git rev-parse --show-toplevel\` does not prove isolation: both name the current worktree root in the primary checkout and in a linked worktree.
+A linked worktree has a real Git discriminant: \`git rev-parse --absolute-git-dir\` differs from \`git rev-parse --path-format=absolute --git-common-dir\`. Those paths are equal only in the primary checkout.
+If \`pwd -P\` is the primary checkout, or those two Git directories are equal, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

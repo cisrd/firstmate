@@ -33,6 +33,19 @@ make_repo() {
   printf '%s\n' "$dir"
 }
 
+test_git_primary_workdir_from_linked_worktree() {
+  local repo wt primary repo_real
+  repo=$(make_repo "$TMP_ROOT/primary-lib-repo")
+  git -C "$repo" worktree add -q --detach "$TMP_ROOT/primary-lib-wt" >/dev/null 2>&1
+  wt="$TMP_ROOT/primary-lib-wt"
+  repo_real=$(cd "$repo" && pwd -P)
+  primary=$(fm_git_primary_workdir "$wt")
+  [ "$primary" = "$repo_real" ] || fail "linked worktree should resolve to primary '$repo_real', got '$primary'"
+  primary=$(fm_git_primary_workdir "$repo")
+  [ "$primary" = "$repo_real" ] || fail "primary checkout should resolve to itself, got '$primary'"
+  pass "fm_git_primary_workdir: a linked worktree resolves to the primary checkout"
+}
+
 # --- shared lib: branch classification --------------------------------------
 
 # fm_primary_tangle_branch is the whole scoping decision: a NAMED non-default
@@ -133,12 +146,12 @@ test_brief_assertion_precedes_branch() {
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
     "brief is missing the isolation blocked-status contract"
-  assert_grep "The path check is authoritative" "$brief" \
-    "brief must make the path check authoritative"
-  assert_no_grep "A reliable test that you are in a linked worktree" "$brief" \
-    "brief must not present git-dir/common-dir as decisive"
-  assert_no_grep "they are identical in the primary checkout" "$brief" \
-    "brief must not claim the primary checkout has identical git dirs"
+  assert_grep "does not prove isolation" "$brief" \
+    "brief must say pwd vs git-toplevel equality does not prove isolation"
+  assert_grep "absolute-git-dir" "$brief" \
+    "brief must name the git-dir vs git-common-dir discriminant"
+  assert_no_grep "they do not prove you are outside the primary checkout" "$brief" \
+    "brief must not dismiss the Git discriminant"
   iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
   br=$(grep -n 'git checkout -b fm/' "$brief" | head -1 | cut -d: -f1)
   if [ -z "$iso" ] || [ -z "$br" ]; then
@@ -146,6 +159,72 @@ test_brief_assertion_precedes_branch() {
   fi
   [ "$iso" -lt "$br" ] || fail "isolation assertion (line $iso) must precede the branch step (line $br)"
   pass "fm-brief: ship brief asserts worktree isolation before the branch step"
+}
+
+test_brief_dot_project_resolves_primary_and_keeps_linked_worktree() {
+  local home brief primary primary_real wt
+  home="$TMP_ROOT/brief-dot-home"
+  mkdir -p "$home/data"
+  primary=$(make_repo "$TMP_ROOT/brief-dot-primary")
+  git -C "$primary" worktree add -q --detach "$TMP_ROOT/brief-dot-wt" >/dev/null 2>&1
+  wt="$TMP_ROOT/brief-dot-wt"
+  (
+    CDPATH='' cd -- "$wt" || exit 1
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" tangle-dot-hh8 . --mode no-mistakes >/dev/null
+  )
+  brief="$home/data/tangle-dot-hh8/brief.md"
+  assert_present "$brief" "dot-project brief was not scaffolded"
+  primary_real=$(cd "$primary" && pwd -P)
+  assert_grep "$primary_real" "$brief" \
+    "dot-project brief must bake the resolved primary checkout path"
+  assert_no_grep "worktree of ." "$brief" \
+    "dot-project brief must not leave '.' as the repo label"
+  assert_grep "does not prove isolation" "$brief" \
+    "dot-project brief must not treat pwd vs toplevel as isolation"
+  pass "fm-brief: a project of '.' resolves the primary checkout and does not false-flag a linked worktree"
+}
+
+test_spawn_dot_project_accepts_isolated_worktree() {
+  local home proj fakebin out status other
+  home="$TMP_ROOT/spawn-dot-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/spawn-dot-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-dot-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-linked" >/dev/null 2>&1
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-other" >/dev/null 2>&1
+  other="$TMP_ROOT/spawn-dot-other"
+  out=$(
+    CDPATH='' cd -- "$TMP_ROOT/spawn-dot-linked" || exit 1
+    fm_test_spawn_brief "$home" spawn-dot-ii9 brief
+    fm_test_run_spawn "$home" "$other" "$fakebin" \
+      spawn-dot-ii9 . codex --mode no-mistakes --yolo off
+  ); status=$?
+  expect_code 0 "$status" "spawn with project '.' into a linked worktree should succeed"$'\n'"$out"
+  assert_contains "$out" "spawned spawn-dot-ii9" "dot-project spawn did not report success"
+  assert_grep "project=$proj" "$home/state/spawn-dot-ii9.meta" \
+    "dot-project spawn did not bind the task to the repository primary checkout"
+  assert_not_contains "$out" "isolated worktree" "dot-project spawn wrongly refused an isolated treehouse copy"
+  pass "fm-spawn: project '.' from a linked worktree still accepts a genuine isolated copy"
+}
+
+test_spawn_dot_project_still_refuses_the_primary() {
+  local home proj fakebin out status
+  home="$TMP_ROOT/spawn-dot-primary-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/spawn-dot-primary-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-dot-primary-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-primary-linked" >/dev/null 2>&1
+  out=$(
+    CDPATH='' cd -- "$TMP_ROOT/spawn-dot-primary-linked" || exit 1
+    fm_test_spawn_brief "$home" spawn-dot-jj0 brief
+    fm_test_run_spawn "$home" "$proj" "$fakebin" \
+      spawn-dot-jj0 . codex --mode no-mistakes --yolo off
+  ); status=$?
+  expect_code 1 "$status" "spawn with project '.' into the primary checkout should abort"
+  assert_contains "$out" "did not enter an isolated worktree" "dot-project primary spawn lacked the isolation error"
+  pass "fm-spawn: project '.' still refuses the repository primary checkout"
 }
 
 # --- GUARD 1b: fm-spawn isolation abort -------------------------------------
@@ -286,9 +365,13 @@ test_spawn_tmux_window_construction() {
   pass "fm-spawn: appends windows by session-colon, pins the name, and targets the window id"
 }
 
+test_git_primary_workdir_from_linked_worktree
 test_lib_classification
 test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
+test_brief_dot_project_resolves_primary_and_keeps_linked_worktree
 test_spawn_isolation_abort
+test_spawn_dot_project_accepts_isolated_worktree
+test_spawn_dot_project_still_refuses_the_primary
 test_spawn_tmux_window_construction
