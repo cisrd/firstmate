@@ -453,15 +453,11 @@ nm_reclassify_failed_run_as_held_green() {
   return 0
 }
 
-# 0 when an explicit probe proves the shared daemon down: `no-mistakes daemon
-# status` is the canonical down-probe (the same one fm-brief.sh hands crews
-# before a blocked append) and exits non-zero when the daemon is not running.
-# Bounded like every other CLI call; a probe that fails for any reason -
-# refused socket, timeout, non-zero answer - means the daemon is not provably
-# up, which is the only fact the coarse fallback needs.
+# 0 when an explicit probe proves the shared daemon down - the negation of
+# fm_nm_daemon_is_alive in bin/fm-nm-run-lib.sh, which owns that one probe for
+# every caller that needs daemon liveness.
 nm_daemon_probe_down() {
-  fm_nm_run_checked "$WT" "$NM_TIMEOUT" daemon status >/dev/null || return 0
-  return 1
+  ! fm_nm_daemon_is_alive "$WT" "$NM_TIMEOUT"
 }
 
 nm_ci_step_status() {

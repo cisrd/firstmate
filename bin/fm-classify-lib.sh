@@ -61,6 +61,9 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$_FM_CLASSIFY_LIB_DIR/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-nm-run-lib.sh
+# shellcheck disable=SC1091
+. "$_FM_CLASSIFY_LIB_DIR/fm-nm-run-lib.sh"
 [ "$_fm_classify_nounset" = on ] || set +u
 unset _fm_classify_nounset
 
@@ -1808,15 +1811,28 @@ crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
 }
 
-# 0 iff crew <id> is working BECAUSE an attributed no-mistakes run-step is live -
-# the run-step half of crew_absorb_class's `working`, without the busy-pane half.
-# Callers that already hold a busy verdict need this narrower proof: a busy pane
-# cannot also be its own bound. Attribution is fm-crew-state.sh's (branch AND code
-# identity, or pipeline-owned custody), so a run record that no longer matches this
-# worktree, a terminal run, and a daemon an explicit probe proves down all report
-# something other than working/run-step and are NOT a live run.
-crew_run_step_is_live() {  # <id>
-  [ "$(crew_state_verdict "$1")" = "working run-step" ]
+# 0 only on POSITIVE proof that crew <id>'s no-mistakes validation is running
+# right now, from two facts that must BOTH hold:
+#   - fm-crew-state.sh attributes a working run-step to this crew (branch AND code
+#     identity, or pipeline-owned custody), which rules out a terminal run and a
+#     record that no longer belongs to this worktree;
+#   - fm_nm_daemon_is_alive proves the shared daemon is up.
+# The second is not redundant: a run record left at running/fixing is never
+# advanced after the daemon exits, so the record alone reports a live run for a
+# validation nothing is executing - the same stale-record hazard rule 7 of the
+# generated brief makes crews check before appending `blocked:`. Every failure is
+# a negative answer, so a missing worktree, an unreadable verdict, and a probe
+# that times out all read as NOT live.
+# The busy-pane half of crew_absorb_class's `working` is deliberately excluded: a
+# caller that already holds a busy verdict cannot let that pane vouch for itself.
+# Two bounded subprocesses per call, so callers must run it at most once per
+# STALE_ESCALATE_SECS - never per poll (see crew_absorb_class).
+crew_nm_run_is_provably_live() {  # <id> <state>
+  local id=$1 state=$2 wt
+  [ "$(crew_state_verdict "$id")" = "working run-step" ] || return 1
+  wt=$(grep '^worktree=' "$state/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
+  [ -n "$wt" ] && [ -d "$wt" ] || return 1
+  fm_nm_daemon_is_alive "$wt" "${FM_CREW_STATE_NM_TIMEOUT:-10}"
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.
