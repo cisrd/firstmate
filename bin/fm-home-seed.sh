@@ -468,7 +468,10 @@ EOF
 # rather than silently seeded onto the wrong base.
 checkout_declared_integration_branch() {  # <project> <clone>
   local project=$1 dst=$2 branch
-  branch=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" declared_integration_branch "$project")
+  branch=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" declared_integration_branch "$project") || {
+    echo "error: project $project declares an integration branch the registry format rejects" >&2
+    return 1
+  }
   [ -n "$branch" ] || return 0
   if ! git -C "$dst" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}" >/dev/null; then
     echo "error: project $project declares integration branch $branch but its origin publishes no such branch" >&2

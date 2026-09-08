@@ -325,10 +325,17 @@ sync_project() {
 
   # The registry's structured integration branch is authoritative when present;
   # a legacy entry falls back to the remote default branch (fm-integration-branch-lib.sh).
-  DEFAULT=$(integration_branch "$PROJ" "$label") || {
-    echo "$label: skipped: cannot determine default branch"
+  # A declaration the resolver rejects is the registry promising a base that
+  # cannot exist, so it is reported loudly on stdout (session-start discards this
+  # script's stderr) instead of degrading to the legacy no-default-branch skip.
+  if ! DEFAULT=$(integration_branch "$PROJ" "$label"); then
+    if declared_integration_branch "$label" >/dev/null 2>&1; then
+      echo "$label: skipped: cannot determine default branch"
+    else
+      echo "$label: STUCK: the registry declares an invalid integration branch - needs attention"
+    fi
     return 0
-  }
+  fi
   BASE="origin/$DEFAULT"
 
   if ! fetch_with_packed_refs_lock_guard; then
@@ -342,7 +349,14 @@ sync_project() {
 
   prune_gone_branches || true
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-    echo "$label: skipped: $BASE does not exist"
+    # A declared branch origin does not publish is a broken registry promise, not
+    # a benign absence: the clone would otherwise never be refreshed again and
+    # never be reported as needing attention.
+    if [ -n "$(declared_integration_branch "$label" 2>/dev/null)" ]; then
+      echo "$label: STUCK: declared integration branch $DEFAULT is not published by origin - needs attention"
+    else
+      echo "$label: skipped: $BASE does not exist"
+    fi
     return 0
   fi
 

@@ -321,6 +321,49 @@ test_legacy_registry_entry_uses_remote_default() {
   pass "project without an integration declaration safely retains remote-default sync"
 }
 
+# A declaration the registry format rejects promises a base that cannot exist.
+# Degrading it to "no declaration" would silently resync the clone against
+# origin/main, so it is reported loudly on stdout - session-start relays this
+# script's stdout and discards its stderr.
+test_invalid_declared_integration_branch_is_stuck() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_integration_pair "$home" bad-integration)
+  mkdir -p "$home/data"
+  printf -- '- bad-integration [no-mistakes integration-branch=..bad] - fixture (added 2026-09-01)\n' \
+    > "$home/data/projects.md"
+  advance_integration_origin "$home" bad-integration develop1
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" bad-integration)
+
+  assert_contains "$out" "bad-integration: STUCK:" "an invalid declaration was not reported as needing attention"
+  assert_contains "$out" "invalid integration branch" "the STUCK line did not name the invalid declaration"
+  assert_not_contains "$out" "origin/main" "an invalid declaration fell back to the remote default"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "an invalid declaration still moved the clone"
+  pass "an invalid integration-branch declaration is reported STUCK, never resolved to the remote default"
+}
+
+# A declared branch origin stopped publishing (renamed or deleted on the forge)
+# would otherwise be a benign one-line skip on every sync forever, leaving the
+# clone silently un-refreshed.
+test_unpublished_declared_integration_branch_is_stuck() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" gone-integration)
+  declare_integration_branch "$home" gone-integration
+  advance_origin "$home" gone-integration C1
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" gone-integration)
+
+  assert_contains "$out" "gone-integration: STUCK:" "an unpublished declared branch was not reported as needing attention"
+  assert_contains "$out" "develop" "the STUCK line did not name the declared branch"
+  assert_not_contains "$out" "skipped:" "an unpublished declared branch degraded to a benign skip"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "an unpublished declared branch still moved the clone"
+  pass "a declared integration branch origin does not publish is reported STUCK, not skipped"
+}
+
 test_declared_integration_branch_dirty_is_stuck_untouched() {
   local home clone out before
   home=$(new_home)
@@ -818,6 +861,8 @@ test_non_signature_fetch_failure_is_not_retried() {
 }
 
 test_declared_integration_branch_overrides_remote_default
+test_invalid_declared_integration_branch_is_stuck
+test_unpublished_declared_integration_branch_is_stuck
 test_legacy_registry_entry_uses_remote_default
 test_declared_integration_branch_dirty_is_stuck_untouched
 test_declared_integration_branch_divergence_is_stuck_untouched

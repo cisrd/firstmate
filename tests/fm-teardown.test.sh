@@ -783,6 +783,63 @@ test_local_only_merged_to_local_main_allows() {
   pass "local-only worktree with work merged into local main is torn down (no regression)"
 }
 
+# A local-only task is cut from the project's declared integration branch, so the
+# unmerged-work refusal must test against that branch. Testing against main would
+# refuse work that has already landed on develop, and bin/fm-merge-local.sh - the
+# landing the refusal points at - must fast-forward the same branch.
+test_local_only_merged_to_declared_integration_branch_allows() {
+  local case_dir rc wt_head out
+  case_dir=$(make_case merged-declared)
+  printf -- '- project [local-only integration-branch=develop] - fixture (added 2026-09-01)\n' \
+    > "$case_dir/data/projects.md"
+  git -C "$case_dir/project" branch -q develop main
+  git -C "$case_dir/project" checkout -q develop
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "merged work"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+
+  # Landing through the real gate action proves both consumers agree on develop.
+  out=$(FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" \
+    FM_DATA_OVERRIDE="$case_dir/data" "$ROOT/bin/fm-merge-local.sh" task-x1 2>&1) \
+    || fail "merged-declared: local landing refused the declared branch: $out"
+  [ "$(git -C "$case_dir/project" rev-parse develop)" = "$wt_head" ] \
+    || fail "merged-declared: local landing did not fast-forward develop"
+  [ "$(git -C "$case_dir/project" rev-parse main)" != "$wt_head" ] \
+    || fail "merged-declared: local landing moved main instead of the declared branch"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "merged-declared: teardown should accept work merged into the declared branch"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "merged-declared: teardown printed a REFUSED line"
+  pass "local-only work landed on the declared integration branch lands there and clears teardown"
+}
+
+# The same fixture without a landing: the refusal must name the declared branch,
+# so an operator is not told to merge into a branch nothing is based on.
+test_local_only_unmerged_refusal_names_the_declared_branch() {
+  local case_dir rc err
+  case_dir=$(make_case unmerged-declared)
+  printf -- '- project [local-only integration-branch=develop] - fixture (added 2026-09-01)\n' \
+    > "$case_dir/data/projects.md"
+  git -C "$case_dir/project" branch -q develop main
+  write_meta "$case_dir" local-only ship
+  wt_commit "$case_dir" "unlanded work"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  err=$(cat "$case_dir/stderr")
+
+  [ "$rc" -ne 0 ] || fail "unmerged-declared: teardown discarded unlanded local-only work"
+  assert_contains "$err" "not yet merged into develop" \
+    "unmerged-declared: the refusal did not name the declared integration branch"
+  pass "an unlanded local-only worktree is refused against its declared integration branch"
+}
+
 test_no_mistakes_origin_remote_allows() {
   local case_dir rc
   case_dir=$(make_case nm-origin)
@@ -3653,6 +3710,8 @@ test_teardown_closes_the_backlog_item_itself
 test_teardown_manual_backend_leaves_the_backlog_to_the_operator
 test_local_only_truly_unpushed_refuses
 test_local_only_merged_to_local_main_allows
+test_local_only_merged_to_declared_integration_branch_allows
+test_local_only_unmerged_refusal_names_the_declared_branch
 test_no_mistakes_origin_remote_allows
 test_no_mistakes_truly_unpushed_refuses
 test_local_only_force_overrides_unpushed

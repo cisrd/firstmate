@@ -20,7 +20,9 @@
 #
 # `integration-branch=<branch>` is a structured annotation. It is intentionally
 # not read from the free-form description. Omitted integration branches are
-# reported as empty by --integration-branch so callers retain their old fallback.
+# reported as empty by --integration-branch so callers retain their old fallback;
+# a declared branch git itself would reject exits non-zero with a diagnostic, so
+# no caller can mistake a broken declaration for an absent one.
 #
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
@@ -42,7 +44,8 @@
 # to stderr, so a typo never silently drops the gate.
 # --raw prints the registered mode annotation unmapped.
 # --integration-branch prints the structured integration branch, or nothing when
-# the registry uses the legacy format without one.
+# the registry uses the legacy format without one, and exits non-zero when the
+# declared branch is not a valid branch name.
 # Usage: fm-project-mode.sh [--raw|--integration-branch] <project-name>
 set -eu
 
@@ -106,8 +109,8 @@ yolo=${yolo%% *}
 integration_branch=${parsed##* }
 if [ "$QUERY" = integration-branch ]; then
   if [ -n "$integration_branch" ] && ! git check-ref-format --branch "$integration_branch" >/dev/null 2>&1; then
-    echo "warn: invalid integration branch \"$integration_branch\" for $NAME; using the remote default branch" >&2
-    exit 0
+    echo "error: invalid integration branch \"$integration_branch\" for $NAME; fix the registry entry" >&2
+    exit 1
   fi
   [ "$integration_branch" = "-" ] || printf '%s\n' "$integration_branch"
   exit 0

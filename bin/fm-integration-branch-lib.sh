@@ -7,12 +7,17 @@
 # the only reader of the registry here. The declaration is authoritative for
 # every path that has to pick a base branch - bin/fm-fleet-sync.sh's refresh
 # target, the branch bin/fm-home-seed.sh and bin/fm-remote-home-provision.sh
-# check out in a new clone, and the base bin/fm-spawn.sh resets a pooled
-# worktree to - so a project cannot be synced on one branch while its tasks are
-# cut from another.
+# check out in a new clone, the base bin/fm-spawn.sh resets a pooled worktree to,
+# the base bin/fm-review-diff.sh diffs a task against, and the branch
+# bin/fm-teardown.sh tests landed content and unmerged local-only work against
+# and bin/fm-merge-local.sh fast-forwards - so a project cannot be synced,
+# worked, reviewed and landed against four different branches.
 #
 # A project that declares nothing keeps the legacy resolution, origin's default
-# branch, so unannotated homes behave exactly as before.
+# branch, so unannotated homes behave exactly as before. A declaration that is
+# not a valid branch name is never silently downgraded to that fallback: the
+# query fails, its diagnostic reaches the caller's stderr, and every consumer
+# refuses rather than working from a base the registry did not ask for.
 # Callers pass the registry home through the same FM_HOME/FM_DATA_OVERRIDE
 # variables bin/fm-project-mode.sh already reads.
 
@@ -38,17 +43,18 @@ default_branch() {  # <dir>
 }
 
 # The branch <project-name> declares in the registry, or nothing when the entry
-# uses the legacy format without a declaration.
+# uses the legacy format without a declaration. Returns non-zero, and lets the
+# diagnostic through to stderr, when the entry declares an invalid branch.
 declared_integration_branch() {  # <project-name>
-  "$FM_INTEGRATION_BRANCH_LIB_DIR/fm-project-mode.sh" --integration-branch "$1" 2>/dev/null || true
+  "$FM_INTEGRATION_BRANCH_LIB_DIR/fm-project-mode.sh" --integration-branch "$1"
 }
 
-# The branch new work and refreshes must follow in <dir>: the declaration when
-# the project makes one, otherwise origin's default branch. Returns 1 only when
-# neither resolves.
+# The branch new work, refreshes, reviews and landings must follow in <dir>: the
+# declaration when the project makes one, otherwise origin's default branch.
+# Returns 1 when the declaration is invalid, or when neither resolves.
 integration_branch() {  # <dir> <project-name>
   local declared
-  declared=$(declared_integration_branch "$2")
+  declared=$(declared_integration_branch "$2") || return 1
   if [ -n "$declared" ]; then
     printf '%s\n' "$declared"
     return 0

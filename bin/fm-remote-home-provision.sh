@@ -240,7 +240,8 @@ EOF
     # bin/fm-home-seed.sh does it: fleet sync refreshes and spawn bases work on
     # that branch, so a clone left on the remote default is permanently STUCK.
     # Already-provisioned clones may hold work and are never switched.
-    INTEGRATION_BRANCH=$(FM_DATA_OVERRIDE="$TMP" declared_integration_branch "$NAME")
+    INTEGRATION_BRANCH=$(FM_DATA_OVERRIDE="$TMP" declared_integration_branch "$NAME") \
+      || die "project $NAME declares an integration branch the registry format rejects"
     if [ -n "$INTEGRATION_BRANCH" ]; then
       git -C "$DEST" rev-parse --verify --quiet "refs/remotes/origin/$INTEGRATION_BRANCH^{commit}" >/dev/null \
         || die "project $NAME declares integration branch $INTEGRATION_BRANCH but its origin publishes no such branch"

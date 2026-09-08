@@ -433,10 +433,10 @@ EOF
 
 # --integration-branch reads only the structured bracket annotation: the same
 # free-form text in the description is registry prose, never a declaration, and a
-# branch name git itself would reject falls back to the caller's remote default
-# with a warning rather than being handed on as a ref.
+# branch name git itself would reject fails the query with a diagnostic rather
+# than being handed on as a ref or downgraded to a silent remote-default fallback.
 test_project_mode_reads_only_the_structured_integration_branch() {
-  local home out err project
+  local home out err project status
   home="$TMP_ROOT/integration-branch/home"
   mkdir -p "$home/data"
   cat > "$home/data/projects.md" <<'EOF'
@@ -472,10 +472,25 @@ EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" legacy 2>/dev/null)
   [ "$out" = "no-mistakes on" ] || fail "an undeclared entry lost its posture (got '$out')"
 
-  out=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch badbranch 2>/dev/null)
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch badbranch 2>/dev/null) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "an invalid branch name resolved successfully (got '$out')"
   [ -z "$out" ] || fail "an invalid branch name was handed on as a ref (got '$out')"
-  err=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch badbranch 2>&1 >/dev/null)
-  assert_contains "$err" "invalid integration branch" "an invalid declared branch fell back silently"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch badbranch 2>&1 >/dev/null || true)
+  assert_contains "$err" "invalid integration branch" "an invalid declared branch failed without saying why"
+
+  # The shared resolver must propagate that failure instead of reporting "no
+  # declaration", which would silently base the clone and every task copy on the
+  # remote default - the exact drift the declaration exists to stop.
+  out=$(FM_HOME="$home" bash -c '. "$1"; declared_integration_branch badbranch' _ \
+    "$ROOT/bin/fm-integration-branch-lib.sh" 2>/dev/null) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "the shared resolver swallowed an invalid declaration (got '$out')"
+  out=$(FM_HOME="$home" bash -c '. "$1"; integration_branch "$2" badbranch' _ \
+    "$ROOT/bin/fm-integration-branch-lib.sh" "$ROOT" 2>/dev/null) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "the shared resolver fell back to a default branch (got '$out')"
+  out=$(FM_HOME="$home" bash -c '. "$1"; integration_branch "$2" declared' _ \
+    "$ROOT/bin/fm-integration-branch-lib.sh" "$ROOT") \
+    || fail "the shared resolver failed on a valid declaration"
+  [ "$out" = develop ] || fail "the shared resolver did not return the declaration (got '$out')"
 
   out=$(FM_HOME="$TMP_ROOT/integration-branch/absent" "$PROJECT_MODE" --integration-branch declared 2>&1)
   [ -z "$out" ] || fail "a home with no registry reported an integration branch (got '$out')"
