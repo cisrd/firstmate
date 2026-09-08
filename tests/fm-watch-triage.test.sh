@@ -4466,6 +4466,36 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+test_voluntary_exit_record_corpus() {
+  local variant expected dir state out capture
+  . "$ROOT/tests/voluntary-exit-fixtures.sh"
+  while read -r variant expected; do
+    dir=$(make_case "record-$variant")
+    state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
+    mkdir -p "$dir/data" "$dir/config"
+    printf 'window=test:fm-held-merge\nkind=ship\nharness=grok\nbackend=tmux\n' > "$state/held-merge.meta"
+    printf 'done: delivered PR\n' > "$state/held-merge.status"
+    printf '%s' "$(seen_sig "$state/held-merge.status")" > "$state/.seen-held-merge_status"
+    touch "$state/held-merge.pr-poll"
+    voluntary_exit_fixture "$state/held-merge.voluntary-exit" "$variant"
+    hold_watch_surface "$dir" "$out" "$capture" 'idle first' || fail "[$variant] first surface missing"
+    ack_stopped_cycle "$state" || fail "[$variant] acknowledgement failed"
+    if [ "$expected" = yes ]; then
+      hold_watch_churn "$dir" "$out" "$capture" 'idle changed' 1 || fail "[$variant] valid wait re-alarmed"
+      [ "$(hold_stale_wakes "$state")" -eq 0 ] || fail "[$variant] valid wait queued stale"
+    else
+      hold_watch_surface "$dir" "$out" "$capture" 'idle changed' || fail "[$variant] invalid wait hid death"
+      [ "$(hold_stale_wakes "$state")" -eq 1 ] || fail "[$variant] death wake missing"
+    fi
+  done < <(voluntary_exit_cases)
+  pass "watcher validates the shared voluntary-exit corpus"
+}
+
+if [ "${FM_TEST_VOLUNTARY_EXIT_ONLY:-0}" = 1 ]; then
+  test_voluntary_exit_record_corpus
+  exit 0
+fi
+test_voluntary_exit_record_corpus
 test_status_span_actionable_classifier
 test_status_span_survives_a_later_routine_append
 test_status_span_respects_decision_closure

@@ -920,6 +920,31 @@ test_fm_send_still_marks_the_same_secondmate_task() {
   pass "fm-control's arrival leaves fm-send's from-firstmate marking untouched"
 }
 
+test_voluntary_exit_record_corpus() {
+  local variant expected dir rec
+  . "$ROOT/tests/voluntary-exit-fixtures.sh"
+  while read -r variant expected; do
+    dir=$(new_case "record-$variant")
+    add_task "$dir" t1 claude
+    alive_as "$dir" zsh
+    rec="$dir/home/state/t1.voluntary-exit"
+    touch "$dir/home/state/t1.pr-poll"
+    voluntary_exit_fixture "$rec" "$variant"
+    run_control "$dir" t1 exit >/dev/null || fail "[$variant] exit failed"
+    if [ "$expected" = yes ]; then
+      [ -f "$rec" ] || fail "[$variant] valid record retired"
+    else
+      [ ! -e "$rec" ] && [ ! -L "$rec" ] || fail "[$variant] invalid record retained"
+    fi
+  done < <(voluntary_exit_cases)
+  pass "control validates the shared voluntary-exit corpus"
+}
+
+if [ "${FM_TEST_VOLUNTARY_EXIT_ONLY:-0}" = 1 ]; then
+  test_voluntary_exit_record_corpus
+  exit 0
+fi
+test_voluntary_exit_record_corpus
 test_exit_types_each_harness_verified_command
 test_interrupt_sends_each_harness_verified_key
 test_opencode_interrupts_twice_and_others_once

@@ -1174,19 +1174,9 @@ captain_call_stale_bound() {  # <window-key> <task>
 # dead pane is expected, the poll must keep running, and a later genuine
 # death without this record must still alarm.
 task_voluntary_exit_waiting() {  # <window> <task>
-  local win=$1 task=$2 rec schema reason wait_kind exited_at agent_state lines
+  local win=$1 task=$2 rec agent_state
   rec="$STATE/$task.voluntary-exit"
-  [ -f "$rec" ] && [ -r "$rec" ] && [ ! -L "$rec" ] || return 1
-  schema=$(grep '^schema=' "$rec" 2>/dev/null | cut -d= -f2-)
-  reason=$(grep '^reason=' "$rec" 2>/dev/null | cut -d= -f2-)
-  wait_kind=$(grep '^wait=' "$rec" 2>/dev/null | cut -d= -f2-)
-  exited_at=$(grep '^exited_at=' "$rec" 2>/dev/null | cut -d= -f2-)
-  lines=$(wc -l < "$rec" 2>/dev/null | tr -d '[:space:]')
-  [ "$schema" = fm-voluntary-exit.v1 ] || return 1
-  [ "$reason" = external-wait ] || return 1
-  [ "$wait_kind" = pr-poll ] || return 1
-  case "$exited_at" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$lines" = 4 ] || return 1
+  fm_voluntary_exit_record_valid "$STATE" "$task" || return 1
   if [ ! -f "$STATE/$task.pr-poll" ] || [ -L "$STATE/$task.pr-poll" ]; then
     rm -f "$rec"
     return 1

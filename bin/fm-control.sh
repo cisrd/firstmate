@@ -476,17 +476,6 @@ record_voluntary_exit_wait() {
   mv -f "$tmp" "$rec"
 }
 
-voluntary_exit_wait_record_valid() {
-  local rec="$STATE/$ID.voluntary-exit"
-  [ -f "$rec" ] && [ -r "$rec" ] && [ ! -L "$rec" ] \
-    && [ -f "$STATE/$ID.pr-poll" ] && [ ! -L "$STATE/$ID.pr-poll" ] \
-    && grep -qxF 'schema=fm-voluntary-exit.v1' "$rec" \
-    && grep -qxF 'reason=external-wait' "$rec" \
-    && grep -qxF 'wait=pr-poll' "$rec" \
-    && grep -qxE 'exited_at=[0-9]+' "$rec" \
-    && [ "$(wc -l < "$rec" | tr -d '[:space:]')" = 4 ]
-}
-
 clear_voluntary_exit_wait() {
   rm -f "$STATE/$ID.voluntary-exit"
 }
@@ -505,7 +494,10 @@ do_exit() {
         # Idempotence may preserve a record written by an earlier successful
         # exit, but an agent already found dead was not stopped by this call.
         # Never mint a voluntary-wait record that could hide that true death.
-        voluntary_exit_wait_record_valid || clear_voluntary_exit_wait
+        if ! { [ -f "$STATE/$ID.pr-poll" ] && [ ! -L "$STATE/$ID.pr-poll" ] \
+          && fm_voluntary_exit_record_valid "$STATE" "$ID"; }; then
+          clear_voluntary_exit_wait
+        fi
       else
         clear_voluntary_exit_wait
       fi
