@@ -1,0 +1,70 @@
+ok - watcher validates the shared voluntary-exit corpus
+ok - voluntary exit with an armed PR poll surfaces once, absorbs churn, keeps the poll, and still alarms a true death
+ok - terminal identity dedupe never hides a genuinely new result earlier in the scanned span
+
+=== Actual watcher outputs and persisted triage/queue records (mock backend, real watcher) ===
+/tmp/fm-watch-triage-tests.uOrBOa/heartbeat-identity-buried/watch.out
+heartbeat
+/tmp/fm-watch-triage-tests.uOrBOa/heartbeat-identity-buried/state/.wake-queue
+1788886884	1	heartbeat	heartbeat	heartbeat
+/tmp/fm-watch-triage-tests.uOrBOa/heartbeat-identity-buried/state/.watch-triage.log
+[2026-09-08T19:01:19+0200] absorbed heartbeat (no captain-relevant change)
+/tmp/fm-watch-triage-tests.uOrBOa/voluntary-pr/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/voluntary-pr/state/.wake-queue
+1788886875	3	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/voluntary-pr/state/.watch-triage.log
+[2026-09-08T19:00:49+0200] absorbed stale (voluntary exit waiting on an armed PR poll): test:fm-held-merge
+[2026-09-08T19:00:58+0200] absorbed stale (voluntary exit waiting on an armed PR poll): test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-symlink/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-symlink/state/.wake-queue
+1788886836	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-missing/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-missing/state/.wake-queue
+1788886826	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-extra/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-extra/state/.wake-queue
+1788886816	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-duplicate/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-duplicate/state/.wake-queue
+1788886804	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-epoch/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-epoch/state/.wake-queue
+1788886792	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-wait/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-wait/state/.wake-queue
+1788886781	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-reason/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-reason/state/.wake-queue
+1788886771	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-schema/watch.out
+stale: test:fm-held-merge
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-schema/state/.wake-queue
+1788886760	2	stale	test:fm-held-merge	stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-reordered/watch.out
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-reordered/state/.watch-triage.log
+[2026-09-08T18:59:05+0200] absorbed stale (voluntary exit waiting on an armed PR poll): test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-reordered/state/.wake-queue
+/tmp/fm-watch-triage-tests.uOrBOa/record-valid/watch.out
+stale: test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-valid/state/.watch-triage.log
+[2026-09-08T18:58:49+0200] absorbed stale (voluntary exit waiting on an armed PR poll): test:fm-held-merge
+/tmp/fm-watch-triage-tests.uOrBOa/record-valid/state/.wake-queue

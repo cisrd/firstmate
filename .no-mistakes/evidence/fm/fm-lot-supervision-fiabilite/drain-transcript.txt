@@ -1,0 +1,23 @@
+
+=== a rewritten log does not re-announce the same terminal result and does announce a new identity ===
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+ident done: PR https://example.test/identity/pull/1 checks green
+
+=== an identical nonterminal captain event appended later surfaces again, then falls silent ===
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/recurring-blocker/fourth.out
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/recurring-blocker/third.out
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+recur blocked [key=bad/value]: waiting on the captain to pick a provider
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/recurring-blocker/second.out
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/recurring-blocker/first.out
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+recur blocked [key=bad/value]: waiting on the captain to pick a provider
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/identity-stable/new.out
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+ident failed: the follow-up PR could not be opened
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/identity-stable/retry.out
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/identity-stable/first.out
+STATUS OUTCOME BACKSTOP (newest captain-facing task event has no covering branch outcome):
+ident done: PR https://example.test/identity/pull/1 checks green
+/tmp/fm-wake-drain-outcome-backstop-tests.jG8hJ3/identity-stable/state/.status-outcome-identity
+ident	e1:1033566637-44

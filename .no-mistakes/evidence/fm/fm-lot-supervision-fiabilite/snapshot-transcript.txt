@@ -1,0 +1,208 @@
+
+=== fleet snapshot confines override variables to each child and refuses a foreign captured path ===
+{
+  "schema": "fm-fleet-snapshot.v1",
+  "generated": "2026-09-08T17:02:31Z",
+  "fm_home": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak",
+  "roots": {
+    "fm_root": "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4BVJS67Y30T1QYD7T8AW",
+    "state": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/state",
+    "data": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/data",
+    "config": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/config",
+    "projects": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/projects"
+  },
+  "backlog": {
+    "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/data/backlog.md",
+    "present": false,
+    "records": []
+  },
+  "tasks": [
+    {
+      "id": "alpha",
+      "kind": "ship",
+      "harness": "claude",
+      "mode": "no-mistakes",
+      "yolo": "",
+      "project": "alpha",
+      "spawn_gen": null,
+      "backend": "tmux",
+      "remote": null,
+      "paths": {
+        "meta": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/state/alpha.meta",
+          "present": true
+        },
+        "status_log": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/state/alpha.status",
+          "present": true,
+          "kind": "event_history",
+          "last_event": {
+            "state": "working",
+            "note": "alpha live",
+            "raw": "working: alpha live"
+          }
+        },
+        "worktree": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/projects/alpha-worktree",
+          "present": true
+        },
+        "home": {
+          "path": null,
+          "present": false
+        },
+        "report": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/data/alpha/report.md",
+          "present": false
+        }
+      },
+      "secondmate_projects": [],
+      "current_state": {
+        "state": "working",
+        "source": "status-log",
+        "detail": "alpha live",
+        "raw": "state: working · source: status-log · alpha live",
+        "observed_at": "2026-09-08T17:02:31Z",
+        "freshness": "fresh"
+      },
+      "endpoint": {
+        "target": "firstmate:fm-alpha",
+        "exists": true,
+        "agent_alive": "not_checked",
+        "status": "unknown",
+        "observed_at": "2026-09-08T17:02:31Z",
+        "freshness": "fresh"
+      },
+      "pr": {
+        "url": null,
+        "source": "absent"
+      },
+      "hints": {
+        "pending_decision": false,
+        "blocked_event": false,
+        "open_decisions": [],
+        "scout_report_present": false,
+        "last_event_text": "working: alpha live"
+      },
+      "actions": {
+        "watch": "bin/fm-peek.sh fm-alpha",
+        "steer": "bin/fm-send.sh fm-alpha '<instruction>'",
+        "return_channel_note": null
+      },
+      "backlog": null
+    },
+    {
+      "id": "beta",
+      "kind": "ship",
+      "harness": "claude",
+      "mode": "no-mistakes",
+      "yolo": "",
+      "project": "alpha",
+      "spawn_gen": null,
+      "backend": "tmux",
+      "remote": null,
+      "paths": {
+        "meta": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/state/beta.meta",
+          "present": true
+        },
+        "status_log": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/state/beta.status",
+          "present": true,
+          "kind": "event_history",
+          "last_event": {
+            "state": "working",
+            "note": "beta live",
+            "raw": "working: beta live"
+          }
+        },
+        "worktree": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/projects/alpha-worktree",
+          "present": true
+        },
+        "home": {
+          "path": null,
+          "present": false
+        },
+        "report": {
+          "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/data/beta/report.md",
+          "present": false
+        }
+      },
+      "secondmate_projects": [],
+      "current_state": {
+        "state": "working",
+        "source": "status-log",
+        "detail": "beta live",
+        "raw": "state: working · source: status-log · beta live",
+        "observed_at": "2026-09-08T17:02:31Z",
+        "freshness": "fresh"
+      },
+      "endpoint": {
+        "target": "firstmate:fm-beta",
+        "exists": true,
+        "agent_alive": "not_checked",
+        "status": "unknown",
+        "observed_at": "2026-09-08T17:02:31Z",
+        "freshness": "fresh"
+      },
+      "pr": {
+        "url": null,
+        "source": "absent"
+      },
+      "hints": {
+        "pending_decision": false,
+        "blocked_event": false,
+        "open_decisions": [],
+        "scout_report_present": false,
+        "last_event_text": "working: beta live"
+      },
+      "actions": {
+        "watch": "bin/fm-peek.sh fm-beta",
+        "steer": "bin/fm-send.sh fm-beta '<instruction>'",
+        "return_channel_note": null
+      },
+      "backlog": null
+    }
+  ],
+  "main_inventory": {
+    "valid": true,
+    "reason": null,
+    "orphan_in_flight": [],
+    "unstructured_current_count": 0
+  },
+  "scout_reports": [],
+  "secondmate_current": {
+    "registry": {
+      "present": false,
+      "available": true,
+      "complete": true,
+      "reason": null,
+      "provenance": "registered-table",
+      "path": "/tmp/fm-fleet-snapshot.yqkRiZ/override-leak/data/secondmates.md",
+      "freshness": {
+        "status": "fresh",
+        "observed_at": "2026-09-08T17:02:31Z"
+      },
+      "records": [],
+      "input_truncated": false,
+      "records_truncated": false,
+      "reasons": [],
+      "lines_in_window": 0,
+      "records_in_window": 0
+    },
+    "records": [],
+    "total_registered": 0,
+    "total": 0,
+    "shown": 0,
+    "truncated": 0
+  },
+  "secondmate_landed": {
+    "records": [],
+    "truncated": [],
+    "unreadable": [],
+    "partial": []
+  },
+  "secondmate_guidance": {
+    "note": "For kind=secondmate, bearings selects validated structured state from that registered home; parent events and bounded terminal evidence are fallback-only supplements and never current-state authority."
+  }
+}

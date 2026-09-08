@@ -1,0 +1,19 @@
+state: done · source: status-log · PR https://example.invalid/pr/1 opened · agent gone, pane shell remains
+
+=== live pane with no agent still reports its terminal status-log state ===
+state: done · source: status-log · PR https://example.invalid/pr/1 opened · agent gone, pane shell remains
+state: failed · source: status-log · the release job could not be retried · agent gone, pane shell remains
+state: blocked · source: status-log · which provider? · agent gone, pane shell remains
+state: parked · source: status-log · choose REST or RPC · agent gone, pane shell remains
+state: paused · source: status-log · holding for the vendor maintenance window · agent gone, pane shell remains
+
+=== live pane with no agent keeps failed, blocked, needs-decision, and paused with their reasons ===
+state: paused · source: status-log · holding for the vendor maintenance window · agent gone, pane shell remains
+state: unknown · source: pane · harness state unavailable (dead shell-no-agent)
+
+=== live pane with no agent reports unknown for a stale working status log ===
+state: unknown · source: pane · harness state unavailable (dead shell-no-agent)
+state: blocked · source: status-log · waiting on the captain to pick a provider · agent gone, pane shell remains
+
+=== the shell-without-agent verdict outranks an un-retired busy lifecycle record ===
+state: blocked · source: status-log · waiting on the captain to pick a provider · agent gone, pane shell remains

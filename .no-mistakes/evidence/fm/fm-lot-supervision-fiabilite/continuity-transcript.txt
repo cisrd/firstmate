@@ -1,0 +1,4 @@
+
+=== watch-arm: a clean empty close starts one owned successor instead of failing ===
+watcher: attached pid=1805571 (beacon 0s)
+watcher: started pid=1811814 (beacon fresh)
