@@ -17,6 +17,8 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 # shellcheck source=bin/fm-timeout-lib.sh
 . "$ROOT/bin/fm-timeout-lib.sh"
+# shellcheck source=bin/fm-remote-job-lib.sh
+. "$ROOT/bin/fm-remote-job-lib.sh"
 
 PF="$ROOT/bin/fm-public-followup.sh"
 EMIT="$ROOT/bin/fm-public-followup-emit.sh"
@@ -42,20 +44,35 @@ EOF
 }
 
 # The remote-route cases drive the real remote job worker, which outlives the
-# command that staged its job. Stop it before the shared fixture cleanup runs,
-# and keep that cleanup (tests/lib.sh owns it) rather than replacing the trap.
+# command that staged its job. Stop the whole bounded worker process group before
+# the shared fixture cleanup runs, and keep that cleanup (tests/lib.sh owns it)
+# rather than replacing the trap.
+pf_test_stop_remote_worker() {
+  local pid_file="${REMOTE_FIXTURE_JOBS:-$TMP_ROOT/remote-jobs}/worker.pid" pid command
+  [ -f "$pid_file" ] || return 0
+  pid=$(cat "$pid_file" 2>/dev/null) || return 0
+  case "$pid" in ''|*[!0-9]*) return 0 ;; esac
+  command=$(ps -p "$pid" -o command= 2>/dev/null || true)
+  case "$command" in
+    *fm-remote-job-worker.sh*) fm_remote_job_stop_worker_tree "$pid" || return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 pf_test_cleanup() {
-  local pid_file="${REMOTE_FIXTURE_JOBS:-$TMP_ROOT/remote-jobs}/worker.pid" pid
+  local exit_status=$? worker_rc=0
   if [ -n "$PF_TEST_LOCK_HOLDER" ]; then
     kill "$PF_TEST_LOCK_HOLDER" 2>/dev/null || true
     wait "$PF_TEST_LOCK_HOLDER" 2>/dev/null || true
     PF_TEST_LOCK_HOLDER=
   fi
-  if [ -f "$pid_file" ]; then
-    pid=$(cat "$pid_file" 2>/dev/null) || pid=
-    [ -z "$pid" ] || kill "$pid" 2>/dev/null || true
+  pf_test_stop_remote_worker || worker_rc=1
+  fm_test_cleanup || true
+  if [ "$worker_rc" -ne 0 ]; then
+    printf 'not ok - the remote job worker survived suite cleanup\n' >&2
+    [ "$exit_status" -ne 0 ] || exit_status=1
+    exit "$exit_status"
   fi
-  fm_test_cleanup
 }
 trap pf_test_cleanup EXIT
 trap 'pf_test_cleanup; exit 130' INT
@@ -3088,6 +3105,63 @@ test_local_work_home_emit_path_is_unchanged() {
   pass "a local work home's emit path is unchanged"
 }
 
+# Run one remote collection in a child invocation so the parent can assert the
+# executable suite's real exit status and verify that its trap reaps the worker
+# before removing the fixture root.
+test_remote_worker_cleanup_fixture() {
+  local home remote pid_file pid pgid
+  remote_fixture_prepare
+  home=$(make_home cleanup-child)
+  remote=$(make_remote_route "$home" cleanup-mate)
+  seed_repro_commitment "$home" pf-cleanup-child req-cleanup-child \
+    secondmate:cleanup-mate work-cleanup-child
+  run_pf_remote "$home" consume >/dev/null \
+    || fail "the cleanup fixture could not start its remote worker"
+  pid_file="$REMOTE_FIXTURE_JOBS/worker.pid"
+  [ -s "$pid_file" ] || fail "the cleanup fixture did not publish its worker PID"
+  pid=$(cat "$pid_file")
+  # worker.pid records the serving child, which a leaking teardown kills and the
+  # supervisor above it simply replaces. The group leader is that supervisor, so
+  # it is the target the parent has to watch.
+  pgid=$(fm_remote_job_process_pgid "$pid") \
+    || fail "the cleanup fixture could not resolve its worker process group"
+  [ "$pgid" != "$pid" ] \
+    || fail "the cleanup fixture's worker has no supervisor above its serving child"
+  [ -n "${PF_TEST_ROOT_MARKER:-}" ] || fail "the cleanup fixture has no root marker"
+  [ -n "${PF_TEST_SUPERVISOR_MARKER:-}" ] || fail "the cleanup fixture has no supervisor marker"
+  printf '%s\n' "$TMP_ROOT" > "$PF_TEST_ROOT_MARKER"
+  printf '%s\n' "$pgid" > "$PF_TEST_SUPERVISOR_MARKER"
+  pass "remote worker cleanup fixture completed"
+}
+
+test_suite_exit_status_and_remote_cleanup() {
+  local tmp out rc root supervisor survived=0
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-public-followup-cleanup.XXXXXX")
+  set +e
+  PF_TEST_ROOT_MARKER="$tmp/root" PF_TEST_SUPERVISOR_MARKER="$tmp/supervisor" \
+    FM_TEST_ONLY=test_remote_worker_cleanup_fixture \
+    "$BASH" "${BASH_SOURCE[0]}" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  out=$(cat "$tmp/out" "$tmp/err")
+  root=$(cat "$tmp/root" 2>/dev/null || true)
+  supervisor=$(cat "$tmp/supervisor" 2>/dev/null || true)
+  case "$supervisor" in ''|*[!0-9]*) supervisor= ;; esac
+  if [ -n "$supervisor" ] && kill -0 -- "-$supervisor" 2>/dev/null; then
+    survived=1
+    kill -KILL -- "-$supervisor" 2>/dev/null || true
+  fi
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "a green executable suite must exit 0: $out"; }
+  [ -n "$root" ] || { rm -rf "$tmp"; fail "the cleanup fixture did not record its temporary root: $out"; }
+  [ -n "$supervisor" ] \
+    || { rm -rf "$tmp"; fail "the cleanup fixture did not record its worker process group: $out"; }
+  [ ! -e "$root" ] || { rm -rf "$tmp"; fail "the green executable suite leaked fixture files: $root"; }
+  [ "$survived" -eq 0 ] \
+    || { rm -rf "$tmp"; fail "the green executable suite leaked members of its remote worker group"; }
+  rm -rf "$tmp"
+  pass "a green executable suite returns 0 and leaves no remote worker tree or fixture files"
+}
+
 # CI's stock macOS Bash lane sets FM_TEST_ONLY to run just the bash-3.2 empty-lock
 # register regression. The rest of this file is not a 3.2 snapshot suite.
 if [ -n "${FM_TEST_ONLY:-}" ]; then
@@ -3167,4 +3241,5 @@ test_empty_remote_collection_is_healthy
 test_remote_brief_rejects_traversal_route_paths
 test_local_work_home_emit_path_is_unchanged
 test_remote_collection_is_idempotent
+test_suite_exit_status_and_remote_cleanup
 test_stage_in_refuses_ambiguous_or_unusable_homes

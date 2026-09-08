@@ -90,7 +90,7 @@ start_worker() {
     export FM_REMOTE_JOB_STATE_ROOT="$state_root"
     export FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
     export FM_REMOTE_JOB_ORPHAN_GRACE_SECONDS=1
-    # shellcheck source=bin/fm-remote-job-lib.sh
+    # shellcheck source=/dev/null
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_start_linux_worker "$root" "$account_home" >&2 || exit 1
     deadline=$(( $(date +%s) + 10 ))
@@ -203,3 +203,97 @@ pass "the reaper stops an abandoned worker's whole tree"
 out=$("$REAPER" 2>&1) || fail "a repeat reaper run failed: $out"
 assert_not_contains "$out" "$STALE" "the reaper reported an already-stopped worker"
 pass "the reaper is idempotent"
+
+# --- the shared tree stop the reaper and every teardown route through --------
+#
+# fm_remote_job_stop_worker_tree decides both "stop it" and "it is still
+# alive", so a stop that mistakes a shutting-down tree for a stopped one KILLs
+# it mid-shutdown, and one that mistakes a stopped tree for a survivor reports
+# a leak that is not there.
+
+stop_worker_tree() { # <pid>
+  (
+    # shellcheck source=/dev/null
+    . "$ROOT/bin/fm-remote-job-lib.sh"
+    fm_remote_job_stop_worker_tree "$1"
+  )
+}
+
+# The real supervisor's shutdown shape: worker.pid records the serving child,
+# which exits first, while the group leader still has its own shutdown to
+# finish.
+CASE3="$TMP_ROOT/case3"
+mkdir -p "$CASE3/bin"
+CASE3_MARKER="$CASE3/leader-shutdown"
+cat > "$CASE3/bin/fm-remote-job-worker.sh" <<'SH'
+#!/bin/bash
+set -u
+if [ "${1:-}" = --serve ]; then
+  trap 'exit 0' TERM
+  while :; do sleep 0.2; done
+fi
+leader_shutdown() {
+  kill -TERM "${CHILD:-}" 2>/dev/null || true
+  wait "${CHILD:-}" 2>/dev/null || true
+  sleep 1
+  printf 'graceful\n' > "$LEADER_MARKER"
+  exit 0
+}
+trap leader_shutdown TERM
+"$0" --serve &
+CHILD=$!
+while :; do sleep 0.2; done
+SH
+chmod +x "$CASE3/bin/fm-remote-job-worker.sh"
+
+set -m
+LEADER_MARKER="$CASE3_MARKER" "$CASE3/bin/fm-remote-job-worker.sh" >/dev/null 2>&1 &
+GRACEFUL=$!
+set +m
+track "$GRACEFUL"
+wait_child "$GRACEFUL" 10 || fail "the shutdown fixture never started its serving child"
+GRACEFUL_SERVE=$(pgrep -P "$GRACEFUL" | head -n 1)
+[ "$(pgid_of "$GRACEFUL_SERVE")" = "$GRACEFUL" ] ||
+  fail "the shutdown fixture's serving child is outside its process group"
+
+GRACEFUL_RC=0
+stop_worker_tree "$GRACEFUL_SERVE" || GRACEFUL_RC=$?
+[ "$GRACEFUL_RC" -eq 0 ] ||
+  fail "stopping a tree whose serving child exits first reported a survivor"
+[ "$(cat "$CASE3_MARKER" 2>/dev/null || true)" = graceful ] ||
+  fail "the tree stop escalated to KILL while the leader was still shutting down"
+wait_gone "$GRACEFUL_SERVE" 10 || fail "the serving child survived the tree stop"
+wait_gone "$GRACEFUL" 10 || fail "the group leader survived the tree stop"
+pass "a tree whose serving child exits before its leader is stopped gracefully and reported stopped"
+
+# A tree that ignores TERM is a real survivor of the graceful phase: it must be
+# escalated to KILL and only then reported stopped.
+CASE4="$TMP_ROOT/case4"
+mkdir -p "$CASE4/bin"
+cat > "$CASE4/bin/fm-remote-job-worker.sh" <<'SH'
+#!/bin/bash
+set -u
+trap '' TERM
+if [ "${1:-}" = --serve ]; then
+  while :; do sleep 0.2; done
+fi
+"$0" --serve &
+while :; do sleep 0.2; done
+SH
+chmod +x "$CASE4/bin/fm-remote-job-worker.sh"
+
+set -m
+"$CASE4/bin/fm-remote-job-worker.sh" >/dev/null 2>&1 &
+STUBBORN=$!
+set +m
+track "$STUBBORN"
+wait_child "$STUBBORN" 10 || fail "the TERM-ignoring fixture never started its serving child"
+STUBBORN_SERVE=$(pgrep -P "$STUBBORN" | head -n 1)
+
+STUBBORN_RC=0
+stop_worker_tree "$STUBBORN_SERVE" || STUBBORN_RC=$?
+[ "$STUBBORN_RC" -eq 0 ] ||
+  fail "a TERM-ignoring worker tree was not reported stopped after the KILL escalation"
+wait_gone "$STUBBORN_SERVE" 10 || fail "a TERM-ignoring serving child survived the tree stop"
+wait_gone "$STUBBORN" 10 || fail "a TERM-ignoring group leader survived the tree stop"
+pass "a worker tree that ignores TERM is escalated to KILL and reported stopped"
