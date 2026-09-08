@@ -1,0 +1,24 @@
+Remote default: refs/remotes/origin/main
+
+$ fm-fleet-sync.sh project_code_zero
+project_code_zero: synced 01b4795..006c996 to origin/develop
+Checked-out branch: develop
+Delivered content: merged feature
+
+$ fm-fleet-sync.sh project_code_zero (repeat)
+project_code_zero: already current on develop (origin/develop)
+
+$ fm-fleet-sync.sh project_code_zero (declaration=missing)
+project_code_zero: STUCK: declared integration branch missing is not published by origin - needs attention
+
+$ fm-fleet-sync.sh project_code_zero (declaration=..bad)
+error: invalid integration branch "..bad" for project_code_zero; fix the registry entry
+project_code_zero: STUCK: the registry declares an invalid integration branch - needs attention
+
+$ fm-fleet-sync.sh project_code_zero (declaration=)
+error: invalid integration branch "" for project_code_zero; fix the registry entry
+project_code_zero: STUCK: the registry declares an invalid integration branch - needs attention
+
+Legacy registry (prose mentions develop, no declaration):
+project_code_zero: already current on main (origin/main)
+Legacy branch: main
