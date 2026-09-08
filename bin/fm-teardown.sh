@@ -214,7 +214,11 @@
 #     FM_PROC_ROOT_OVERRIDE in tests) instead, so a leaked descendant is still
 #     identified and reaped on the first cleanup rather than forcing a failed
 #     return. A present-but-failing lsof still refuses: an unreliable scan is
-#     not evidence that nothing is there. A host with neither cwd source uses
+#     not evidence that nothing is there. Either scan refuses, rather than
+#     signalling, when the process it found in the copy is a shell from this
+#     teardown's own invocation chain: killing the operator's session and
+#     calling an occupied copy free are both wrong, and which of the two scans
+#     ran must not change that answer. A host with neither cwd source uses
 #     the backend process-group fallback. Both
 #     roots are unique per task and never
 #     shared, so this can never reach another task's or the primary's
@@ -1855,34 +1859,38 @@ teardown_ancestor_pids() {
   done
 }
 
+# One matched pid, from either scan: this teardown's own pid is not a leftover,
+# and neither is a shell from its own invocation chain - but that shell cannot
+# be reaped without killing the operator's session, and calling the copy free
+# would hand a still-occupied worktree to destructive cleanup, so it refuses.
+# Whichever scan found it, the same pid gets the same answer.
+emit_reapable_task_pid() {  # <pid> <dir> <ancestor-pids>
+  local pid=$1 dir=$2 ancestors=$3
+  [ -n "$pid" ] && [ "$pid" != "$$" ] || return 0
+  if printf '%s\n' "$ancestors" | grep -Fxq "$pid"; then
+    echo "REFUSED: teardown was invoked from inside $dir (process $pid still has it as its working directory); leave that copy and re-run." >&2
+    return 1
+  fi
+  printf '%s\n' "$pid"
+}
+
 # Bounded /proc/<pid>/cwd scan: process count, never a file-tree walk, never
 # a process-name match, never another home's processes. Only pids whose cwd
-# is exactly <dir> or under it, never this teardown's own pid. A process from
-# this teardown's own invocation chain sitting in <dir> fails the scan: it
-# cannot be reaped without killing the operator's shell, and calling the copy
-# free would hand a still-occupied worktree to destructive cleanup.
-pids_with_cwd_under_proc() {  # <dir>
-  local dir=$1 proc_root pid pid_dir cwd cwd_real ancestors
+# is exactly <dir> or under it.
+pids_with_cwd_under_proc() {  # <dir> <ancestor-pids>
+  local dir=$1 ancestors=$2 proc_root pid pid_dir cwd cwd_real
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   dir=$(cd "$dir" && pwd -P) || return 1
-  ancestors=$(teardown_ancestor_pids)
   for pid_dir in "$proc_root"/[0-9]*; do
     [ -e "$pid_dir" ] || continue
     pid=${pid_dir##*/}
     case "$pid" in ''|*[!0-9]*) continue ;; esac
-    [ "$pid" != "$$" ] || continue
     cwd=$(readlink "$pid_dir/cwd" 2>/dev/null) || continue
     cwd_real=$(CDPATH='' cd -- "$cwd" 2>/dev/null && pwd -P) || cwd_real=$cwd
     case "$cwd_real" in
-      "$dir"|"$dir"/*) ;;
-      *) continue ;;
+      "$dir"|"$dir"/*) emit_reapable_task_pid "$pid" "$dir" "$ancestors" || return 1 ;;
     esac
-    if printf '%s\n' "$ancestors" | grep -Fxq "$pid"; then
-      echo "REFUSED: teardown was invoked from inside $dir (process $pid still has it as its working directory); leave that copy and re-run." >&2
-      return 1
-    fi
-    printf '%s\n' "$pid"
   done
 }
 
@@ -1891,16 +1899,18 @@ pids_with_cwd_under_proc() {  # <dir>
 # -d cwd` scan (never the recursive +D file-tree walk, which lsof itself
 # documents as slow). Only a host without lsof falls back to the
 # Linux-compatible /proc/<pid>/cwd read; a present lsof that fails still
-# refuses rather than being second-guessed by another scan. Never $$. Empty
+# refuses rather than being second-guessed by another scan. Never $$, and
+# never this teardown's own invoker chain - whichever scan runs. Empty
 # output when nothing matches; failure means the scan could not establish a
 # safe result.
 pids_with_cwd_under() {  # <dir>
-  local dir=$1 out pid path line
+  local dir=$1 out pid path line ancestors
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   dir=$(cd "$dir" && pwd -P) || return 1
+  ancestors=$(teardown_ancestor_pids)
   if ! command -v lsof >/dev/null 2>&1; then
     proc_cwd_scan_available || return 1
-    pids_with_cwd_under_proc "$dir"
+    pids_with_cwd_under_proc "$dir" "$ancestors"
     return
   fi
   out=$(lsof -a -d cwd -Fpn 2>/dev/null) || return 1
@@ -1918,7 +1928,7 @@ pids_with_cwd_under() {  # <dir>
         path=${line#n}
         case "$path" in
           "$dir"|"$dir"/*)
-            [ -n "$pid" ] && [ "$pid" != "$$" ] && printf '%s\n' "$pid"
+            emit_reapable_task_pid "$pid" "$dir" "$ancestors" || return 1
             ;;
         esac
         ;;
@@ -2028,7 +2038,7 @@ reap_task_backend_process_group() {  # <label>
 # cleanup itself forks are never mistaken for leftovers. A missing lsof uses
 # the /proc cwd scan when that is available, else the backend process-group
 # fallback; an lsof scan error refuses before destructive teardown, and so
-# does a /proc scan that finds this teardown's own invoker inside the copy.
+# does either scan when it finds this teardown's own invoker inside the copy.
 reap_task_worktree_processes() {  # <label> <dir>...
   local previous rc=0
   previous=$(pwd -P 2>/dev/null) || previous=/

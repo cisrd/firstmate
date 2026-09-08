@@ -3392,6 +3392,46 @@ test_no_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy() {
   pass "missing lsof refuses rather than reporting a copy its own invoker still occupies as free"
 }
 
+# The lsof twin of the test above: identical state, identical answer. An lsof
+# host must not TERM the shell teardown was launched from just because lsof
+# happens to be installed.
+test_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy() {
+  local case_dir rc pid
+  case_dir=$(make_case lsof-invoker-inside)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.2
+  cat > "$case_dir/fakebin/lsof" <<EOF
+#!/usr/bin/env bash
+invoker=\$(cat '$case_dir/invoker-pid')
+printf 'p%s\nfcwd\nn%s\n' '$pid' '$case_dir/wt'
+printf 'p%s\nfcwd\nn%s\n' "\$invoker" '$case_dir/wt'
+EOF
+  chmod +x "$case_dir/fakebin/lsof"
+
+  rc=0
+  (
+    CDPATH='' cd -- "$case_dir/wt" || exit 1
+    printf '%s\n' "$BASHPID" > "$case_dir/invoker-pid"
+    run_teardown "$case_dir"
+  ) > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "lsof-invoker-inside: teardown should refuse while its own invoker occupies the copy"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "invoked from inside $case_dir/wt" "$case_dir/stderr" \
+    "lsof-invoker-inside: the refusal did not name the occupying invoker"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    fail "lsof-invoker-inside: teardown signalled processes in the copy before refusing"
+  fi
+  kill -KILL "$pid" 2>/dev/null || true
+  assert_present "$case_dir/wt" "lsof-invoker-inside: teardown removed the copy it refused to reap"
+  assert_present "$case_dir/state/task-x1.meta" "lsof-invoker-inside: teardown cleared metadata after refusing"
+  pass "an lsof scan refuses a copy its own invoker still occupies instead of killing that shell"
+}
+
 test_lsof_absent_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
@@ -3808,6 +3848,7 @@ test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_via_proc_cwd
 test_no_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy
+test_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed
