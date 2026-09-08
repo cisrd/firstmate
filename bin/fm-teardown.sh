@@ -1321,6 +1321,7 @@ pr_is_merged() {
   resolved_url=${remainder#*$'\t'}
   [ "$head" != "$remainder" ] || return 1
   case "$state" in
+    # OPEN includes a merge-queue enqueue: landing is MERGED only.
     MERGED|merged) ;;
     *) return 1 ;;
   esac
@@ -1718,7 +1719,7 @@ NM_TEARDOWN_RUNS_LIMIT=${FM_TEARDOWN_NM_RUNS_LIMIT:-200}
 case "$NM_TEARDOWN_RUNS_LIMIT" in ''|*[!0-9]*) NM_TEARDOWN_RUNS_LIMIT=200 ;; esac
 TASK_RUN_ID=
 task_status_is_own_parked_run() {  # <worktree> <axi-status-output>
-  local wt=$1 out=$2 branch run_id run_branch run_head status outcome awaiting has_gate ledger
+  local wt=$1 out=$2 branch run_id run_branch run_head status outcome awaiting has_gate ledger ledger_row
   TASK_RUN_ID=
   branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || return 1
   [ -n "$branch" ] || return 1
@@ -1751,7 +1752,8 @@ task_status_is_own_parked_run() {  # <worktree> <axi-status-output>
     [ -n "$run_head" ] || return 1
     [ -z "$(fm_nm_resolve_commit "$wt" "$run_head")" ] || return 1
     ledger=$(fm_nm_run "$wt" "$NM_TEARDOWN_TIMEOUT" runs --limit "$NM_TEARDOWN_RUNS_LIMIT")
-    [ "$(fm_nm_runs_status_for_worktree "$wt" "$branch" "$ledger" "$run_head")" = running ] || return 1
+    ledger_row=$(fm_nm_runs_status_for_worktree "$wt" "$branch" "$ledger" "$run_head")
+    [ "${ledger_row%% *}" = running ] || return 1
   fi
   awaiting=$(printf '%s\n' "$out" | grep -E '^[[:space:]]*awaiting_agent:' | head -1 || true)
   has_gate=$(printf '%s\n' "$out" | grep -Eq '^[[:space:]]*gate:[[:space:]]*' && echo 1 || echo 0)

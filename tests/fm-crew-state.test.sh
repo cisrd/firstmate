@@ -422,6 +422,103 @@ steps[9]{step,status,findings,duration_ms}:
 EOF
 }
 
+# The 2026-09-08 vacuous-pass shape, captured verbatim from a real run in an
+# isolated NM_HOME fixture (no-mistakes v1.64.0): the branch's commits were
+# already contained in the rebase base, so the diff vanished, no-mistakes logged
+# "empty diff after rebase, skipping remaining steps", and it still recorded the
+# run completed with every mandatory delivery phase skipped and nothing pushed.
+run_completed_empty_diff() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  findings: none
+steps[9]{step,status,findings,duration_ms}:
+  intent,skipped,0,5
+  rebase,completed,0,95
+  review,skipped,0,0
+  test,skipped,0,0
+  document,skipped,0,0
+  lint,skipped,0,0
+  push,skipped,0,0
+  pr,skipped,0,0
+  ci,skipped,0,0
+EOF
+}
+
+# Same vacuous shape reported through an explicit terminal outcome line.
+run_outcome_empty_diff() {  # <branch> <outcome>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  findings: none
+outcome: $2
+steps[9]{step,status,findings,duration_ms}:
+  intent,skipped,0,5
+  rebase,completed,0,95
+  review,skipped,0,0
+  test,skipped,0,0
+  document,skipped,0,0
+  lint,skipped,0,0
+  push,skipped,0,0
+  pr,skipped,0,0
+  ci,skipped,0,0
+EOF
+}
+
+# A real delivery: every mandatory phase ran. Must stay done.
+run_completed_full_delivery() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/204"
+  findings: none
+outcome: checks-passed
+steps[9]{step,status,findings,duration_ms}:
+  intent,completed,0,10
+  rebase,completed,0,95
+  review,completed,0,100
+  test,completed,0,100
+  document,completed,0,100
+  lint,completed,0,100
+  push,completed,0,100
+  pr,completed,0,100
+  ci,completed,0,100
+EOF
+}
+
+# Only some phases were skipped: the change survived and was delivered, so this
+# is NOT the vacuous shape and must keep its reported result.
+run_completed_partial_skip() {  # <branch>
+  cat <<EOF
+run:
+  id: "01RUN"
+  branch: $1
+  status: completed
+  head: "${FM_FAKE_RUN_HEAD:-abc1234}"
+  pr: "https://github.com/o/r/pull/205"
+  findings: none
+steps[9]{step,status,findings,duration_ms}:
+  intent,skipped,0,5
+  rebase,completed,0,95
+  review,completed,0,100
+  test,skipped,0,0
+  document,skipped,0,0
+  lint,completed,0,100
+  push,completed,0,100
+  pr,completed,0,100
+  ci,skipped,0,0
+EOF
+}
+
 # A second failed step (lint) disqualifies the orphaned-monitor reclassification.
 run_failed_ci_orphan_second_failure() {  # <branch>
   cat <<EOF
@@ -980,6 +1077,118 @@ daemon shutting down"
   assert_contains "$out" "state: done" "status-only failed orphaned monitor after green reads done"
   assert_contains "$out" "https://github.com/o/r/pull/203" "PR URL surfaced from the run"
   pass "status-only failed orphaned ci monitor after green reads done"
+}
+
+test_completed_run_with_every_phase_skipped_reads_failed() {
+  reset_fakes
+  local d; d=$(new_case completed-empty-diff)
+  make_repo_on_branch "$d/wt" fm/feat-empty-diff
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-empty-diff.meta" "window=fm:fm-feat-empty-diff" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_completed_empty_diff fm/feat-empty-diff)"
+  local out; out=$(run_crew_state "$d" feat-empty-diff)
+  assert_contains "$out" "state: failed" "a run that kept no change must not read as validated"
+  assert_not_contains "$out" "state: done" "empty-diff run must never read done"
+  assert_contains "$out" "not validated" "the verdict must say why it is not validated"
+  pass "completed run with every mandatory phase skipped reads failed"
+}
+
+test_passed_outcome_with_every_phase_skipped_reads_failed() {
+  reset_fakes
+  local d; d=$(new_case passed-empty-diff)
+  make_repo_on_branch "$d/wt" fm/feat-passed-empty
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-passed-empty.meta" "window=fm:fm-feat-passed-empty" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_outcome_empty_diff fm/feat-passed-empty passed)"
+  local out; out=$(run_crew_state "$d" feat-passed-empty)
+  assert_contains "$out" "state: failed" "outcome passed must not be trusted on its own"
+  assert_not_contains "$out" "state: done" "vacuous passed outcome must never read done"
+  pass "outcome passed with every mandatory phase skipped reads failed"
+}
+
+test_completed_run_with_full_delivery_still_reads_done() {
+  reset_fakes
+  local d; d=$(new_case completed-full-delivery)
+  make_repo_on_branch "$d/wt" fm/feat-full-delivery
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-full-delivery.meta" "window=fm:fm-feat-full-delivery" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_completed_full_delivery fm/feat-full-delivery)"
+  local out; out=$(run_crew_state "$d" feat-full-delivery)
+  assert_contains "$out" "state: done" "a run that executed every phase must stay done"
+  assert_not_contains "$out" "not validated" "a real delivery must not be flagged vacuous"
+  pass "completed run with every phase executed still reads done"
+}
+
+test_completed_run_with_partial_skip_still_reads_done() {
+  reset_fakes
+  local d; d=$(new_case completed-partial-skip)
+  make_repo_on_branch "$d/wt" fm/feat-partial-skip
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-partial-skip.meta" "window=fm:fm-feat-partial-skip" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_completed_partial_skip fm/feat-partial-skip)"
+  local out; out=$(run_crew_state "$d" feat-partial-skip)
+  assert_contains "$out" "state: done" "a delivered run with some skipped phases stays done"
+  assert_not_contains "$out" "not validated" "partial skips are not the vacuous shape"
+  pass "completed run with only some phases skipped still reads done"
+}
+
+# The two-run coarse fallback, the shape the full-path guard alone cannot
+# reach: crew A's run ended in the vacuous empty-diff shape, and crew B then
+# started a run on the same repo, so the shared daemon's bare `axi status`
+# answers with B's branch. A's state read therefore falls to the coarse runs
+# ledger, whose newest row for A's branch is `completed` at A's own head. That
+# row carries no PR, because the vacuous run skipped push and pr, and the
+# ledger offers no steps table and no run id to check any further - so nothing
+# here proves a delivery phase ran and the row must not read as a validated
+# done.
+test_coarse_completed_ledger_row_without_pr_is_not_reported_done() {
+  reset_fakes
+  local d short; d=$(new_case coarse-completed-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-completed
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-coarse-completed.meta" \
+    "window=fm:fm-feat-coarse-completed" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-09-08 22:10
+  completed  fm/feat-coarse-completed ${short}  2026-09-08 22:05
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-coarse-completed)
+  assert_not_contains "$out" "state: done" \
+    "a coarse completed row with no PR cannot prove the run validated anything"
+  assert_contains "$out" "state: unknown" "an unprovable terminal record reads unknown"
+  assert_contains "$out" "unverified" "the detail must say the record is unverified"
+  assert_contains "$out" "source: run-step" "the ledger row is still this branch's attributed run"
+  pass "coarse completed ledger row without a PR reads unverified, never done"
+}
+
+# The same two-crew coarse fallback for a run that really delivered: crew A ran
+# every phase and opened its PR, so its ledger row carries the PR URL - the
+# ledger's own positive proof that push and pr executed, which the vacuous
+# shape can never have. That terminal outcome must still reach the captain as
+# done, whether or not crew A managed to append its own `done:` status line.
+test_coarse_completed_ledger_row_with_pr_still_reads_done() {
+  reset_fakes
+  local d short; d=$(new_case coarse-completed-delivered)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-delivered
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-coarse-delivered.meta" \
+    "window=fm:fm-feat-coarse-delivered" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-09-08 22:10
+  completed  fm/feat-coarse-delivered ${short}  2026-09-08 22:05  https://github.com/o/r/pull/311
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-coarse-delivered)
+  assert_contains "$out" "state: done" "a completed row with a PR is a proven delivery"
+  assert_contains "$out" "https://github.com/o/r/pull/311" "the done detail names the delivered PR"
+  assert_not_contains "$out" "unverified" "proven delivery is not qualified as unverified"
+  assert_contains "$out" "source: run-step" "the ledger row is this branch's attributed run"
+  pass "coarse completed ledger row with a PR still reads done"
 }
 
 test_terminal_failed_ci_genuine_red_stays_failed() {
@@ -2259,6 +2468,12 @@ test_terminal_failed
 test_terminal_failed_ci_orphan_after_green_reads_done
 test_terminal_failed_ci_orphan_status_only_reads_done
 test_terminal_failed_ci_genuine_red_stays_failed
+test_completed_run_with_every_phase_skipped_reads_failed
+test_passed_outcome_with_every_phase_skipped_reads_failed
+test_completed_run_with_full_delivery_still_reads_done
+test_completed_run_with_partial_skip_still_reads_done
+test_coarse_completed_ledger_row_without_pr_is_not_reported_done
+test_coarse_completed_ledger_row_with_pr_still_reads_done
 test_terminal_failed_ci_orphan_second_failed_step_stays_failed
 test_cross_branch_attribution_via_runs_list
 test_coarse_socket_refusal_reports_blocked

@@ -162,6 +162,10 @@ case "${1:-} ${2:-}" in
     [ "$#" -eq 5 ] && [ "${4:-}" = --repo ] || exit 2
     printf 'pull_request:\n  number: %s\n  state: %s\n' "$3" "${FM_TEST_GH_MERGE_STATE:-merged}"
     ;;
+  api\ *)
+    [ "${FM_TEST_GH_PERMISSION_READ_FAIL:-0}" = 0 ] || exit 1
+    printf '%s\n' "${FM_TEST_GH_PUSH_PERMISSION:-true}"
+    ;;
 esac
 exit "${FM_TEST_GH_AXI_RC:-0}"
 SH
@@ -480,6 +484,54 @@ test_invalid_entrypoints_have_zero_side_effects() {
   [ ! -s "$dir/guard.log" ] || fail "invalid direct or merge data called the guard"
   [ ! -e "$TMP_ROOT/escape.check.sh" ] || fail "task traversal wrote outside state"
   pass "PR and teardown entrypoints reject invalid arguments before every side effect"
+}
+
+test_autonomous_github_target_requires_live_write_permission() {
+  local dir rc
+
+  dir=$(make_case autonomous-target-writable)
+  write_task_meta "$dir"
+  printf '%s\n' 'yolo=on' >> "$dir/home/state/task-a.meta"
+  FM_TEST_GH_PUSH_PERMISSION=true run_check_entry "$dir" task-a \
+    https://github.com/cisrd/firstmate/pull/8 > "$dir/stdout" 2> "$dir/stderr" \
+    || fail "autonomous-target-writable: writable target was refused"
+  assert_grep 'api /repos/cisrd/firstmate --jq .permissions.push' "$dir/gh-axi.log" \
+    "autonomous-target-writable: permission was not read for the URL-derived repository"
+  assert_grep 'pr=https://github.com/cisrd/firstmate/pull/8' "$dir/home/state/task-a.meta" \
+    "autonomous-target-writable: writable target was not recorded"
+
+  dir=$(make_case autonomous-target-read-only)
+  write_task_meta "$dir"
+  printf '%s\n' 'yolo=on' >> "$dir/home/state/task-a.meta"
+  set +e
+  FM_TEST_GH_PUSH_PERMISSION=false run_check_entry "$dir" task-a \
+    https://github.com/kunchenguid/firstmate/pull/3335 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "autonomous-target-read-only: read-only target was accepted"
+  assert_grep 'refusing autonomous delivery to read-only GitHub repository kunchenguid/firstmate' \
+    "$dir/stderr" "autonomous-target-read-only: refusal did not name the URL-derived target"
+  assert_no_grep '^pr=' "$dir/home/state/task-a.meta" \
+    "autonomous-target-read-only: read-only PR was recorded as ready"
+  assert_absent "$dir/home/state/task-a.check.sh" \
+    "autonomous-target-read-only: read-only PR armed a merge poll"
+  [ ! -s "$dir/guard.log" ] \
+    || fail "autonomous-target-read-only: refusal happened after the ordinary ready path began"
+
+  dir=$(make_case autonomous-target-permission-unreadable)
+  write_task_meta "$dir"
+  printf '%s\n' 'yolo=on' >> "$dir/home/state/task-a.meta"
+  set +e
+  FM_TEST_GH_PERMISSION_READ_FAIL=1 run_check_entry "$dir" task-a \
+    https://github.com/cisrd/firstmate/pull/9 > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "autonomous-target-permission-unreadable: unknown permission was accepted"
+  assert_grep 'could not verify live write permission for autonomous delivery target cisrd/firstmate' \
+    "$dir/stderr" "autonomous-target-permission-unreadable: unknown permission was not reported"
+  assert_no_grep '^pr=' "$dir/home/state/task-a.meta" \
+    "autonomous-target-permission-unreadable: unverifiable PR was recorded as ready"
+  pass "autonomous GitHub delivery accepts writable targets and refuses read-only or unverifiable ones"
 }
 
 test_valid_recording_and_merge_derivation() {
@@ -2136,6 +2188,7 @@ test_retirement_refuses_replacement_and_nonterminal_results
 test_retirement_queue_failure_and_receipt_tampering
 test_gitlab_merged_poll_retires
 test_invalid_entrypoints_have_zero_side_effects
+test_autonomous_github_target_requires_live_write_permission
 test_valid_recording_and_merge_derivation
 test_rejected_metacharacter_bytes_are_inert
 test_static_poll_contract

@@ -6,26 +6,28 @@
 # request is addressed through glab by the project URL rebuilt from the parsed
 # host and path, so any instance works and no host is hardcoded.
 #
-# Merge method on GitHub defaults to --squash when the caller passes none of
-# --squash, --merge, --rebase, or --method after the optional -- separator.
-# The gh-axi merge abstraction always performs the merge; the outcome read that
-# follows it never becomes a prerequisite for reaching that abstraction. After
-# gh-axi returns success, GitHub's live state is read back and accepted only
-# when the pull request is merged or in the merge queue. gh's GraphQL API
-# supplies that queue-aware read when gh is on PATH; when gh is absent or its
-# read fails, gh-axi's own view still proves a landed merge, and every outcome
-# it cannot prove refuses, reporting the single failed read when gh is absent
-# and naming both failed reads when gh is present and its own read failed.
-# If the pull request remains open and the base branch has an effective
-# merge_queue rule, the refusal names the queue's configured merge method and
-# the exact -- --auto --<method> retry flags, unless the caller already passed
-# that method with --auto to a merge command that returned success, in which
-# case it reports instead that the accepted request has not entered the queue
-# and the queue state has to be re-checked.
-# No method is selected for the caller in any case. A rules response that names
-# no queue rule, one that could not be read, rules that disagree, and a method
-# this script does not recognise are four distinct outcomes and are reported
-# apart, because each one leaves the operator somewhere different.
+# GitHub direct merges default to --squash when the caller names no method.
+# `--queue` is the only merge-queue request syntax and invokes GitHub's supported
+# GraphQL enqueuePullRequest mutation rather than the gh-axi merge parser.
+# One parser owns queue syntax and all caller-argument interpretation.
+# It refuses repeated queue tokens, a queue token mixed with an explicit merge
+# strategy, and any extra argument the enqueue mutation cannot honour.
+# Before enqueue, one live GraphQL read proves the URL-derived repository is
+# writable, the pull request is open, its status-check rollup is not red, and
+# its head still matches the head fm-pr-check recorded.
+# enqueuePullRequest receives that same head as expectedHeadOid, so a later push
+# makes the mutation fail instead of queueing a changed identity.
+# The base must have an effective merge_queue rule, and a successful mutation
+# must return a queue entry before an independent live read confirms membership.
+# A direct merge that discovers a queue-governed base prints one runnable
+# `--queue` retry, unless the caller already supplied any accepted queue token.
+# Rules that are absent, unreadable, conflicting, or unrecognised remain
+# distinct outcomes, but none can produce a retry the parser rejects.
+# The gh-axi merge abstraction still owns non-queue GitHub merges.
+# After it returns, GitHub's live state is read back and accepted only when the
+# pull request is merged or in the merge queue.
+# gh's GraphQL API supplies the queue-aware read when gh is on PATH; when gh is
+# absent or its read fails, gh-axi's own view can still prove a landed merge.
 # A caller-requested --auto that leaves the pull request neither merged nor
 # queued is refused the same way and says auto-merge was armed with nothing
 # landed or queued yet, or, when the merge command itself failed, that auto-merge
@@ -40,6 +42,7 @@
 # GitLab adds no method flag at all: its merge method is the project's own
 # setting, which the merge API applies, and imposing squash there would override
 # that convention rather than mirror the GitHub default.
+# Queue tokens are refused up front on GitLab, where no glab flag spells them.
 #
 # A GitLab merge is refused unless every pre-merge condition holds, each read
 # live at merge time rather than taken from recorded metadata: the merge request
@@ -103,55 +106,105 @@ PROJECT_URL="https://$FM_PR_HOST/$FM_PR_PATH"
 shift 2
 [ "${1:-}" = "--" ] && shift
 
-caller_has_merge_method() {
-  local arg
-  for arg in "$@"; do
-    case "$arg" in
-      --squash|--merge|--rebase|--method|--method=*) return 0 ;;
-    esac
-  done
-  return 1
-}
+# Parse the caller's merge arguments once for every provider path.
+# This is the single owner of queue-token grammar and of how caller arguments
+# are interpreted. Queue tokens are Firstmate flags,
+# never forge CLI flags. A repeated queue token, a queue token mixed with an
+# explicit strategy, or an argument the GraphQL enqueue path cannot honour is
+# refused rather than dropped or forwarded with changed meaning.
+FM_PR_CALLER_HAS_METHOD=false
+FM_PR_CALLER_METHOD=
+FM_PR_CALLER_AUTO=false
+FM_PR_CALLER_QUEUE=false
+FM_PR_CALLER_QUEUE_COUNT=0
+FM_PR_CALLER_QUEUE_TOKENS=
+FM_PR_CALLER_EXPLICIT_METHODS=
+FM_PR_CALLER_FORWARD=()
+fm_pr_parse_merge_args() {
+  local arg pending_method=false unsupported=''
+  FM_PR_CALLER_HAS_METHOD=false
+  FM_PR_CALLER_METHOD=
+  FM_PR_CALLER_AUTO=false
+  FM_PR_CALLER_QUEUE=false
+  FM_PR_CALLER_QUEUE_COUNT=0
+  FM_PR_CALLER_QUEUE_TOKENS=
+  FM_PR_CALLER_EXPLICIT_METHODS=
+  FM_PR_CALLER_FORWARD=()
 
-# The merge method the caller's own extra arguments named, in the --flag,
-# --method <value> and --method=<value> forms caller_has_merge_method accepts.
-caller_merge_method() {
-  local arg method='' pending=false
-  for arg in "$@"; do
-    if [ "$pending" = true ]; then
-      method=$arg
-      pending=false
+  while [ "$#" -gt 0 ]; do
+    arg=$1
+    shift
+    if [ "$pending_method" = true ]; then
+      FM_PR_CALLER_METHOD=$arg
+      FM_PR_CALLER_EXPLICIT_METHODS="${FM_PR_CALLER_EXPLICIT_METHODS:+$FM_PR_CALLER_EXPLICIT_METHODS }--method $arg"
+      FM_PR_CALLER_FORWARD+=(--method "$arg")
+      pending_method=false
       continue
     fi
     case "$arg" in
-      --squash) method=squash ;;
-      --merge) method=merge ;;
-      --rebase) method=rebase ;;
-      --method) pending=true ;;
-      --method=*) method=${arg#--method=} ;;
-    esac
-  done
-  printf '%s' "$method"
-}
-
-# Whether the caller's own extra arguments asked for auto-merge, including the
-# --flag=value spelling the forge's flag parser accepts. --disable-auto cancels
-# the request, and gh exposes no short option that could bundle either flag.
-caller_requested_auto_merge() {
-  local arg requested=1
-  for arg in "$@"; do
-    case "$arg" in
-      --auto) requested=0 ;;
+      --queue)
+        FM_PR_CALLER_HAS_METHOD=true
+        FM_PR_CALLER_METHOD=queue
+        FM_PR_CALLER_QUEUE=true
+        FM_PR_CALLER_QUEUE_COUNT=$((FM_PR_CALLER_QUEUE_COUNT + 1))
+        FM_PR_CALLER_QUEUE_TOKENS="${FM_PR_CALLER_QUEUE_TOKENS:+$FM_PR_CALLER_QUEUE_TOKENS }$arg"
+        ;;
+      --method)
+        FM_PR_CALLER_HAS_METHOD=true
+        pending_method=true
+        ;;
+      --squash|--merge|--rebase|--method=*)
+        FM_PR_CALLER_HAS_METHOD=true
+        FM_PR_CALLER_METHOD=${arg#--}
+        FM_PR_CALLER_METHOD=${FM_PR_CALLER_METHOD#method=}
+        FM_PR_CALLER_EXPLICIT_METHODS="${FM_PR_CALLER_EXPLICIT_METHODS:+$FM_PR_CALLER_EXPLICIT_METHODS }$arg"
+        FM_PR_CALLER_FORWARD+=("$arg")
+        ;;
+      --auto)
+        FM_PR_CALLER_AUTO=true
+        FM_PR_CALLER_FORWARD+=("$arg")
+        ;;
       --auto=*)
         case "${arg#--auto=}" in
-          [tT]|[tT][rR][uU][eE]|1) requested=0 ;;
-          *) requested=1 ;;
+          [tT]|[tT][rR][uU][eE]|1) FM_PR_CALLER_AUTO=true ;;
+          *) FM_PR_CALLER_AUTO=false ;;
         esac
+        FM_PR_CALLER_FORWARD+=("$arg")
         ;;
-      --disable-auto) requested=1 ;;
+      --disable-auto)
+        FM_PR_CALLER_AUTO=false
+        FM_PR_CALLER_FORWARD+=("$arg")
+        ;;
+      *) FM_PR_CALLER_FORWARD+=("$arg") ;;
     esac
   done
-  return "$requested"
+  if [ "$pending_method" = true ]; then
+    FM_PR_CALLER_EXPLICIT_METHODS="${FM_PR_CALLER_EXPLICIT_METHODS:+$FM_PR_CALLER_EXPLICIT_METHODS }--method"
+    FM_PR_CALLER_FORWARD+=(--method)
+  fi
+
+  if [ "$FM_PR_CALLER_QUEUE_COUNT" -gt 1 ]; then
+    printf 'error: extra merge arguments repeat the queue request (%s); pass exactly one queue token\n' \
+      "$FM_PR_CALLER_QUEUE_TOKENS" >&2
+    return 1
+  fi
+  if [ "$FM_PR_CALLER_QUEUE" = true ] && [ -n "$FM_PR_CALLER_EXPLICIT_METHODS" ]; then
+    printf 'error: extra merge arguments must not combine a queue request (%s) with an explicit merge strategy (%s)\n' \
+      "$FM_PR_CALLER_QUEUE_TOKENS" "$FM_PR_CALLER_EXPLICIT_METHODS" >&2
+    return 1
+  fi
+  if [ "$FM_PR_CALLER_QUEUE" = true ]; then
+    for arg in "${FM_PR_CALLER_FORWARD[@]+"${FM_PR_CALLER_FORWARD[@]}"}"; do
+      case "$arg" in
+        --auto|--auto=[tT]|--auto=[tT][rR][uU][eE]|--auto=1) ;;
+        *) unsupported="${unsupported:+$unsupported }$arg" ;;
+      esac
+    done
+    if [ -n "$unsupported" ]; then
+      printf 'error: queue enqueue does not support extra merge arguments (%s)\n' "$unsupported" >&2
+      return 1
+    fi
+  fi
 }
 
 reject_repo_overrides() {
@@ -186,7 +239,12 @@ reject_head_overrides() {
 }
 
 reject_repo_overrides "$@" || exit 1
+fm_pr_parse_merge_args "$@" || exit 1
 [ "$PROVIDER" != gitlab ] || reject_head_overrides "$@" || exit 1
+if [ "$PROVIDER" = gitlab ] && [ "$FM_PR_CALLER_QUEUE" = true ]; then
+  echo "error: extra merge arguments must not request GitHub's merge queue on GitLab" >&2
+  exit 1
+fi
 
 # Task-derived paths are constructed only after the canonical ID validation.
 META="$STATE/$ID.meta"
@@ -492,6 +550,134 @@ METHODS
   fi
 }
 
+FM_PR_GITHUB_NODE_ID=
+FM_PR_GITHUB_HEAD=
+
+# Read the exact PR identity and repository authority immediately before a
+# queue enqueue. The head is also passed to enqueuePullRequest as
+# expectedHeadOid, so a push after this read makes the mutation refuse rather
+# than queueing code this run did not inspect. A red rollup is refused before
+# enqueue, and repository READ permission cannot masquerade as merge authority.
+github_read_enqueue_preflight() {
+  local fields line recorded_head
+  local total=0 named=0 state='' merged='' queued='' base=''
+  local node='' head='' checks='' permission=''
+  command -v gh >/dev/null 2>&1 || {
+    echo "error: enqueueing a GitHub pull request requires gh on PATH" >&2
+    return 1
+  }
+  # shellcheck disable=SC2016  # GraphQL variables are literal query syntax.
+  if ! fields=$(gh api graphql \
+    -f query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){viewerPermission pullRequest(number:$number){id state merged isInMergeQueue baseRefName headRefOid commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}}' \
+    -F "owner=$PR_OWNER" -F "repo=$PR_REPO" -F "number=$PR_NUMBER" \
+    --jq '.data.repository as $r | $r.pullRequest | "state=" + (.state // ""), "merged=" + (.merged | tostring), "queued=" + (.isInMergeQueue | tostring), "base=" + (.baseRefName // ""), "node=" + (.id // ""), "head=" + (.headRefOid // ""), "checks=" + (.commits.nodes[0].commit.statusCheckRollup.state // "NONE"), "permission=" + ($r.viewerPermission // "")' \
+    2>/dev/null) || [ -z "$fields" ]; then
+    echo "error: could not read the GitHub pull request identity and merge authority before enqueueing" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      state=*) state=${line#state=} ;;
+      merged=*) merged=${line#merged=} ;;
+      queued=*) queued=${line#queued=} ;;
+      base=*) base=${line#base=} ;;
+      node=*) node=${line#node=} ;;
+      head=*) head=${line#head=} ;;
+      checks=*) checks=${line#checks=} ;;
+      permission=*) permission=${line#permission=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  if [ "$named" -ne 8 ] || [ "$total" -ne 8 ] \
+    || { ! { [ "$state" = OPEN ] && [ "$merged" = false ]; } \
+      && ! { [ "$state" = MERGED ] && [ "$merged" = true ]; }; } \
+    || { [ "$queued" != true ] && [ "$queued" != false ]; } \
+    || [ -z "$base" ] || [ -z "$node" ] || ! fm_pr_head_valid "$head"; then
+    echo "error: the GitHub pull request identity is not a readable enqueue candidate" >&2
+    return 1
+  fi
+  case "$permission" in
+    WRITE|MAINTAIN|ADMIN) ;;
+    *)
+      printf 'error: refusing to enqueue %s: repository %s/%s grants only %s permission, not merge authority\n' \
+        "$URL" "$PR_OWNER" "$PR_REPO" "${permission:-unreadable}" >&2
+      return 1
+      ;;
+  esac
+  case "$checks" in
+    FAILURE|ERROR)
+      printf 'error: refusing to enqueue %s: the current head %s has a red status-check rollup (%s)\n' \
+        "$URL" "$head" "$checks" >&2
+      return 1
+      ;;
+    SUCCESS|PENDING|EXPECTED|NONE) ;;
+    *)
+      printf 'error: refusing to enqueue %s: the status-check rollup is unreadable (%s)\n' \
+        "$URL" "${checks:-empty}" >&2
+      return 1
+      ;;
+  esac
+  recorded_head=$(grep '^pr_head=' "$META" | tail -1 | cut -d= -f2- || true)
+  if [ -n "$recorded_head" ] && [ "$recorded_head" != "$head" ]; then
+    printf 'error: refusing to enqueue %s: recorded head %s changed to %s before the queue request\n' \
+      "$URL" "$recorded_head" "$head" >&2
+    return 1
+  fi
+  FM_PR_GITHUB_STATE=$state
+  FM_PR_GITHUB_MERGED=$merged
+  FM_PR_GITHUB_QUEUED=$queued
+  FM_PR_GITHUB_BASE=$base
+  FM_PR_GITHUB_QUEUE_OBSERVED=true
+  FM_PR_GITHUB_NODE_ID=$node
+  FM_PR_GITHUB_HEAD=$head
+}
+
+# Invoke GitHub's supported queue operation. The mutation result must name a
+# queue entry, then the ordinary live outcome read independently confirms queue
+# membership. The expected head preserves the same changed-identity boundary
+# that direct merges obtain from the forge CLI.
+github_enqueue_pull_request() {
+  local fields line entry_id='' entry_state='' total=0 named=0
+  # shellcheck disable=SC2016  # GraphQL variables are literal query syntax.
+  if ! fields=$(gh api graphql \
+    -f query='mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){mergeQueueEntry{id state}}}' \
+    -f "pullRequestId=$FM_PR_GITHUB_NODE_ID" \
+    -f "expectedHeadOid=$FM_PR_GITHUB_HEAD" \
+    --jq '.data.enqueuePullRequest.mergeQueueEntry | "entry_id=" + (.id // ""), "entry_state=" + (.state // "")' \
+    2>&1); then
+    [ -z "$fields" ] || printf '%s\n' "$fields" >&2
+    echo "error: GitHub rejected enqueuePullRequest; nothing was reported as queued" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    total=$((total + 1))
+    case "$line" in
+      entry_id=*) entry_id=${line#entry_id=} ;;
+      entry_state=*) entry_state=${line#entry_state=} ;;
+      *) continue ;;
+    esac
+    named=$((named + 1))
+  done <<FIELDS
+$fields
+FIELDS
+  if [ "$named" -ne 2 ] || [ "$total" -ne 2 ] || [ -z "$entry_id" ]; then
+    echo "error: enqueuePullRequest returned no readable merge-queue entry" >&2
+    return 1
+  fi
+  case "$entry_state" in
+    QUEUED|AWAITING_CHECKS|MERGEABLE|UNMERGEABLE|LOCKED) ;;
+    *)
+      printf 'error: enqueuePullRequest returned an unknown merge-queue state (%s)\n' \
+        "${entry_state:-empty}" >&2
+      return 1
+      ;;
+  esac
+}
+
 record_pr_metadata() {
   if ! "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"; then
     return 1
@@ -502,9 +688,8 @@ record_pr_metadata() {
   }
 }
 
-FM_PR_GITHUB_AUTO_REQUESTED=false
+FM_PR_GITHUB_AUTO_REQUESTED=$FM_PR_CALLER_AUTO
 FM_PR_GITHUB_MERGE_ACCEPTED=false
-FM_PR_GITHUB_CALLER_METHOD=
 
 # The single gate every statement about what the forge accepted, armed, or
 # reported has to pass. A merge command that failed accepted nothing, so no
@@ -533,19 +718,21 @@ github_state_is_open() {
   esac
 }
 
-# Whether the caller's own named method is the one the queue is configured for,
-# compared without regard to the spelling either side happens to use.
-github_caller_method_is() {
-  case "$FM_PR_GITHUB_CALLER_METHOD" in
-    [mM][eE][rR][gG][eE]) [ "$1" = merge ] ;;
-    [sS][qQ][uU][aA][sS][hH]) [ "$1" = squash ] ;;
-    [rR][eE][bB][aA][sS][eE]) [ "$1" = rebase ] ;;
-    *) return 1 ;;
-  esac
+# The one retry a queue-governed base accepts. `--queue` is parsed by this
+# script and invokes enqueuePullRequest directly, so the command names neither
+# a merge strategy nor gh-axi's unrelated auto-merge flag.
+github_queue_retry_command() {
+  printf '%s %s %s -- --queue' "$0" "$ID" "$URL"
+}
+
+# A caller who supplied --queue already requested the operation the retry
+# would perform. Report the blocking cause instead of repeating that request.
+github_caller_already_ran_queue_retry() {
+  [ "$FM_PR_CALLER_QUEUE" = true ]
 }
 
 github_report_queue_rules() {
-  local queue_method methods_display
+  local queue_method methods_display situation
   github_read_queue_method
   case "$FM_PR_GITHUB_QUEUE_STATUS" in
     single)
@@ -554,31 +741,37 @@ github_report_queue_rules() {
         SQUASH) queue_method=squash ;;
         REBASE) queue_method=rebase ;;
       esac
-      if github_merge_command_succeeded \
-        && [ "$FM_PR_GITHUB_AUTO_REQUESTED" = true ] \
-        && github_caller_method_is "$queue_method"; then
-        printf 'error: this run refuses even though the request for %s was accepted with the exact flags base branch %s requires (--auto --%s): the pull request has still not entered the merge queue, so no landed or queued outcome is proven; re-check the pull request'"'"'s merge queue state before retrying\n' \
-          "$URL" "$FM_PR_GITHUB_BASE" "$queue_method" >&2
-      else
-        printf 'error: base branch %s requires the merge queue; retry with: %s %s %s -- --auto --%s\n' \
-          "$FM_PR_GITHUB_BASE" "$0" "$ID" "$URL" "$queue_method" >&2
-      fi
+      printf -v situation \
+        'base branch %s requires the merge queue, which sets the merge method (%s) itself and refuses an explicit strategy' \
+        "$FM_PR_GITHUB_BASE" "$queue_method"
       ;;
     conflicting)
-      printf 'error: base branch %s has conflicting merge queue methods (%s); exact retry flags are ambiguous\n' \
-        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }" >&2
+      printf -v situation \
+        'base branch %s has conflicting merge queue methods (%s), so which one it would apply is ambiguous; the merge queue applies its own without being told' \
+        "$FM_PR_GITHUB_BASE" "${FM_PR_GITHUB_QUEUE_METHODS//,/, }"
       ;;
     unrecognised)
       methods_display=${FM_PR_GITHUB_QUEUE_METHODS//,/, }
       [ -n "$methods_display" ] || methods_display='<none reported>'
-      printf 'error: base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises, so exact retry flags cannot be named\n' \
-        "$FM_PR_GITHUB_BASE" "$methods_display" >&2
+      printf -v situation \
+        'base branch %s requires the merge queue, but its configured merge method (%s) is not one this script recognises; the merge queue applies its own without being told' \
+        "$FM_PR_GITHUB_BASE" "$methods_display"
       ;;
     unreadable)
       printf 'error: the branch rules for base branch %s could not be read, so a merge queue requirement can be neither confirmed nor ruled out here\n' \
         "${FM_PR_GITHUB_BASE:-<unknown>}" >&2
+      return 0
+      ;;
+    *)
+      return 0
       ;;
   esac
+  if github_caller_already_ran_queue_retry; then
+    printf 'error: %s; enqueuePullRequest is the one supported queue operation and this run already requested it, so no different retry exists to name: the outcome reported above for %s is the blocking cause, and re-check the pull request'"'"'s merge queue state before running the same command again\n' \
+      "$situation" "$URL" >&2
+  else
+    printf 'error: %s; retry with: %s\n' "$situation" "$(github_queue_retry_command)" >&2
+  fi
 }
 
 github_report_unmerged_outcome() {
@@ -632,28 +825,64 @@ case "$PROVIDER" in
   github)
     merge_output=
     merge_args=()
-    if ! caller_has_merge_method "$@"; then
-      merge_args=(--squash)
-    fi
-    if caller_requested_auto_merge "$@"; then
-      FM_PR_GITHUB_AUTO_REQUESTED=true
-    fi
-    FM_PR_GITHUB_CALLER_METHOD=$(caller_merge_method "$@")
-    if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
-      "${merge_args[@]+"${merge_args[@]}"}" "$@" 2>&1); then
-      FM_PR_GITHUB_MERGE_ACCEPTED=true
-    else
-      merge_status=$?
-      [ -z "$merge_output" ] || printf '%s\n' "$merge_output" >&2
-      if github_read_outcome; then
-        if [ "$FM_PR_GITHUB_MERGED" != true ] && [ "$FM_PR_GITHUB_QUEUED" != true ]; then
-          github_report_unmerged_outcome
-        else
-          printf 'actionable: the merge command for %s failed, but the pull request reads back as state=%s, merged=%s, isInMergeQueue=%s\n' \
-            "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED" >&2
+    if [ "$FM_PR_CALLER_QUEUE" = true ]; then
+      github_read_enqueue_preflight || exit 1
+      if [ "$FM_PR_GITHUB_MERGED" = true ]; then
+        : # The ordinary outcome path below records the already-landed result.
+      elif [ "$FM_PR_GITHUB_QUEUED" = true ]; then
+        printf 'verified: %s is already queued (state=%s, merged=%s, isInMergeQueue=%s)\n' \
+          "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED"
+        exit 0
+      else
+        github_read_queue_method
+      case "$FM_PR_GITHUB_QUEUE_STATUS" in
+        single|conflicting|unrecognised) ;;
+        none)
+          printf 'error: refusing to enqueue %s: base branch %s has no effective merge-queue rule\n' \
+            "$URL" "$FM_PR_GITHUB_BASE" >&2
+          exit 1
+          ;;
+        *)
+          printf 'error: refusing to enqueue %s: the merge-queue rule for base branch %s could not be read\n' \
+            "$URL" "$FM_PR_GITHUB_BASE" >&2
+          exit 1
+          ;;
+      esac
+        enqueue_status=0
+        github_enqueue_pull_request || enqueue_status=$?
+        if [ "$enqueue_status" -ne 0 ]; then
+          if github_read_outcome; then
+            if [ "$FM_PR_GITHUB_QUEUED" = true ]; then
+              printf 'actionable: enqueuePullRequest for %s failed, but the pull request now reads as queued\n' \
+                "$URL" >&2
+            else
+              github_report_unmerged_outcome
+            fi
+          fi
+          exit "$enqueue_status"
         fi
       fi
-      exit "$merge_status"
+    else
+      if [ "$FM_PR_CALLER_HAS_METHOD" != true ]; then
+        merge_args=(--squash)
+      fi
+      if merge_output=$(gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" \
+        "${merge_args[@]+"${merge_args[@]}"}" \
+        "${FM_PR_CALLER_FORWARD[@]+"${FM_PR_CALLER_FORWARD[@]}"}" 2>&1); then
+        FM_PR_GITHUB_MERGE_ACCEPTED=true
+      else
+        merge_status=$?
+        [ -z "$merge_output" ] || printf '%s\n' "$merge_output" >&2
+        if github_read_outcome; then
+          if [ "$FM_PR_GITHUB_MERGED" != true ] && [ "$FM_PR_GITHUB_QUEUED" != true ]; then
+            github_report_unmerged_outcome
+          else
+            printf 'actionable: the merge command for %s failed, but the pull request reads back as state=%s, merged=%s, isInMergeQueue=%s\n' \
+              "$URL" "$FM_PR_GITHUB_STATE" "$FM_PR_GITHUB_MERGED" "$FM_PR_GITHUB_QUEUED" >&2
+          fi
+        fi
+        exit "$merge_status"
+      fi
     fi
     if ! github_read_outcome; then
       github_report_forge_output "$merge_output"

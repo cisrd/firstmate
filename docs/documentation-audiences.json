@@ -437,6 +437,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/github-merge-queue.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/grok-interrupt.md",
       "audience": "maintainer-verification"
     },

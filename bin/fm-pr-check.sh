@@ -5,6 +5,11 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
+# A GitHub task carrying yolo=on intends Firstmate to land the PR itself, so the
+# URL-derived repository must report live push permission before the PR can be
+# recorded as ready. A read-only upstream is refused instead of presenting a
+# green-looking PR that this home has no authority to land. Tasks with yolo off
+# retain the contribution workflow in which an upstream maintainer lands work.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -42,6 +47,38 @@ if [ ! -f "$META" ] || [ -L "$META" ] || [ "$(fm_pr_file_link_count "$META")" !=
   echo "error: task metadata is unavailable" >&2
   exit 1
 fi
+
+github_verify_autonomous_target_writable() {
+  local yolo permission
+  [ "$PROVIDER" = github ] || return 0
+  yolo=$(grep '^yolo=' "$META" | tail -1 | cut -d= -f2- || true)
+  [ "$yolo" = on ] || return 0
+  command -v gh-axi >/dev/null 2>&1 || {
+    echo "error: verifying an autonomous GitHub delivery target requires gh-axi on PATH" >&2
+    return 1
+  }
+  if ! permission=$(gh-axi api "/repos/$FM_PR_OWNER/$FM_PR_REPO" \
+    --jq '.permissions.push' 2>/dev/null); then
+    printf 'error: could not verify live write permission for autonomous delivery target %s/%s\n' \
+      "$FM_PR_OWNER" "$FM_PR_REPO" >&2
+    return 1
+  fi
+  case "$permission" in
+    true) return 0 ;;
+    false)
+      printf 'error: refusing autonomous delivery to read-only GitHub repository %s/%s; choose a writable intended target before opening or accepting the PR\n' \
+        "$FM_PR_OWNER" "$FM_PR_REPO" >&2
+      return 1
+      ;;
+    *)
+      printf 'error: could not verify live write permission for autonomous delivery target %s/%s\n' \
+        "$FM_PR_OWNER" "$FM_PR_REPO" >&2
+      return 1
+      ;;
+  esac
+}
+
+github_verify_autonomous_target_writable || exit 1
 
 # A prior exact merged result may have queued its durable wake immediately
 # before interruption.

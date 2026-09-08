@@ -82,6 +82,13 @@ Initialization configures the local gate and does not vendor a no-mistakes skill
 Do not create a commit merely because initialization ran.
 If doctor reports an environment, authentication, or daemon problem, resolve that blocker before dispatching work and never restart the shared daemon from a project operation.
 
+The repository that a pipeline opens its PR against is the clone's own `origin` remote, and `--fork-url` only chooses where branches are pushed while the PR still targets `origin`.
+A clone that contributes upstream therefore keeps `origin` on the parent repository on purpose and pairs it with `--fork-url`, which is that posture working as intended and not a target to correct; the paragraph below applies only when a project's registered delivery target is wrong for the repository the fleet is asked to land work in.
+For that case the delivery target is changed by repointing that clone's `origin` and running `no-mistakes init` again, which also refreshes the gate mirror to the newly registered target; `no-mistakes status` then reports the new target and keeps it across a daemon restart.
+Which repository a given project should deliver into is the captain's decision, so confirm the intended target before repointing anything and follow any contribution workflow the project documents for itself.
+Editing the gate mirror's own remote URL is not a supported way to change the target: it leaves the registration and the mirror's tracking refs pointing at the old repository, so work keeps landing in the previous target and a rebase can silently resolve against a base the new target never had.
+For an autonomous GitHub task, `bin/fm-pr-check.sh` independently reads live push permission for the URL-derived repository before accepting the resulting PR as ready, so an accidental read-only target is reported instead of looking landable.
+
 ## Remove
 
 Project removal is destructive.
