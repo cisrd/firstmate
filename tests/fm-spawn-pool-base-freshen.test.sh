@@ -773,7 +773,7 @@ test_originless_declared_base() {
 
 test_empty_remote_declaration_refuses() {
   local rec id out status
-  id=pool-empty-remote-declaration
+  id='pool-empty-remote-declaration'
   rec=$(make_case empty-remote-declaration "$id")
   read_case_record "$rec"
   printf -- '- project [no-mistakes integration-branch=] - fixture\n' > "$HOME_DIR/data/projects.md"
