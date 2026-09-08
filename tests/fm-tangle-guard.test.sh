@@ -33,6 +33,19 @@ make_repo() {
   printf '%s\n' "$dir"
 }
 
+test_git_primary_workdir_from_linked_worktree() {
+  local repo wt primary repo_real
+  repo=$(make_repo "$TMP_ROOT/primary-lib-repo")
+  git -C "$repo" worktree add -q --detach "$TMP_ROOT/primary-lib-wt" >/dev/null 2>&1
+  wt="$TMP_ROOT/primary-lib-wt"
+  repo_real=$(cd "$repo" && pwd -P)
+  primary=$(fm_git_primary_workdir "$wt")
+  [ "$primary" = "$repo_real" ] || fail "linked worktree should resolve to primary '$repo_real', got '$primary'"
+  primary=$(fm_git_primary_workdir "$repo")
+  [ "$primary" = "$repo_real" ] || fail "primary checkout should resolve to itself, got '$primary'"
+  pass "fm_git_primary_workdir: a linked worktree resolves to the primary checkout"
+}
+
 # --- shared lib: branch classification --------------------------------------
 
 # fm_primary_tangle_branch is the whole scoping decision: a NAMED non-default
@@ -133,12 +146,14 @@ test_brief_assertion_precedes_branch() {
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
     "brief is missing the isolation blocked-status contract"
-  assert_grep "The path check is authoritative" "$brief" \
-    "brief must make the path check authoritative"
-  assert_no_grep "A reliable test that you are in a linked worktree" "$brief" \
-    "brief must not present git-dir/common-dir as decisive"
-  assert_no_grep "they are identical in the primary checkout" "$brief" \
-    "brief must not claim the primary checkout has identical git dirs"
+  assert_grep "does not prove isolation" "$brief" \
+    "brief must say pwd vs git-toplevel equality does not prove isolation"
+  if grep -E 'git rev-parse [^`]*git-dir' "$brief" >/dev/null; then
+    fail "brief must not test isolation by comparing git directories: an ordinary clone and an Orca copy pass that test too"
+  fi
+  # shellcheck disable=SC2016 # Match literal Markdown backticks in the generated brief.
+  assert_grep '`# Worktree isolation` section' "$brief" \
+    "brief must send the worker to the exact path fm-spawn appends at launch"
   iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
   br=$(grep -n 'git checkout -b fm/' "$brief" | head -1 | cut -d: -f1)
   if [ -z "$iso" ] || [ -z "$br" ]; then
@@ -146,6 +161,146 @@ test_brief_assertion_precedes_branch() {
   fi
   [ "$iso" -lt "$br" ] || fail "isolation assertion (line $iso) must precede the branch step (line $br)"
   pass "fm-brief: ship brief asserts worktree isolation before the branch step"
+}
+
+test_brief_dot_project_resolves_primary_and_keeps_linked_worktree() {
+  local home brief primary primary_real wt
+  home="$TMP_ROOT/brief-dot-home"
+  mkdir -p "$home/data"
+  primary=$(make_repo "$TMP_ROOT/brief-dot-primary")
+  git -C "$primary" worktree add -q --detach "$TMP_ROOT/brief-dot-wt" >/dev/null 2>&1
+  wt="$TMP_ROOT/brief-dot-wt"
+  (
+    CDPATH='' cd -- "$wt" || exit 1
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" tangle-dot-hh8 . --mode no-mistakes >/dev/null
+  )
+  brief="$home/data/tangle-dot-hh8/brief.md"
+  assert_present "$brief" "dot-project brief was not scaffolded"
+  primary_real=$(cd "$primary" && pwd -P)
+  assert_grep "worktree of $(basename "$primary_real")" "$brief" \
+    "dot-project brief must label the copy with the repository's name, not '.'"
+  assert_no_grep "worktree of ." "$brief" \
+    "dot-project brief must not leave '.' as the repo label"
+  assert_no_grep "$primary_real" "$brief" \
+    "a scaffold must bake no primary path: the spawn-time isolation section owns it"
+  assert_grep "does not prove isolation" "$brief" \
+    "dot-project brief must not treat pwd vs toplevel as isolation"
+  pass "fm-brief: a project of '.' labels the repository and leaves every path to the launch contract"
+}
+
+test_spawn_dot_project_accepts_isolated_worktree() {
+  local home proj fakebin out status other linked linked_real
+  home="$TMP_ROOT/spawn-dot-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/spawn-dot-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-dot-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-linked" >/dev/null 2>&1
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-other" >/dev/null 2>&1
+  other="$TMP_ROOT/spawn-dot-other"
+  linked="$TMP_ROOT/spawn-dot-linked"
+  linked_real=$(cd "$linked" && pwd -P)
+  out=$(
+    CDPATH='' cd -- "$linked" || exit 1
+    fm_test_spawn_brief "$home" spawn-dot-ii9 brief
+    fm_test_run_spawn "$home" "$other" "$fakebin" \
+      spawn-dot-ii9 . codex --mode no-mistakes --yolo off
+  ); status=$?
+  expect_code 0 "$status" "spawn with project '.' into a linked worktree should succeed"$'\n'"$out"
+  assert_contains "$out" "spawned spawn-dot-ii9" "dot-project spawn did not report success"
+  assert_grep "project=$linked_real" "$home/state/spawn-dot-ii9.meta" \
+    "dot-project spawn did not bind the task to the caller's own physical project"
+  assert_not_contains "$out" "isolated worktree" "dot-project spawn wrongly refused an isolated treehouse copy"
+  pass "fm-spawn: project '.' from a linked worktree keeps that copy as the project and accepts a genuine isolated worktree"
+}
+
+# The launch brief is the contract the worker actually reads. A repo LABEL
+# cannot be compared with `pwd -P`, so the exact copy and the repository
+# primary have to be in it, whatever spelling the project was given.
+test_spawn_renders_exact_isolation_paths_into_the_launch_brief() {
+  local home proj fakebin out status wt wt_real proj_real brief
+  home="$TMP_ROOT/spawn-label-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/spawn-label-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-label-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-label-wt" >/dev/null 2>&1
+  wt="$TMP_ROOT/spawn-label-wt"
+  wt_real=$(cd "$wt" && pwd -P)
+  proj_real=$(cd "$proj" && pwd -P)
+  fm_test_spawn_brief "$home" spawn-label-kk1 brief
+  out=$(fm_test_run_spawn "$home" "$wt" "$fakebin" \
+    spawn-label-kk1 "$proj" codex --mode no-mistakes --yolo off); status=$?
+  expect_code 0 "$status" "a label-named ship spawn should succeed"$'\n'"$out"
+  brief="$home/data/spawn-label-kk1/launch-brief.md"
+  assert_present "$brief" "the launch brief the worker reads was not rendered"
+  assert_grep "Your task worktree is \`$wt_real\`" "$brief" \
+    "the launch brief must name the exact copy the worker must be in"
+  assert_grep "primary checkout is \`$proj_real\`" "$brief" \
+    "the launch brief must name the exact primary checkout the worker must not work in"
+  assert_grep "is not exactly \`$wt_real\`, STOP" "$brief" \
+    "the launch brief must stop the worker on a path mismatch"
+  assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
+    "the launch brief lost the isolation blocked-status contract"
+  pass "fm-spawn: the launch brief carries the exact worktree and primary paths, not a repo label"
+}
+
+# A brief scaffolded with `.` in one repository and launched against another
+# must carry exactly one primary-checkout path: the spawn's own.
+test_launch_brief_carries_one_primary_path_for_a_dot_scaffold() {
+  local home scaffold scaffold_real other other_real wt wt_real fakebin out status brief hits
+  home="$TMP_ROOT/dot-scaffold-home"
+  mkdir -p "$home/data"
+  scaffold=$(make_repo "$TMP_ROOT/dot-scaffold-repo")
+  git -C "$scaffold" worktree add -q --detach "$TMP_ROOT/dot-scaffold-linked" >/dev/null 2>&1
+  scaffold_real=$(cd "$scaffold" && pwd -P)
+  other=$(make_repo "$TMP_ROOT/dot-scaffold-other")
+  git -C "$other" worktree add -q --detach "$TMP_ROOT/dot-scaffold-wt" >/dev/null 2>&1
+  other_real=$(cd "$other" && pwd -P)
+  wt="$TMP_ROOT/dot-scaffold-wt"
+  wt_real=$(cd "$wt" && pwd -P)
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/dot-scaffold-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  (
+    CDPATH='' cd -- "$TMP_ROOT/dot-scaffold-linked" || exit 1
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" dot-scaffold-mm3 . --mode no-mistakes >/dev/null
+  ) || fail "dot-project brief scaffold failed"
+  sed -i.bak 's/{TASK}/Ship the dot-scaffold fixture./; s/{FIRSTMATE_SPEC}/Exercise the launch contract./' \
+    "$home/data/dot-scaffold-mm3/brief.md"
+  rm -f "$home/data/dot-scaffold-mm3/brief.md.bak"
+  out=$(fm_test_run_spawn "$home" "$wt" "$fakebin" \
+    dot-scaffold-mm3 "$other" codex --mode no-mistakes --yolo off); status=$?
+  expect_code 0 "$status" "a dot-scaffolded brief should still spawn against another project"$'\n'"$out"
+  brief="$home/data/dot-scaffold-mm3/launch-brief.md"
+  assert_present "$brief" "the launch brief was not rendered"
+  assert_grep "Your task worktree is \`$wt_real\`" "$brief" \
+    "the launch brief must name the copy this spawn resolved"
+  assert_grep "primary checkout is \`$other_real\`" "$brief" \
+    "the launch brief must name the spawning project's primary checkout"
+  assert_no_grep "$scaffold_real" "$brief" \
+    "the launch brief still carries the scaffold-time repository path"
+  hits=$(grep -c 'primary checkout is `' "$brief")
+  [ "$hits" = 1 ] || fail "the launch brief renders $hits primary-checkout paths; exactly one may govern"
+  pass "fm-spawn: a dot-scaffolded brief carries only the launching project's primary path"
+}
+
+test_spawn_dot_project_still_refuses_the_primary() {
+  local home proj fakebin out status
+  home="$TMP_ROOT/spawn-dot-primary-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/spawn-dot-primary-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-dot-primary-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-primary-linked" >/dev/null 2>&1
+  out=$(
+    CDPATH='' cd -- "$TMP_ROOT/spawn-dot-primary-linked" || exit 1
+    fm_test_spawn_brief "$home" spawn-dot-jj0 brief
+    fm_test_run_spawn "$home" "$proj" "$fakebin" \
+      spawn-dot-jj0 . codex --mode no-mistakes --yolo off
+  ); status=$?
+  expect_code 1 "$status" "spawn with project '.' into the primary checkout should abort"
+  assert_contains "$out" "did not enter an isolated worktree" "dot-project primary spawn lacked the isolation error"
+  pass "fm-spawn: project '.' still refuses the repository primary checkout"
 }
 
 # --- GUARD 1b: fm-spawn isolation abort -------------------------------------
@@ -286,9 +441,15 @@ test_spawn_tmux_window_construction() {
   pass "fm-spawn: appends windows by session-colon, pins the name, and targets the window id"
 }
 
+test_git_primary_workdir_from_linked_worktree
 test_lib_classification
 test_guard_banner
 test_bootstrap_line
 test_brief_assertion_precedes_branch
+test_brief_dot_project_resolves_primary_and_keeps_linked_worktree
 test_spawn_isolation_abort
+test_spawn_dot_project_accepts_isolated_worktree
+test_spawn_dot_project_still_refuses_the_primary
+test_spawn_renders_exact_isolation_paths_into_the_launch_brief
+test_launch_brief_carries_one_primary_path_for_a_dot_scaffold
 test_spawn_tmux_window_construction

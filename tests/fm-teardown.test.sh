@@ -656,7 +656,7 @@ backlog_row_state() {
 make_path_without_lsof() {  # <case-dir>
   local case_dir=$1 path_dir="$1/path-without-lsof" cmd resolved
   mkdir -p "$path_dir"
-  for cmd in awk bash basename cat chmod cp cut date dirname env find git grep head hostname id ln \
+  for cmd in awk bash basename cat chmod cksum cp cut date dirname env find git grep head hostname id ln \
     mkdir mktemp mv perl ps readlink realpath rm sed sh sleep sort stat tail timeout tr uname wc xargs; do
     resolved=$(command -v "$cmd" 2>/dev/null) || continue
     case "$resolved" in /*) ln -sf "$resolved" "$path_dir/$cmd" ;; esac
@@ -3316,6 +3316,122 @@ test_leaked_tasktmp_process_is_reaped() {
   pass "a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too"
 }
 
+test_lsof_absent_reaps_via_proc_cwd() {
+  local case_dir rc pid path_without_lsof outsider
+  case_dir=$(make_case lsof-absent-proc-cwd-reap)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+  PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
+    && fail "lsof-absent-proc-cwd-reap: fixture path unexpectedly exposes lsof"
+  [ -L /proc/self/cwd ] || {
+    pass "skipped: /proc/<pid>/cwd is unavailable on this host"
+    return 0
+  }
+
+  perl -e 'setpgrp(0, 0); chdir shift or die; exec "sleep", "300"' "$case_dir/wt" &
+  pid=$!
+  disown
+  ( cd "$TMP_ROOT" && exec sleep 300 ) &
+  outsider=$!
+  disown
+  sleep 0.3
+  kill -0 "$pid" 2>/dev/null || fail "lsof-absent-proc-cwd-reap: setup sleeper did not start"
+  kill -0 "$outsider" 2>/dev/null || fail "lsof-absent-proc-cwd-reap: outsider sleeper did not start"
+
+  rc=0
+  FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 0 "$rc" "lsof-absent-proc-cwd-reap: teardown should succeed on the first attempt"
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -KILL "$pid" 2>/dev/null || true
+    fail "lsof-absent-proc-cwd-reap: leaked worktree process survived the first teardown"
+  fi
+  if ! kill -0 "$outsider" 2>/dev/null; then
+    fail "lsof-absent-proc-cwd-reap: a process outside the task copy was signalled"
+  fi
+  kill -KILL "$outsider" 2>/dev/null || true
+  assert_grep "reaping leaked worktree process" "$case_dir/stderr" \
+    "lsof-absent-proc-cwd-reap: teardown did not report reaping via the no-lsof scan"
+  assert_no_grep "process group" "$case_dir/stderr" \
+    "lsof-absent-proc-cwd-reap: /proc cwd scan should not fall through to process-group kill"
+  pass "missing lsof still reaps leaked cwd processes on the first teardown via /proc"
+}
+
+test_no_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy() {
+  local case_dir rc pid path_without_lsof
+  case_dir=$(make_case no-lsof-invoker-inside)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+  path_without_lsof=$(make_path_without_lsof "$case_dir")
+  [ -L /proc/self/cwd ] || {
+    pass "skipped: /proc/<pid>/cwd is unavailable on this host"
+    return 0
+  }
+
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.2
+  rc=0
+  (
+    CDPATH='' cd -- "$case_dir/wt" || exit 1
+    FM_TEARDOWN_TEST_PATH="$path_without_lsof" run_teardown "$case_dir"
+  ) > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "no-lsof-invoker-inside: teardown should refuse while its own invoker occupies the copy"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "invoked from inside $case_dir/wt" "$case_dir/stderr" \
+    "no-lsof-invoker-inside: the refusal did not name the occupying invoker"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    fail "no-lsof-invoker-inside: teardown signalled processes in the copy before refusing"
+  fi
+  kill -KILL "$pid" 2>/dev/null || true
+  assert_present "$case_dir/wt" "no-lsof-invoker-inside: teardown removed the copy it refused to reap"
+  assert_present "$case_dir/state/task-x1.meta" "no-lsof-invoker-inside: teardown cleared metadata after refusing"
+  pass "missing lsof refuses rather than reporting a copy its own invoker still occupies as free"
+}
+
+# The lsof twin of the test above: identical state, identical answer. An lsof
+# host must not TERM the shell teardown was launched from just because lsof
+# happens to be installed.
+test_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy() {
+  local case_dir rc pid
+  case_dir=$(make_case lsof-invoker-inside)
+  write_meta "$case_dir" no-mistakes ship
+  land_shippable_commit "$case_dir"
+
+  ( cd "$case_dir/wt" && exec sleep 300 ) &
+  pid=$!
+  disown
+  sleep 0.2
+  cat > "$case_dir/fakebin/lsof" <<EOF
+#!/usr/bin/env bash
+invoker=\$(cat '$case_dir/invoker-pid')
+printf 'p%s\nfcwd\nn%s\n' '$pid' '$case_dir/wt'
+printf 'p%s\nfcwd\nn%s\n' "\$invoker" '$case_dir/wt'
+EOF
+  chmod +x "$case_dir/fakebin/lsof"
+
+  rc=0
+  (
+    CDPATH='' cd -- "$case_dir/wt" || exit 1
+    printf '%s\n' "$BASHPID" > "$case_dir/invoker-pid"
+    run_teardown "$case_dir"
+  ) > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+
+  expect_code 1 "$rc" "lsof-invoker-inside: teardown should refuse while its own invoker occupies the copy"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "invoked from inside $case_dir/wt" "$case_dir/stderr" \
+    "lsof-invoker-inside: the refusal did not name the occupying invoker"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    fail "lsof-invoker-inside: teardown signalled processes in the copy before refusing"
+  fi
+  kill -KILL "$pid" 2>/dev/null || true
+  assert_present "$case_dir/wt" "lsof-invoker-inside: teardown removed the copy it refused to reap"
+  assert_present "$case_dir/state/task-x1.meta" "lsof-invoker-inside: teardown cleared metadata after refusing"
+  pass "an lsof scan refuses a copy its own invoker still occupies instead of killing that shell"
+}
+
 test_lsof_absent_reaps_tmux_process_group() {
   local case_dir rc pid path_without_lsof
   case_dir=$(make_case lsof-absent-process-group-reap)
@@ -3324,6 +3440,7 @@ test_lsof_absent_reaps_tmux_process_group() {
   path_without_lsof=$(make_path_without_lsof "$case_dir")
   PATH="$path_without_lsof" command -v lsof >/dev/null 2>&1 \
     && fail "lsof-absent-process-group-reap: fixture path unexpectedly exposes lsof"
+  mkdir -p "$case_dir/no-proc"
 
   perl -e 'setpgrp(0, 0); chdir shift or die; exec "sleep", "300"' "$case_dir/wt" &
   pid=$!
@@ -3341,6 +3458,7 @@ EOF
 
   rc=0
   FM_TEARDOWN_TEST_PATH="$path_without_lsof" \
+  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" \
     run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 0 "$rc" "lsof-absent-process-group-reap: teardown should succeed"
@@ -3350,7 +3468,7 @@ EOF
   fi
   assert_grep "reaping leaked worktree process group" "$case_dir/stderr" \
     "lsof-absent-process-group-reap: teardown did not use the process-group fallback"
-  pass "missing lsof falls back to reaping the tmux pane process group"
+  pass "missing lsof and /proc falls back to reaping the tmux pane process group"
 }
 
 test_lsof_error_refuses_before_removal() {
@@ -3372,8 +3490,8 @@ EOF
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 1 "$rc" "lsof-error-refusal: teardown should refuse"
-  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (lsof failed)" "$case_dir/stderr" \
-    "lsof-error-refusal: teardown did not explain the lsof refusal"
+  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (the cwd scan could not establish a safe result)" "$case_dir/stderr" \
+    "lsof-error-refusal: teardown did not explain the failed cwd scan"
   assert_present "$case_dir/wt" "lsof-error-refusal: teardown removed the worktree"
   assert_present "$case_dir/state/task-x1.meta" "lsof-error-refusal: teardown removed task metadata"
   assert_absent "$case_dir/treehouse.log" "lsof-error-refusal: teardown returned the worktree"
@@ -3429,6 +3547,10 @@ SH
 
 test_exec_changed_process_is_still_reaped() {
   local case_dir rc pid marker done_flag survived=0
+  [ -n "$REAL_LSOF_FOR_TEST" ] && [ -x "$REAL_LSOF_FOR_TEST" ] || {
+    pass "skipped: exec-change identity fixture requires real lsof"
+    return 0
+  }
   case_dir=$(make_case exec-changed-process)
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
@@ -3724,6 +3846,9 @@ test_another_branchs_parked_run_is_never_touched
 test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
+test_lsof_absent_reaps_via_proc_cwd
+test_no_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy
+test_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed

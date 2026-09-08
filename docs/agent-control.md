@@ -63,6 +63,7 @@ It is not deterministic across the verified adapters: codex, grok, and gemini re
    A harness change resets model and effort unless they are named too, because a model chosen for one adapter does not transfer to another.
 2. **Safe checkpoint.**
    The recorded worktree must exist and be a worktree root; its head and dirty state are recorded.
+   Live occupancy must pass the [fail-closed boundaries](#fail-closed-boundaries) below.
    For a `kind=secondmate` task, the home's identity marker must match and its child records must be readable, so a relaunch can never strand child work behind an unreadable home.
    A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
 3. **Record the note.**
@@ -99,7 +100,10 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   zellij, orca, and cmux are refused rather than reported as successful blind.
 - An ambiguous or unreadable endpoint state refuses.
   Only a positively classified state acts.
-- `fm-spawn --relaunch` independently refuses unless the recorded endpoint is positively agent-free and its shell is sitting in the recorded worktree, so a replacement can never join a live agent or start outside the copy holding the work.
+- Relaunch verifies the live occupied directory against the recorded worktree **before** stopping the running agent.
+  tmux and Herdr expose that foreground-process cwd passively; Herdr's pane-creation cwd is not that proof, and an empty, mismatched, or active-probe-only result preserves the agent.
+  After stop, `fm-spawn --relaunch` re-reads that directory itself and refuses unless the endpoint - now positively agent-free - is still sitting in the recorded worktree.
+  It never types a `cd` to walk an idle shell back in: a ship or scout copy no live process is holding is one the pool may already have handed to another task, so the relaunch fails closed and leaves the copy alone rather than starting a second worker in it.
 
 ## Capability matrix
 

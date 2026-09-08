@@ -92,6 +92,14 @@ case "${1:-}" in
         'export TRACEPARENT='*)
           [ -z "${FM_FAKE_TRACE_EXPORTED:-}" ] || : > "$FM_FAKE_TRACE_EXPORTED"
           ;;
+        cd\ *)
+          if [ -n "${FM_FAKE_CD_WORKS:-}" ]; then
+            cd_path=${payload#cd }
+            cd_path=${cd_path#\'}
+            cd_path=${cd_path%\'}
+            printf '%s' "$cd_path" > "$D/cwd-after-stop"
+          fi
+          ;;
       esac
     fi
     exit 0 ;;
@@ -104,6 +112,9 @@ case "${1:-}" in
           if [ -n "${FM_FAKE_CWD_RACE_READY:-}" ]; then
             : > "$FM_FAKE_CWD_RACE_READY"
             /bin/sleep 1
+          fi
+          if [ -f "$D/cwd-after-stop" ] && [ "$(cat "$D/command" 2>/dev/null)" = zsh ]; then
+            cat "$D/cwd-after-stop"; printf '\n'; exit 0
           fi
           cat "$D/cwd"; printf '\n'; exit 0 ;;
       esac
@@ -185,6 +196,7 @@ run_control() {  # <case-dir> <args...>
     FM_FAKE_TRACE_RELEASE="${FM_FAKE_TRACE_RELEASE:-}" \
     FM_FAKE_META_WRITER_READY="${FM_FAKE_META_WRITER_READY:-}" \
     FM_FAKE_TRACE_EXPORTED="${FM_FAKE_TRACE_EXPORTED:-}" \
+    FM_FAKE_CD_WORKS="${FM_FAKE_CD_WORKS:-}" \
     "$CONTROL" "$@" 2>&1
 }
 
@@ -1010,14 +1022,60 @@ test_checkpoint_refuses_uninspectable_head_and_status() {
 
 # --- 5. failure after the agent is stopped -----------------------------------
 
+test_occupied_directory_mismatch_refuses_before_stop() {
+  local dir out rc before
+  dir=$(new_case occ-mismatch rl43)
+  add_ship_task "$dir" rl43 claude
+  before=$(cat "$dir/home/state/rl43.meta")
+  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  out=$(run_control "$dir" rl43 relaunch --harness codex --note "do not stop yet"); rc=$?
+  expect_code 1 "$rc" "a live shell outside the recorded copy should refuse"$'\n'"$out"
+  assert_contains "$out" "not its recorded worktree" "the refusal should name the occupied-directory mismatch"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "an occupied-directory mismatch must not stop the agent"
+  [ "$(cat "$dir/home/state/rl43.meta")" = "$before" ] \
+    || fail "a pre-stop occupancy refusal must leave the durable record byte-identical"
+  assert_not_contains "$out" "no agent is running" \
+    "a pre-stop occupancy refusal must not claim the agent was already stopped"
+  pass "fm-control relaunch: a live shell outside the recorded copy is refused before stop"
+}
+
+test_unreadable_occupied_directory_preserves_the_agent() {
+  local dir out rc
+  dir=$(new_case occ-empty rl44)
+  add_ship_task "$dir" rl44 claude
+  : > "$dir/fake/cwd"
+  out=$(run_control "$dir" rl44 relaunch --note "cannot see cwd"); rc=$?
+  expect_code 1 "$rc" "an unreadable live cwd should refuse"$'\n'"$out"
+  assert_contains "$out" "cannot be verified" "the refusal should name the failed occupancy proof"
+  [ "$(cat "$dir/fake/command")" = claude ] || fail "an unverifiable live cwd must not stop the agent"
+  pass "fm-control relaunch: an unverifiable live cwd preserves the agent"
+}
+
+test_idle_shell_outside_the_copy_is_never_walked_back_into_it() {
+  local dir out rc
+  dir=$(new_case idle-cwd rl45)
+  add_ship_task "$dir" rl45 claude
+  # The pane would honour a cd (FM_FAKE_CD_WORKS), so a re-entry attempt would
+  # succeed here: nothing occupies a pooled copy the pool may already have
+  # handed to another task, which is why the relaunch has to refuse instead.
+  printf '%s' "$dir/proj" > "$dir/fake/cwd-after-stop"
+  out=$(FM_FAKE_CD_WORKS=1 run_control "$dir" rl45 relaunch --note "do not re-enter an unheld copy"); rc=$?
+  expect_code 1 "$rc" "an endpoint that left the recorded copy should refuse"$'\n'"$out"
+  assert_contains "$out" "not its recorded worktree" "the refusal should name the copy the endpoint left"
+  assert_no_grep "cd " "$dir/fake/keys" "relaunch typed a cd into a copy nothing was holding"
+  [ "$(meta_field "$dir" rl45 worktree)" = "$dir/wt" ] \
+    || fail "the refusal changed the recorded copy"
+  pass "fm-control relaunch: an endpoint outside the recorded copy refuses instead of re-entering it"
+}
+
 test_launch_failure_keeps_the_prior_record_and_reports_it() {
   local dir out rc before
   dir=$(new_case rollback rl13)
   add_ship_task "$dir" rl13 claude
   before=$(cat "$dir/home/state/rl13.meta")
-  # The endpoint's shell is not in the recorded worktree, so the launch owner
-  # refuses AFTER the previous agent has already been stopped.
-  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  # Live occupancy is the worktree, so stop is allowed. After stop the idle
+  # shell reports the launch directory, so the launch owner refuses.
+  printf '%s' "$dir/proj" > "$dir/fake/cwd-after-stop"
   out=$(run_control "$dir" rl13 relaunch --harness codex --note "carry this forward"); rc=$?
   expect_code 1 "$rc" "a failed launch should fail closed"$'\n'"$out"
   assert_contains "$out" "no agent is running" "the failure should say no agent is running"
@@ -1037,7 +1095,7 @@ test_prepublication_failure_keeps_concurrent_durable_metadata() {
   local dir control_pid link_out rc i=0
   dir=$(new_case rollback-race rl30)
   add_ship_task "$dir" rl30 claude
-  printf '%s' "$dir/proj" > "$dir/fake/cwd"
+  printf '%s' "$dir/proj" > "$dir/fake/cwd-after-stop"
   FM_FAKE_CWD_RACE_READY="$dir/cwd-race-ready" \
     run_control "$dir" rl30 relaunch --harness codex --note "preserve concurrent metadata" \
       > "$dir/control.out" &
@@ -1492,7 +1550,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
   printf 'zsh' > "$dir/fake/command"
   printf '%s' "$dir/proj" > "$dir/fake/cwd"
   out=$(run_spawn "$dir" rl18 --relaunch --harness claude); rc=$?
-  expect_code 1 "$rc" "a pane outside the worktree should refuse"
+  expect_code 1 "$rc" "a pane that cannot enter the worktree should refuse"
   assert_contains "$out" "not its recorded worktree" "the refusal should name the wrong location"
   pass "fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work"
 }
@@ -1562,6 +1620,9 @@ test_missing_worktree_refuses_before_stopping_anything
 test_missing_instructions_refuse_before_stopping_anything
 test_checkpoint_refusal_leaves_the_record_byte_identical
 test_checkpoint_refuses_uninspectable_head_and_status
+test_occupied_directory_mismatch_refuses_before_stop
+test_unreadable_occupied_directory_preserves_the_agent
+test_idle_shell_outside_the_copy_is_never_walked_back_into_it
 test_launch_failure_keeps_the_prior_record_and_reports_it
 test_prepublication_failure_keeps_concurrent_durable_metadata
 test_post_publication_launch_failure_keeps_the_new_record

@@ -500,6 +500,31 @@ test_reused_pool_slot_refuses_before_touching_the_other_task() {
   pass "fm-teardown: a pool slot named by a second task record is never returned, killed, or reset"
 }
 
+test_non_pool_shared_worktree_refuses_before_reap() {
+  local dir id=stale-task other=live-task worker rc
+  dir=$(make_case non-pool-shared)
+  fm_write_meta "$dir/home/state/$id.meta" \
+    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  fm_write_meta "$dir/home/state/$other.meta" \
+    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
+    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
+  ( cd "$dir/worktree" && exec sleep 30 ) &
+  worker=$!
+  set +e
+  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "teardown destroyed a non-pool copy another task still holds"
+  kill -0 "$worker" 2>/dev/null || fail "teardown reaped the worker in the shared non-pool copy"
+  assert_present "$dir/worktree/sentinel" "teardown reset a shared non-pool copy"
+  [ ! -s "$dir/runtime.log" ] \
+    || fail "teardown reached the runtime on a shared non-pool copy: $(cat "$dir/runtime.log")"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+  pass "fm-teardown: a shared ordinary worktree is refused before any process is signalled"
+}
+
 test_cross_home_pool_slot_collision_refuses() {
   local dir id=stale-task other=secondmate-task second_home second_project rc
   dir=$(make_case slot-reuse-cross-home)
@@ -835,6 +860,7 @@ test_recorded_process_identity_cleanup_is_exact
 test_isolated_tmux_invalid_and_valid_cleanup
 test_bare_relative_origin_shares_project_lock_with_clone
 test_reused_pool_slot_refuses_before_touching_the_other_task
+test_non_pool_shared_worktree_refuses_before_reap
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down
 test_recorded_endpoint_that_changed_directory_still_tears_down

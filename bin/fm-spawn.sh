@@ -39,9 +39,12 @@
 #   model, and effort may change, which is what makes a harness switch one
 #   ordinary relaunch. It refuses unless the recorded endpoint is positively
 #   agent-free on a backend with a recovery-grade agent-state classifier (tmux
-#   or herdr), refuses unless the endpoint's shell is sitting in the recorded
-#   worktree, and clears the previous harness's per-task wiring before arming
-#   the new incarnation.
+#   or herdr). The control plane verifies the live occupied directory before
+#   stopping the previous agent; this script independently refuses unless the
+#   endpoint's shell is still sitting in the recorded worktree, because a
+#   ship/scout copy nothing occupies is a copy the pool may already have handed
+#   to someone else. It clears the previous harness's per-task wiring before
+#   arming the new incarnation.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -175,6 +178,14 @@
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from both the spawning project and its repository's
 #   primary checkout, including when the spawning project is a linked worktree.
+#   A project path of `.` resolves to the caller's own PHYSICAL directory, so
+#   the isolation comparisons cannot be defeated by a symlinked spelling and a
+#   genuine treehouse copy is not refused. It is never rebound to the
+#   repository primary: a secondmate spawning from its own leased home stays
+#   bound to that home.
+#   The same two paths the guard proved - the resolved copy and the repository
+#   primary - are appended to every ship/scout launch brief, because the brief's
+#   repo positional is a label the worker cannot compare with its own `pwd -P`.
 #   On the backends that discover that path by reading the task pane's own cwd,
 #   the same isolation test screens every read: a pane still showing the project
 #   or the repository primary while `treehouse get` prepares the slot is waited
@@ -423,6 +434,8 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -2142,7 +2155,7 @@ if [ "$KIND" = secondmate ]; then
     BRIEF="$DATA/$ID/brief.md"
   fi
 else
-  PROJ_ABS="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)"
+  PROJ_ABS="$(CDPATH='' cd -- "$(resolve_project_dir_arg "$PROJ")" && pwd -P)"
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
@@ -2996,7 +3009,9 @@ if [ "$RELAUNCH" -eq 1 ]; then
   # No worktree is acquired: the recorded one is reused as-is. What must be
   # proven instead is that the adopted endpoint's shell is actually sitting in
   # that worktree, so the replacement agent starts where the work is rather
-  # than wherever the pane happened to drift.
+  # than wherever the pane happened to drift. A shell that is no longer in the
+  # copy is not corrected into it: for a pooled slot, nothing holding the copy
+  # is exactly the state in which the pool may hand it to another task.
   relaunch_wt_real=$(real_path_or_raw "$WT")
   relaunch_seen=
   for _ in $(seq 1 10); do
@@ -3073,6 +3088,33 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
   freshen_spawn_worktree_base "$WT" || exit 1
+fi
+
+# The worker's isolation check needs paths, not names: the brief's repo
+# positional is a label, and no label can be compared with `pwd -P`. Both paths
+# exist only here, once the copy is resolved and validated, so they are rendered
+# into the launch brief the agent is about to read - whatever the project
+# spelling was, and whether the copy is a treehouse slot, an Orca worktree, or
+# any other accepted isolated copy.
+append_worktree_isolation_contract() {
+  local wt_real primary
+  wt_real=$(cd "$WT" && pwd -P) || return 1
+  primary=$(fm_git_primary_workdir "$PROJ_ABS" 2>/dev/null) || primary=
+  {
+    printf '\n# Worktree isolation\n'
+    # shellcheck disable=SC2016 # Backticks are literal Markdown, not command substitutions.
+    printf 'Your task worktree is `%s`.\n' "$wt_real"
+    [ -z "$primary" ] \
+      || printf "The project's primary checkout is \`%s\`; it is never yours to work in.\n" "$primary"
+    # shellcheck disable=SC2016 # Backticks are literal worker instructions.
+    printf 'Before anything else run `pwd -P`. If it is not exactly `%s`, STOP - do not branch or commit here - append `blocked: launched in primary checkout, not an isolated worktree` to the status file and stop.\n' "$wt_real"
+  } >> "$BRIEF"
+}
+if [ "$KIND" = ship ] || [ "$KIND" = scout ]; then
+  append_worktree_isolation_contract || {
+    echo "error: could not render task $ID's worktree-isolation contract into $BRIEF" >&2
+    exit 1
+  }
 fi
 
 # Pre-register Claude's workspace trust for the worktree, at the first point the

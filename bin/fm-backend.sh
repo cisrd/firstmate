@@ -761,6 +761,24 @@ fm_backend_kill() {  # <backend> <target>
   esac
 }
 
+# fm_backend_current_path: the live occupied working directory of a running
+# target, or nonzero when the backend cannot prove it without interacting with
+# the agent. tmux and Herdr expose the foreground process cwd passively. Zellij
+# and cmux only support an active shell probe, which is safe during pre-agent
+# spawn discovery but would submit `pwd` into a running agent during relaunch;
+# Orca exposes no corresponding proof.
+fm_backend_current_path() {  # <backend> <target>
+  local backend=$1
+  shift
+  fm_backend_source "$backend" || return 1
+  case "$backend" in
+    tmux) fm_backend_tmux_current_path "$@" ;;
+    herdr) fm_backend_herdr_current_path "$@" ;;
+    zellij|cmux|orca) return 1 ;;
+    *) echo "error: no current-path implementation for backend '$backend'" >&2; return 1 ;;
+  esac
+}
+
 fm_backend_remove_worktree() {  # <backend> <worktree-id>
   local backend=$1
   shift

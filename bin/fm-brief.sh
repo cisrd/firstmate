@@ -48,6 +48,20 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
+# No path is baked in here: bin/fm-spawn.sh appends the exact copy and the
+# repository primary to the launch brief as `# Worktree isolation`, and owns
+# both, so a scaffold made in one place can never contradict the project the
+# spawn actually launched against. The assertion in this scaffold points at
+# that section and compares physical paths, because a repo LABEL is not
+# comparable with `pwd -P`, equality of pwd and git-toplevel does not prove
+# isolation, and git-dir vs git-common-dir equality only proves the copy is not
+# a linked worktree, which an ordinary clone and an Orca-managed copy also
+# satisfy.
+# A project given as exactly `.` - and nothing else, since every other spelling
+# is a repo LABEL rather than a path - resolves to its repository's primary
+# working tree (fm-tangle-lib.sh) for the worktree LABEL alone, so `.` from a
+# linked firstmate worktree reads as the repository's name rather than a dot;
+# any other label is rendered verbatim.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -90,6 +104,8 @@ esac
 . "$SCRIPT_DIR/fm-classify-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
+# shellcheck source=bin/fm-tangle-lib.sh
+. "$SCRIPT_DIR/fm-tangle-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -310,6 +326,11 @@ exit 0
 fi
 
 REPO=${POS[1]}
+REPO_LABEL=$REPO
+if [ "$REPO" = . ] && REPO_ABS=$(pwd -P 2>/dev/null); then
+  REPO_PRIMARY=$(fm_git_primary_workdir "$REPO_ABS" 2>/dev/null) || REPO_PRIMARY=$REPO_ABS
+  REPO_LABEL=$(basename "$REPO_PRIMARY")
+fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
@@ -362,7 +383,7 @@ $TASK_SECTION
 $HERDR_SECTION
 
 # Setup
-You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
+You are in a disposable git worktree of $REPO_LABEL, at a detached HEAD on a clean default branch.
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.
@@ -446,11 +467,11 @@ $TASK_SECTION
 $HERDR_SECTION
 
 # Setup
-You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
+You are in a disposable git worktree of $REPO_LABEL, at a detached HEAD on a clean default branch.
 
-**Verify isolation before anything else.** Run \`pwd -P\` and \`git rev-parse --show-toplevel\`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.
-The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
-If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+**Verify isolation before anything else.** Run \`pwd -P\`. It must be exactly the path named in this brief's \`# Worktree isolation\` section, which firstmate renders at launch: your own disposable copy (a treehouse pool path, an Orca-managed worktree, or another isolated worktree), never the project's primary checkout.
+Equality of \`pwd\` and \`git rev-parse --show-toplevel\` does not prove isolation: both name the current worktree root in the primary checkout and in a linked worktree alike. Compare the physical paths instead.
+If \`pwd -P\` is not that exact worktree path, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

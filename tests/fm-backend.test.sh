@@ -642,6 +642,32 @@ test_backend_of_selector_matches_explicit_target_meta() {
   pass "fm_backend_of_selector: exact task ids, legacy fm-<id> labels, and matching explicit targets inherit metadata backend"
 }
 
+test_running_current_path_never_uses_active_shell_probes() {
+  local out rc marker="$TMP_ROOT/current-path-probe-called"
+  out=$(
+    fm_backend_source() { :; }
+    fm_backend_tmux_current_path() { printf '/tmux-live\n'; }
+    fm_backend_herdr_current_path() { printf '/herdr-live\n'; }
+    fm_backend_zellij_current_path() { : > "$marker"; printf '/unsafe-zellij-probe\n'; }
+    fm_backend_cmux_current_path() { : > "$marker"; printf '/unsafe-cmux-probe\n'; }
+    printf 'tmux=%s\n' "$(fm_backend_current_path tmux session:pane)"
+    printf 'herdr=%s\n' "$(fm_backend_current_path herdr session:pane)"
+    fm_backend_current_path zellij session:pane
+  ); rc=$?
+  expect_code 1 "$rc" "a running Zellij agent has no passive cwd proof"
+  assert_contains "$out" "tmux=/tmux-live" "the running-path dispatch lost tmux's passive cwd proof"
+  assert_contains "$out" "herdr=/herdr-live" "the running-path dispatch lost Herdr's passive cwd proof"
+  assert_absent "$marker" "the running-path dispatch submitted an active shell probe into an agent"
+  if ( fm_backend_source() { :; }; fm_backend_cmux_current_path() { : > "$marker"; }; fm_backend_current_path cmux workspace:surface ); then
+    fail "a running cmux agent has no passive cwd proof"
+  fi
+  assert_absent "$marker" "the running-path dispatch submitted an active cmux shell probe into an agent"
+  if ( fm_backend_source() { :; }; fm_backend_current_path orca terminal ); then
+    fail "a running Orca agent has no cwd proof"
+  fi
+  pass "fm_backend_current_path: relaunch uses passive cwd evidence or refuses without probing the agent"
+}
+
 # --- old vs new: fm-send.sh --------------------------------------------------
 
 make_send_fakebin() {  # <dir> -> echoes fakebin dir; logs every tmux call to $FM_TMUX_LOG
@@ -1152,6 +1178,7 @@ test_backend_validate_spawn_accepts_orca
 test_meta_get_and_backend_of_meta
 test_resolve_selector_three_forms
 test_backend_of_selector_matches_explicit_target_meta
+test_running_current_path_never_uses_active_shell_probes
 test_send_tmux_contract
 test_peek_conformance_old_vs_new
 test_spawn_symlinked_project_prefix_avoids_false_refusal

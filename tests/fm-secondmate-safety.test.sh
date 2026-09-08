@@ -2778,6 +2778,160 @@ EOF
   pass "force teardown refuses unregistered child worktree paths"
 }
 
+# A forced teardown reaches its descendants' copies through the child path, so
+# the shared-copy proof has to run there too: an ordinary linked worktree two
+# live records claim is the same collision as a shared pool slot.
+test_secondmate_force_teardown_refuses_shared_child_worktree() {
+  local home subhome fmroot childproj childwt fakebin log err worker rc
+  home="$TMP_ROOT/shared-child-home"
+  subhome="$TMP_ROOT/shared-child-subhome"
+  fmroot="$TMP_ROOT/shared-child-fmroot"
+  childproj="$TMP_ROOT/shared-child-project"
+  childwt="$TMP_ROOT/shared-child-worktree"
+  err="$TMP_ROOT/shared-child.err"
+  make_firstmate_git_root "$fmroot"
+  git -C "$fmroot" worktree add --quiet --detach "$subhome" HEAD
+  mkdir -p "$home/state" "$home/data" "$subhome/state"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  make_firstmate_git_root "$childproj"
+  git -C "$childproj" worktree add --quiet --detach "$childwt" HEAD
+  : > "$childwt/sentinel"
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+  printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  cat > "$subhome/state/child.meta" <<EOF
+window=firstmate:fm-child
+worktree=$childwt
+project=$childproj
+harness=echo
+kind=ship
+mode=no-mistakes
+yolo=off
+EOF
+  # A second live record, in the root home, names the very same copy.
+  cat > "$home/state/neighbour.meta" <<EOF
+window=firstmate:fm-neighbour
+worktree=$childwt
+project=$childproj
+harness=echo
+kind=ship
+mode=no-mistakes
+yolo=off
+EOF
+  ( cd "$childwt" && exec sleep 30 ) &
+  worker=$!
+  fakebin=$(make_fake_tmux "$TMP_ROOT/shared-child-fake")
+  log="$TMP_ROOT/shared-child-fake/tmux.log"
+  rc=0
+  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/shared-child-fake/pane.txt" \
+    "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "force teardown destroyed a child copy a second live record still claims"
+  kill -0 "$worker" 2>/dev/null || fail "force teardown reaped the worker in the shared child copy"
+  [ -e "$childwt/sentinel" ] || fail "force teardown reset a shared child copy"
+  [ -d "$subhome" ] || fail "force teardown removed the home after the shared-copy refusal"
+  [ -e "$subhome/state/child.meta" ] || fail "force teardown cleared child meta after the shared-copy refusal"
+  grep -F 'neighbour' "$err" >/dev/null || fail "the shared-copy refusal did not name the task holding the copy"
+  grep -F 'kill-window' "$log" >/dev/null && fail "force teardown killed windows before the shared-copy refusal"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+  pass "force teardown refuses a child copy a second live record still claims"
+}
+
+# Orca descendants reach the same destructive cleanup as every other child, so
+# the shared-copy proof has to cover them too rather than stopping at the
+# backend gate.
+test_secondmate_force_teardown_refuses_shared_orca_child_worktree() {
+  local home subhome fmroot childproj childwt fakebin log err worker rc
+  home="$TMP_ROOT/shared-orca-home"
+  subhome="$TMP_ROOT/shared-orca-subhome"
+  fmroot="$TMP_ROOT/shared-orca-fmroot"
+  childproj="$TMP_ROOT/shared-orca-project"
+  childwt="$TMP_ROOT/shared-orca-worktree"
+  err="$TMP_ROOT/shared-orca.err"
+  command -v node >/dev/null 2>&1 || {
+    pass "skipped: node is unavailable, so the Orca adapter cannot resolve a worktree path"
+    return 0
+  }
+  make_firstmate_git_root "$fmroot"
+  git -C "$fmroot" worktree add --quiet --detach "$subhome" HEAD
+  mkdir -p "$home/state" "$home/data" "$subhome/state"
+  printf 'domain\n' > "$subhome/.fm-secondmate-home"
+  make_firstmate_git_root "$childproj"
+  git -C "$childproj" worktree add --quiet --detach "$childwt" HEAD
+  : > "$childwt/sentinel"
+  cat > "$home/state/domain.meta" <<EOF
+window=firstmate:fm-domain
+worktree=$subhome
+project=$subhome
+harness=echo
+kind=secondmate
+mode=secondmate
+yolo=off
+home=$subhome
+projects=alpha
+EOF
+  printf '%s\n' '- domain - design domain (home: '"$subhome"'; scope: design domain; projects: alpha; added 2026-06-22)' > "$home/data/secondmates.md"
+  cat > "$subhome/state/child.meta" <<EOF
+window=fm-child
+endpoint_task_id=child
+terminal=term-7
+backend=orca
+orca_worktree_id=worktree-9
+worktree=$childwt
+project=$childproj
+harness=echo
+kind=ship
+mode=no-mistakes
+yolo=off
+EOF
+  cat > "$home/state/neighbour.meta" <<EOF
+window=firstmate:fm-neighbour
+worktree=$childwt
+project=$childproj
+harness=echo
+kind=ship
+mode=no-mistakes
+yolo=off
+EOF
+  ( cd "$childwt" && exec sleep 30 ) &
+  worker=$!
+  fakebin=$(make_fake_tmux "$TMP_ROOT/shared-orca-fake")
+  log="$TMP_ROOT/shared-orca-fake/tmux.log"
+  cat > "$fakebin/orca" <<SH
+#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  status) printf '{"ok":true,"result":{"runtime":{"reachable":true,"state":"ready"}}}\n' ;;
+  worktree) printf '{"ok":true,"result":{"worktree":{"id":"worktree-9","path":"$childwt"}}}\n' ;;
+  *) printf '{"ok":true,"result":{}}\n' ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/orca"
+  rc=0
+  PATH="$fakebin:$PATH" FM_ROOT_OVERRIDE="$fmroot" FM_HOME="$home" FM_FAKE_TMUX_LOG="$log" \
+    FM_FAKE_TMUX_CAPTURE="$TMP_ROOT/shared-orca-fake/pane.txt" \
+    "$ROOT/bin/fm-teardown.sh" domain --force >/dev/null 2>"$err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "force teardown destroyed an Orca child copy a second live record still claims"
+  kill -0 "$worker" 2>/dev/null || fail "force teardown reaped the worker in the shared Orca child copy"
+  [ -e "$childwt/sentinel" ] || fail "force teardown reset a shared Orca child copy"
+  [ -e "$subhome/state/child.meta" ] || fail "force teardown cleared Orca child meta after the shared-copy refusal"
+  grep -F 'neighbour' "$err" >/dev/null || fail "the Orca shared-copy refusal did not name the task holding the copy"
+  kill "$worker" 2>/dev/null || true
+  wait "$worker" 2>/dev/null || true
+  pass "force teardown refuses an Orca child copy a second live record still claims"
+}
+
 test_secondmate_idle_pane_is_not_stale() {
   local home fakebin out pid window
   home="$TMP_ROOT/watch-home"
@@ -3026,6 +3180,8 @@ test_fresh_remote_secondmate_spawn_refuses_while_task_set_is_owned
 test_secondmate_force_teardown_refuses_child_active_home_descendant
 test_secondmate_force_teardown_refuses_child_repo_descendant
 test_secondmate_force_teardown_refuses_unregistered_child_worktree
+test_secondmate_force_teardown_refuses_shared_child_worktree
+test_secondmate_force_teardown_refuses_shared_orca_child_worktree
 test_secondmate_teardown_path_boundary_matrix
 test_secondmate_idle_pane_is_not_stale
 test_secondmate_charter_brief_is_idle_by_default

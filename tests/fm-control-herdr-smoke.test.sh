@@ -30,10 +30,13 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 . "$ROOT/tests/herdr-test-safety.sh"
 herdr_forget_inherited_pane
 
+LAB="$ROOT/bin/fm-herdr-lab.sh"
 SESSION="fm-lab-control-smoke-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=
+PANE_ID=
 cleanup_all() {
+  [ -z "$PANE_ID" ] || fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true
   [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
   herdr_safe_stop_and_delete "$SESSION"
 }
@@ -115,8 +118,8 @@ pass "real herdr: interrupt refuses when herdr's own agent registry reports no a
 
 # --- a registered agent: classification flips, and the verbs follow ---------
 
-herdr pane report-agent "$PANE_ID" --source fm-control-smoke --agent fm-control-smoke-agent \
-  --state idle --session "$SESSION" >/dev/null 2>&1 \
+"$LAB" run "$SESSION" pane report-agent "$PANE_ID" \
+  --source fm-control-smoke --agent fm-control-smoke-agent --state idle >/dev/null 2>&1 \
   || fail "could not register a live agent on the task pane"
 
 STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
@@ -129,7 +132,30 @@ case "$OUT" in
 esac
 pass "real herdr: interrupt delivers the harness's key and proves the agent survived it"
 
-herdr pane get "$PANE_ID" --session "$SESSION" >/dev/null 2>&1 \
+OTHER="$SCRATCH/other"
+mkdir -p "$OTHER"
+"$LAB" run "$SESSION" pane run "$PANE_ID" "cd $OTHER" >/dev/null 2>&1 \
+  || fail "could not move the live pane cwd away from the recorded worktree"
+LIVE_CWD=$(fm_backend_herdr_current_path "$SESSION:$PANE_ID")
+case "$LIVE_CWD" in
+  "$OTHER"|"$OTHER"/*) : ;;
+  *) fail "foreground cwd should follow the live shell, not the launch directory, got '$LIVE_CWD'" ;;
+esac
+if OUT=$(run_control hsmoke relaunch --note "must not stop"); then
+  fail "relaunch should refuse when the live shell is not in the recorded copy: $OUT"
+fi
+case "$OUT" in
+  *"not its recorded worktree"*|*"cannot be verified"*) : ;;
+  *) fail "the occupancy refusal should name the live directory mismatch, got: $OUT" ;;
+esac
+STATE=$(fm_backend_agent_state herdr "$SESSION:$PANE_ID")
+[ "$STATE" = alive ] || fail "an occupancy refusal must leave the registered agent running, got '$STATE'"
+pass "real herdr: relaunch verifies foreground cwd before stopping and preserves the agent on mismatch"
+
+"$LAB" run "$SESSION" pane run "$PANE_ID" "cd $WT" >/dev/null 2>&1 \
+  || fail "could not return the live pane to the recorded worktree"
+
+"$LAB" run "$SESSION" pane get "$PANE_ID" >/dev/null 2>&1 \
   || fail "the control plane must never remove the endpoint it was operating on"
 [ -d "$WT" ] || fail "the control plane must never remove the task's local copy"
 pass "real herdr: no control verb removed the endpoint or the task's local copy"
@@ -146,4 +172,3 @@ case "$OUT" in
 esac
 pass "real herdr: an agent that does not stop fails closed instead of being reported as stopped"
 
-fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true
