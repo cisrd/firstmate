@@ -111,6 +111,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# Snapshot overrides are child-only. Drop any inherited leak so a prior
+# snapshot cannot make every later crew-state read look missing or foreign.
+unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
@@ -294,18 +297,42 @@ last_nonempty_line() {  # <file>
 # A local crew-state read is bounded so one slow child cannot extend this
 # snapshot without limit. Remote secondmate endpoint liveness is never read here.
 # A local read that hits the bound folds to state unknown.
+# Snapshot overrides live only in this child env: they are never exported in
+# this process, and an absent or foreign captured path is omitted rather than
+# passed as an empty override that would make every later worker look missing.
 crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
   local id=$1 captured_meta=${2:-} captured_status=${3:-} raw rest state source detail sep
+  local -a crew_env
+  crew_env=(
+    FM_ROOT_OVERRIDE="$FM_ROOT"
+    FM_HOME="$FM_HOME"
+    FM_STATE_OVERRIDE="$STATE"
+    FM_DATA_OVERRIDE="$DATA"
+    FM_PROJECTS_OVERRIDE="$PROJECTS"
+    FM_CONFIG_OVERRIDE="$CONFIG"
+  )
+  if [ -n "$captured_meta" ] && [ -f "$captured_meta" ] && [ ! -L "$captured_meta" ] \
+    && [ "$(basename "$captured_meta")" = "$id.meta" ]; then
+    crew_env+=(FM_CREW_STATE_META_OVERRIDE="$captured_meta")
+  elif [ -n "$captured_meta" ]; then
+    jq -n --arg raw '' --arg state unknown --arg source none \
+      --arg detail "snapshot override path missing or belongs to another task ($id.meta)" \
+      '{state:$state,source:$source,detail:$detail,raw:$raw}'
+    return 0
+  fi
+  if [ -n "$captured_status" ] && [ -f "$captured_status" ] && [ ! -L "$captured_status" ] \
+    && [ "$(basename "$captured_status")" = "$id.status" ]; then
+    crew_env+=(FM_CREW_STATE_STATUS_OVERRIDE="$captured_status")
+  elif [ -n "$captured_status" ]; then
+    jq -n --arg raw '' --arg state unknown --arg source none \
+      --arg detail "snapshot override path missing or belongs to another task ($id.status)" \
+      '{state:$state,source:$source,detail:$detail,raw:$raw}'
+    return 0
+  fi
   raw=$(
+    unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
     fm_run_timed "$FM_SNAPSHOT_CREW_STATE_TIMEOUT" \
-      env FM_ROOT_OVERRIDE="$FM_ROOT" \
-      FM_HOME="$FM_HOME" \
-      FM_STATE_OVERRIDE="$STATE" \
-      FM_CREW_STATE_META_OVERRIDE="$captured_meta" \
-      FM_CREW_STATE_STATUS_OVERRIDE="$captured_status" \
-      FM_DATA_OVERRIDE="$DATA" \
-      FM_PROJECTS_OVERRIDE="$PROJECTS" \
-      FM_CONFIG_OVERRIDE="$CONFIG" \
+      env "${crew_env[@]}" \
       "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true
   )
   raw=$(printf '%s\n' "$raw" | head -1)

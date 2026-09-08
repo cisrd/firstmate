@@ -218,8 +218,89 @@ test_attached_arm_reports_the_delivered_wake_after_drain() {
   pass "watch-arm: a delivered wake consumed by the handling turn still closes the attached arm cleanly"
 }
 
-test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
-  local dir state fakebin out armout status
+test_clean_exit_without_event_starts_a_successor() {
+  local dir state fakebin out armout successor_pid i lock_pid
+  dir=$(make_case clean-exit-successor)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  armout="$dir/arm.out"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_WATCH_HANDLING_SUCCESSOR=1 \
+    FM_POLL=1 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH" > "$out" &
+  SEED_PID=$!
+  i=0
+  while [ "$i" -lt 60 ]; do
+    [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$SEED_PID" ] \
+      && [ -e "$state/.last-watcher-beat" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$SEED_PID" ] \
+    || fail "seed watcher did not take the lock"
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 \
+    FM_ARM_CONFIRM_TIMEOUT=5 "$WATCH_ARM" > "$armout" &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 80 ]; do
+    grep -qF "watcher: attached pid=$SEED_PID" "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  grep -qF "watcher: attached pid=$SEED_PID" "$armout" \
+    || fail "arm did not attach to the live watcher: $(cat "$armout")"
+
+  # Force a clean self-eviction with no delivered wake and no remaining holder.
+  printf '999999\n' > "$state/.watch.lock/pid"
+  wait_for_exit "$SEED_PID" 80 \
+    || fail "seed watcher did not self-evict after its lock identity changed"
+
+  i=0
+  successor_pid=
+  while [ "$i" -lt 80 ]; do
+    if grep -q '^watcher: started pid=' "$armout" 2>/dev/null; then
+      successor_pid=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).*/\1/p' "$armout" | tail -1)
+      break
+    fi
+    grep -qF 'watcher: FAILED' "$armout" 2>/dev/null && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! grep -qF 'watcher: FAILED' "$armout" \
+    || fail "a clean empty close was declared failed instead of starting a successor: $(cat "$armout")"
+  [ -n "$successor_pid" ] || fail "clean empty close did not start a successor: $(cat "$armout")"
+  is_live_non_zombie "$successor_pid" \
+    || fail "the successor watcher exited before taking over: $(cat "$armout")"
+  i=0
+  lock_pid=
+  while [ "$i" -lt 20 ]; do
+    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+    [ "$lock_pid" = "$successor_pid" ] && break
+    is_live_non_zombie "$successor_pid" \
+      || fail "the successor watcher exited before holding the singleton: $(cat "$armout")"
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ "$lock_pid" = "$successor_pid" ] \
+    || fail "the successor did not become the singleton holder (lock=$lock_pid successor=$successor_pid)"
+  [ "$(grep -c '^watcher: started pid=' "$armout")" -eq 1 ] \
+    || fail "clean empty close started more than one successor loop: $(cat "$armout")"
+  kill -TERM "$ARM_PID" 2>/dev/null || true
+  wait "$ARM_PID" 2>/dev/null || true
+  i=0
+  while [ "$i" -lt 30 ] && is_live_non_zombie "$successor_pid"; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  ! is_live_non_zombie "$successor_pid" \
+    || { kill -TERM "$successor_pid" 2>/dev/null || true; fail "stopping the attached arm orphaned its successor watcher"; }
+  pass "watch-arm: a clean empty close starts one owned successor instead of failing"
+}
+
+test_unrelated_queue_does_not_spoof_delivery_or_block_successor() {
+  local dir state fakebin out armout successor_pid i
   dir=$(make_case attached-no-delivery)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -234,13 +315,25 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   append_wake "$state" check process-event "check: process-event result captured: fixture"
   kill "$SEED_PID" 2>/dev/null || true
   wait "$SEED_PID" 2>/dev/null || true
-  wait_for_exit "$ARM_PID" 120
-  status=$?
-  grep -qF 'watcher: FAILED - cycle ended without an actionable reason' "$armout" \
-    || fail "a cycle that delivered nothing must still fail loudly: $(cat "$armout")"
-  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
-    || fail "arm did not exit nonzero for a cycle that delivered nothing (status $status)"
-  pass "watch-arm: a cycle that delivered no wake of its own still fails loudly"
+  i=0
+  successor_pid=
+  while [ "$i" -lt 100 ]; do
+    successor_pid=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).*/\1/p' "$armout" | tail -1)
+    [ -n "$successor_pid" ] && break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$successor_pid" ] || fail "an unrelated queued event prevented successor startup: $(cat "$armout")"
+  ! grep -qF 'watcher: FAILED' "$armout" \
+    || fail "an unrelated queued event turned clean closure into failure: $(cat "$armout")"
+  if ! is_live_non_zombie "$ARM_PID" || ! is_live_non_zombie "$successor_pid"; then
+    fail "the replacement supervision cycle did not stay live"
+  fi
+  grep -F "check: process-event result captured: fixture" "$state/.wake-queue" >/dev/null \
+    || fail "starting the successor consumed an unrelated durable event"
+  kill -TERM "$ARM_PID" 2>/dev/null || true
+  wait "$ARM_PID" 2>/dev/null || true
+  pass "watch-arm: an unrelated queued event cannot spoof delivery or block a clean-close successor"
 }
 
 test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
@@ -801,7 +894,8 @@ test_downtime_marker_does_not_follow_symlink() {
 
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
-test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
+test_clean_exit_without_event_starts_a_successor
+test_unrelated_queue_does_not_spoof_delivery_or_block_successor
 test_rearm_resurfaces_durable_queue_and_remote_open_decision
 test_marker_publish_failure_retains_recovery_evidence
 test_delivery_gap_wake_is_recovered_once

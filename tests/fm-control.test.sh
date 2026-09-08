@@ -634,6 +634,47 @@ test_already_stopped_exit_is_idempotent() {
   pass "fm-control exit: an already-stopped agent is idempotent success with no bytes sent"
 }
 
+test_exit_records_voluntary_wait_when_a_pr_poll_is_armed() {
+  local dir rec
+  dir=$(new_case voluntary-exit-wait)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  printf 'pr=https://example.test/owner/repo/pull/9\n' >> "$dir/home/state/t1.meta"
+  printf 'provider=github\nurl=https://example.test/owner/repo/pull/9\n' > "$dir/home/state/t1.pr-poll"
+  run_control "$dir" t1 exit >/dev/null
+  rec="$dir/home/state/t1.voluntary-exit"
+  [ -f "$rec" ] || fail "exit with an armed PR poll did not record a voluntary wait"
+  grep -Fx 'schema=fm-voluntary-exit.v1' "$rec" >/dev/null \
+    || fail "voluntary-exit record missing schema"
+  grep -Fx 'wait=pr-poll' "$rec" >/dev/null \
+    || fail "voluntary-exit record missing wait=pr-poll"
+  [ -f "$dir/home/state/t1.pr-poll" ] || fail "exit removed the PR poll it should have kept"
+  pass "fm-control exit: an armed PR poll is recorded as a voluntary external wait"
+}
+
+test_exit_without_a_pr_poll_does_not_record_a_voluntary_wait() {
+  local dir
+  dir=$(new_case voluntary-exit-none)
+  add_task "$dir" t1 claude
+  alive_as "$dir" claude
+  run_control "$dir" t1 exit >/dev/null
+  [ ! -e "$dir/home/state/t1.voluntary-exit" ] \
+    || fail "exit without an external wait wrote a voluntary-exit record"
+  pass "fm-control exit: no voluntary-wait record without an armed PR poll"
+}
+
+test_already_dead_agent_is_not_reclassified_as_a_voluntary_wait() {
+  local dir
+  dir=$(new_case voluntary-exit-true-death)
+  add_task "$dir" t1 claude
+  alive_as "$dir" zsh
+  printf 'provider=github\nurl=https://example.test/owner/repo/pull/9\n' > "$dir/home/state/t1.pr-poll"
+  run_control "$dir" t1 exit >/dev/null
+  [ ! -e "$dir/home/state/t1.voluntary-exit" ] \
+    || fail "an agent already found dead was masked as a voluntary wait"
+  pass "fm-control exit: a true pre-existing death cannot mint a voluntary-wait record"
+}
+
 test_missing_endpoint_refuses() {
   local dir out rc
   dir=$(new_case gone)
@@ -900,6 +941,9 @@ test_verb_allowlist_is_closed
 test_resume_is_refused_with_its_reason
 test_relaunch_only_flags_are_rejected_on_other_verbs
 test_already_stopped_exit_is_idempotent
+test_exit_records_voluntary_wait_when_a_pr_poll_is_armed
+test_exit_without_a_pr_poll_does_not_record_a_voluntary_wait
+test_already_dead_agent_is_not_reclassified_as_a_voluntary_wait
 test_missing_endpoint_refuses
 test_interrupt_refuses_when_no_agent_runs
 test_ambiguous_endpoint_refuses

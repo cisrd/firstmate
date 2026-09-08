@@ -2544,6 +2544,53 @@ test_stale_churn_without_a_captain_call_still_alarms() {
   pass "a stale window with no open captain call keeps alarming on every new hash"
 }
 
+test_voluntary_exit_waiting_on_pr_poll_bounds_stale_churn() {
+  local dir state out capture throttle wakes rec
+  dir=$(make_hold_home voluntary-pr 'done: PR https://example.invalid/pull/1 checks green' nohold) \
+    || fail "could not build a delivered-PR fixture"
+  state="$dir/state"; out="$dir/watch.out"; capture="$dir/pane.txt"
+  throttle="$state/.paused-resurfaced-$(hold_key)"
+  printf 'provider=github\nurl=https://example.invalid/pull/1\n' > "$state/held-merge.pr-poll"
+  rec="$state/held-merge.voluntary-exit"
+  {
+    printf 'schema=fm-voluntary-exit.v1\n'
+    printf 'reason=external-wait\n'
+    printf 'wait=pr-poll\n'
+    printf 'exited_at=1\n'
+  } > "$rec"
+
+  hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 1s' \
+    || fail "first sight of a voluntary-exit wait did not surface"
+  wakes=$(hold_stale_wakes "$state")
+  [ "$wakes" -eq 1 ] || fail "first sight produced $wakes wakes instead of one"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the first surface"
+  [ -f "$state/held-merge.pr-poll" ] || fail "the first surface removed the PR poll"
+
+  hold_watch_churn "$dir" "$out" "$capture" 'idle, tick' 2 \
+    || fail "watcher exited during voluntary-exit pane churn instead of supervising through it"
+  wakes=$(hold_stale_wakes "$state")
+  [ "$wakes" -eq 0 ] \
+    || fail "pane churn re-alarmed a voluntary-exit wait $wakes time(s) inside the re-surface window"
+
+  [ -e "$throttle" ] || fail "absorbed churn recorded no re-surface cadence to elapse"
+  set_mtime "$(( $(date +%s) - 5000 ))" "$throttle"
+  hold_watch_surface "$dir" "$out" "$capture" 'idle, elapsed 9s' \
+    || fail "voluntary-exit wait did not re-surface once its window elapsed"
+  wakes=$(hold_stale_wakes "$state")
+  [ "$wakes" -eq 1 ] \
+    || fail "elapsed re-surface window produced $wakes wakes instead of one"
+  [ -f "$state/held-merge.pr-poll" ] || fail "re-surface removed the PR poll"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the elapsed voluntary-exit re-surface"
+
+  rm -f "$rec"
+  hold_watch_surface "$dir" "$out" "$capture" 'idle, crashed 1s' \
+    || fail "a dead agent without a voluntary-exit record did not surface"
+  wakes=$(hold_stale_wakes "$state")
+  [ "$wakes" -eq 1 ] \
+    || fail "removing the voluntary-exit record produced $wakes wakes instead of one true death alarm"
+  pass "voluntary exit with an armed PR poll surfaces once, absorbs churn, keeps the poll, and still alarms a true death"
+}
+
 
 # The cadence marker may never outlive the wake it claims to record. Recording it
 # before publishing the durable wake turned a delayed alarm into a lost one: the
@@ -3398,6 +3445,7 @@ case "${1:-}" in
   display-message)
     case "$*" in
       *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_CURRENT_COMMAND:-}"; exit 0 ;;
+      *pane_id*) printf '%%1\n'; exit 0 ;;
     esac ;;
 esac
 exit 1
@@ -4238,6 +4286,54 @@ test_heartbeat_backstop_surfaces_a_masked_status() {
   pass "the heartbeat backstop surfaces a captain event hidden behind a later routine append"
 }
 
+test_heartbeat_identity_does_not_hide_a_new_buried_result() {
+  local dir state fakebin first out sig pid i
+  dir=$(make_case heartbeat-identity-buried); state="$dir/state"; fakebin="$dir/fakebin"
+  first="$dir/first.out"; out="$dir/watch.out"
+  printf 'done: PR https://example.test/pr/identity checks green\n' > "$state/miss.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first" 2>/dev/null \
+    || fail "initial identity drain failed"
+  grep -F 'miss done: PR https://example.test/pr/identity checks green' "$first" >/dev/null \
+    || fail "initial terminal result was not presented"
+
+  rm -f "$state/miss.status"
+  printf 'done: PR https://example.test/pr/identity checks green\n' > "$state/miss.status"
+  sig=$(seen_sig "$state/miss.status"); printf '%s' "$sig" > "$state/.seen-miss_status"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=1 "$WATCH" > "$out" &
+  pid=$!
+  wait_poll_cycle "$state" "$pid" \
+    || { reap "$pid"; fail "the same presented terminal result re-fired during heartbeat scanning"; }
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ "$(cat "$state/.heartbeat-streak" 2>/dev/null || echo 0)" -ge 1 ] && break
+    is_live_non_zombie "$pid" || break
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ "$(cat "$state/.heartbeat-streak" 2>/dev/null || echo 0)" -ge 1 ] \
+    || { reap "$pid"; fail "the identity fixture never reached a heartbeat scan"; }
+  [ ! -s "$out" ] || { reap "$pid"; fail "the same presented result printed another wake: $(cat "$out")"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional identity-dedupe stop"
+  rm -f "$state/.last-heartbeat" "$state/.heartbeat-streak"
+
+  # Recreate the log with a genuinely new failure buried before the same latest
+  # result. The stable latest identity may dedupe itself, but not the new span.
+  rm -f "$state/miss.status"
+  printf 'failed: a later delivery attempt broke\ndone: PR https://example.test/pr/identity checks green\n' \
+    > "$state/miss.status"
+  sig=$(seen_sig "$state/miss.status"); printf '%s' "$sig" > "$state/.seen-miss_status"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=1 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 \
+    || fail "the stored latest identity hid a genuinely new buried terminal result"
+  grep -Fx "heartbeat" "$out" >/dev/null \
+    || fail "the new buried terminal result did not produce the heartbeat backstop: $(cat "$out")"
+  pass "terminal identity dedupe never hides a genuinely new result earlier in the scanned span"
+}
+
 test_heartbeat_backstop_surfaces_unsurfaced_status() {
   local dir state fakebin out drain_out sig pid
   dir=$(make_case heartbeat-backstop); state="$dir/state"; fakebin="$dir/fakebin"
@@ -4443,6 +4539,7 @@ test_absorbed_replacement_wait_does_not_inherit_the_old_throttle
 test_live_declared_wait_churn_honors_the_resurface_throttle
 test_open_captain_call_bounds_stale_churn
 test_stale_churn_without_a_captain_call_still_alarms
+test_voluntary_exit_waiting_on_pr_poll_bounds_stale_churn
 test_failed_wake_append_does_not_arm_the_captain_hold_throttle
 test_reheld_captain_call_starts_its_own_resurface_window
 test_secondmate_paused_resurfaces_in_normal_mode
@@ -4468,6 +4565,7 @@ test_procevent_marker_failure_exits_and_replays
 test_heartbeat_no_change_absorbed
 test_heartbeat_backstop_surfaces_unsurfaced_status
 test_heartbeat_backstop_surfaces_a_masked_status
+test_heartbeat_identity_does_not_hide_a_new_buried_result
 test_beacon_stays_fresh_while_absorbing
 test_afk_signal_records_heartbeat_endpoint
 test_afk_present_reverts_watcher_to_one_shot

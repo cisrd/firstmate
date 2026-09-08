@@ -272,8 +272,8 @@ window_is_busy() {  # <window> <tail40>
   if [ -n "$task" ] && [ -f "$meta" ]; then
     verdict=$(fm_busy_classify_meta "$meta" "$task" "$STATE" "$tail40")
   else
-    verdict=$(fm_busy_classify "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
-      "${task:-unknown}" "$STATE" "$tail40")
+    verdict=$(fm_busy_classify_live "$(window_backend "$w")" "$w" "$(window_harness "$w")" \
+      "${task:-unknown}" "$STATE" "fm-${task:-unknown}" "$tail40")
   fi
   [ "${verdict%% *}" = busy ]
 }
@@ -1170,6 +1170,48 @@ captain_call_stale_bound() {  # <window-key> <task>
   stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION"
 }
 
+# An explicit control-plane exit while a PR merge poll is still armed. The
+# dead pane is expected, the poll must keep running, and a later genuine
+# death without this record must still alarm.
+task_voluntary_exit_waiting() {  # <window> <task>
+  local win=$1 task=$2 rec schema reason wait_kind exited_at agent_state lines
+  rec="$STATE/$task.voluntary-exit"
+  [ -f "$rec" ] && [ -r "$rec" ] && [ ! -L "$rec" ] || return 1
+  schema=$(grep '^schema=' "$rec" 2>/dev/null | cut -d= -f2-)
+  reason=$(grep '^reason=' "$rec" 2>/dev/null | cut -d= -f2-)
+  wait_kind=$(grep '^wait=' "$rec" 2>/dev/null | cut -d= -f2-)
+  exited_at=$(grep '^exited_at=' "$rec" 2>/dev/null | cut -d= -f2-)
+  lines=$(wc -l < "$rec" 2>/dev/null | tr -d '[:space:]')
+  [ "$schema" = fm-voluntary-exit.v1 ] || return 1
+  [ "$reason" = external-wait ] || return 1
+  [ "$wait_kind" = pr-poll ] || return 1
+  case "$exited_at" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$lines" = 4 ] || return 1
+  if [ ! -f "$STATE/$task.pr-poll" ] || [ -L "$STATE/$task.pr-poll" ]; then
+    rm -f "$rec"
+    return 1
+  fi
+  agent_state=$(fm_backend_agent_state "$(window_backend "$win")" "$win" 2>/dev/null || printf unreadable)
+  # An explicit exit preserves the endpoint and leaves a bare shell. A missing
+  # endpoint is a new failure, not the voluntary wait this record describes.
+  [ "$agent_state" = dead ] || return 1
+  return 0
+}
+
+voluntary_exit_declaration() {  # <task>
+  printf 'voluntary-exit:%s:%s' \
+    "$(status_observed_signature "$STATE/$1.voluntary-exit" 2>/dev/null || printf missing)" \
+    "$(fm_wake_signal_sig "$STATE/$1.status" || true)"
+}
+
+voluntary_exit_stale_bound() {  # <window-key> <window> <task>
+  local key=$1 win=$2 task=$3
+  STALE_WAIT_DECLARATION=
+  task_voluntary_exit_waiting "$win" "$task" || return 1
+  STALE_WAIT_DECLARATION=$(voluntary_exit_declaration "$task")
+  stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION"
+}
+
 # Surface a stale pane no classifier could resolve, so firstmate inspects it: it
 # may have finished through an interactive menu that wrote no status, be waiting on
 # a decision, or be wedged. pause_state_class deliberately answers `none` for a
@@ -1201,6 +1243,9 @@ surface_nonterminal_stale() {  # <window> <hash>
     STALE_WAIT_DECLARATION=$(stale_wait_declaration "$task")
     stale_wait_throttled "$key" "$STALE_WAIT_DECLARATION" && throttled=0
   elif captain_call_stale_bound "$key" "$task"; then
+    bounded=0
+    throttled=0
+  elif [ -z "$STALE_WAIT_DECLARATION" ] && voluntary_exit_stale_bound "$key" "$win" "$task"; then
     bounded=0
     throttled=0
   elif [ -n "$STALE_WAIT_DECLARATION" ]; then
@@ -1486,7 +1531,8 @@ EOF
 # is absorbed; it surfaces only an event the per-wake path absorbed by mistake -
 # the fail-safe backstop.
 heartbeat_scan_finds_actionable() {
-  local f task record rest endpoint ident rc found=1 sig marker
+  local f task record rest endpoint ident events rc found=1 sig marker
+  local hb_size hb_ident hb_event_id hb_stored_id
   FM_HEARTBEAT_SURFACE_ENDPOINTS=''
   for f in "$STATE"/*.status; do
     [ -e "$f" ] || [ -L "$f" ] || continue
@@ -1503,6 +1549,22 @@ heartbeat_scan_finds_actionable() {
       continue
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
+    events=${rest#*$'\t'}
+    hb_size=$(_fm_status_file_size "$f" 2>/dev/null || true)
+    hb_ident=$(_fm_open_decisions_file_ident "$f" 2>/dev/null || true)
+    hb_size=${hb_size//[[:space:]]/}
+    if [ -n "$hb_size" ] && [ -n "$hb_ident" ] \
+      && status_snapshot_latest_event "$f" "$hb_size" "$hb_ident" 2>/dev/null; then
+      hb_event_id=$(status_terminal_event_identity "$FM_STATUS_SNAPSHOT_EVENT_LINE")
+      hb_stored_id=$(status_outcome_identity_get "$STATE" "$task" || true)
+      # Suppress only when the whole newly scanned actionable span is this one
+      # already-presented result. If a distinct event is buried before the same
+      # latest line, the span must still wake supervision.
+      if [ "$rc" -eq 0 ] && [ "$events" = "$FM_STATUS_SNAPSHOT_EVENT_LINE" ] \
+        && [ -n "$hb_event_id" ] && [ "$hb_stored_id" = "$hb_event_id" ]; then
+        continue
+      fi
+    fi
     FM_HEARTBEAT_SURFACE_ENDPOINTS="${FM_HEARTBEAT_SURFACE_ENDPOINTS}${f}"$'\t'"${endpoint}"$'\t'"${ident}"$'\n'
     [ "$rc" -eq 0 ] && found=0
   done
@@ -2121,6 +2183,11 @@ EOF
               rm -f "$ssf"
               clear_write_tracking "$key"
               triage_log "absorbed stale (open captain call already surfaced for this status): $w"
+            elif [ -z "$STALE_WAIT_DECLARATION" ] && voluntary_exit_stale_bound "$key" "$w" "$task"; then
+              printf '%s' "$h" > "$sf"
+              rm -f "$ssf"
+              clear_write_tracking "$key"
+              triage_log "absorbed stale (voluntary exit waiting on an armed PR poll): $w"
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               stale_wait_record "$key"

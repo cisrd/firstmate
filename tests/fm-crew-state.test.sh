@@ -45,6 +45,9 @@ set -u
 
 CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 TMP_ROOT=$(fm_test_tmproot fm-crew-state)
+# The test process itself may be launched from a fleet snapshot child. Each
+# override case opts in explicitly below; ordinary cases start uncontaminated.
+unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
 fm_git_identity fmtest fmtest@example.invalid
 
 # A real git repo checked out on <branch>, so the helper's branch attribution
@@ -182,7 +185,11 @@ make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
 # Run the helper for one case dir. FM_FAKE_* env (run output, busy flag) are read
 # from the caller's environment by the fakes above.
 run_crew_state() {  # <case-dir> <id>
-  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" "$2"
+  # Drop inherited snapshot leaks from the parent environment so a leftover
+  # override cannot make every hermetic case look missing.
+  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" \
+    env -u FM_CREW_STATE_META_OVERRIDE -u FM_CREW_STATE_STATUS_OVERRIDE \
+    "$CREW_STATE" "$2"
 }
 
 new_case() {  # <name> -> echoes case dir with an empty state/
@@ -1613,7 +1620,11 @@ SH
   "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-timeout busy --gen "$gen" \
     --source claude-hook --event user-prompt-submit
   start=$SECONDS
-  out=$(FM_FAKE_NM_CALLS="$calls_file" PATH="$d/fakebin:$toolbin" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" feat-timeout)
+  out=$(
+    unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
+    FM_FAKE_NM_CALLS="$calls_file" PATH="$d/fakebin:$toolbin" FM_STATE_OVERRIDE="$d/state" \
+      FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" feat-timeout
+  )
   elapsed=$((SECONDS - start))
   assert_contains "$out" "state: working" "timed-out no-mistakes falls back to pane"
   assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
@@ -1766,6 +1777,46 @@ test_missing_meta() {
   assert_contains "$out" "state: unknown" "missing meta -> unknown"
   assert_contains "$out" "source: none" "missing meta -> none source"
   pass "missing meta is handled gracefully"
+}
+
+test_snapshot_override_refuses_empty_and_foreign_paths() {
+  reset_fakes
+  local d a_meta b_meta out
+  d=$(new_case override-guard)
+  make_repo_on_branch "$d/wt" fm/feat-ov
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/alpha.meta" "window=fm:fm-alpha" "worktree=$d/wt" "kind=ship" "harness=claude"
+  fm_write_meta "$d/state/beta.meta" "window=fm:fm-beta" "worktree=$d/wt" "kind=ship" "harness=claude"
+  arm_idle_record "$d/state" alpha
+  arm_idle_record "$d/state" beta
+  printf 'working: alpha is live\n' > "$d/state/alpha.status"
+  printf 'working: beta is live\n' > "$d/state/beta.status"
+  a_meta="$d/state/alpha.meta"
+  b_meta="$d/state/beta.meta"
+
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE='' "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override path missing for beta.meta" \
+    "an empty snapshot override must be refused, not read as missing metadata"
+  assert_not_contains "$out" "no metadata for beta" \
+    "an empty override must not look like every worker is missing"
+
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$a_meta" "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override belongs to another task (beta.meta)" \
+    "a captured path for another task must be refused"
+
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$b_meta" "$CREW_STATE" beta)
+  assert_contains "$out" "state:" "a matching captured meta path must still resolve"
+
+  out=$(
+    export FM_CREW_STATE_META_OVERRIDE="$a_meta"
+    PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" "$CREW_STATE" beta
+  )
+  assert_contains "$out" "snapshot override belongs to another task (beta.meta)" \
+    "a leftover exported override from another task must not contaminate the next read"
+  pass "snapshot overrides refuse empty and foreign paths instead of marking every worker lost"
 }
 
 # (k) crew_is_provably_working end-to-end over the REAL fm-crew-state.sh (not a
@@ -2292,6 +2343,7 @@ test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead
 test_remote_dead_reports_remote_verdict
 test_missing_meta
+test_snapshot_override_refuses_empty_and_foreign_paths
 test_provably_working_via_runs_list_fallback
 test_not_provably_working_when_stopped
 test_usage_error

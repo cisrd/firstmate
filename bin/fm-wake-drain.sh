@@ -255,6 +255,7 @@ BRANCH_OUTCOME_INDEX_STATE=ok
 BRANCH_OUTCOME_INDEX_ENDPOINT=
 BRANCH_OUTCOME_INDEX_IDENT=
 STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED=
+STATUS_OUTCOME_IDENTITY_ACK=
 outcome_index_ready_ok() { # <ready-path>
   local seq
   [ -f "$1" ] && [ -r "$1" ] && [ ! -L "$1" ] || return 1
@@ -303,6 +304,7 @@ EOF
 
 print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
   local snapshot=$1 task endpoint ident event event_endpoint line verb key receipt store lock ready
+  local event_id stored_id
   local output='' used=0 shown=0 omitted=0 bytes item_bytes=220 global_bytes=4000 rc=0
   [ "$ACTOR" = main ] || return 0
 
@@ -329,15 +331,29 @@ print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
   fi
 
   STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED=
+  STATUS_OUTCOME_IDENTITY_ACK=
   while IFS=$(printf '\t') read -r task endpoint ident; do
     [ -n "$task" ] || continue
     receipt=$(status_outcome_backstop_cursor_offset "$STATE/$task.status") || { rc=1; break; }
-    [ "$receipt" -lt "$endpoint" ] || continue
     status_snapshot_latest_event "$STATE/$task.status" "$endpoint" "$ident" || continue
     event=$FM_STATUS_SNAPSHOT_EVENT_LINE
     event_endpoint=$FM_STATUS_SNAPSHOT_EVENT_ENDPOINT
-    [ "$receipt" -lt "$event_endpoint" ] || continue
     status_is_captain_relevant "$event" || continue
+    event_id=$(status_terminal_event_identity "$event")
+    stored_id=$(status_outcome_identity_get "$STATE" "$task" || true)
+    if [ -n "$event_id" ] && [ "$stored_id" = "$event_id" ]; then
+      continue
+    fi
+    if [ "$receipt" -ge "$event_endpoint" ] && [ -z "$stored_id" ]; then
+      # Cursor already presented these bytes before identity tracking existed.
+      # Remember the result without re-announcing it. A later different
+      # identity at the same span still presents below.
+      if [ -n "$event_id" ]; then
+        STATUS_OUTCOME_IDENTITY_ACK="$STATUS_OUTCOME_IDENTITY_ACK$task$(printf '\t')$event_id
+"
+      fi
+      continue
+    fi
     verb=$(status_line_verb "$event")
     case "$verb" in
       needs-decision|blocked)
@@ -373,6 +389,10 @@ print_status_outcome_backstop_section() {  # <task-and-endpoint-snapshot>
 "
     STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED="$STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED$task$(printf '\t')$event_endpoint
 "
+    if [ -n "$event_id" ]; then
+      STATUS_OUTCOME_IDENTITY_ACK="$STATUS_OUTCOME_IDENTITY_ACK$task$(printf '\t')$event_id
+"
+    fi
     used=$((used + bytes))
     shown=$((shown + 1))
   done <<EOF
@@ -384,6 +404,7 @@ EOF
   if [ "$rc" -eq 2 ]; then
     printf 'STATUS OUTCOME BACKSTOP SKIPPED: a bounded task outcome index could not be read safely; repair it before relying on drain recovery.\n'
     STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED=
+    STATUS_OUTCOME_IDENTITY_ACK=
     return 0
   fi
   [ "$shown" -gt 0 ] || [ "$omitted" -gt 0 ] || return 0

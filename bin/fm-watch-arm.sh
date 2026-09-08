@@ -30,8 +30,9 @@
 #                                                          this arm attaches and follows it
 #   watcher: FAILED - no live watcher with a fresh beacon  - could not confirm one
 #   watcher: FAILED - cycle ended without an actionable reason
-#                                                        - a clean cycle ended with no wake and no
-#                                                          verified healthy successor
+#                                                        - a clean cycle ended with no wake, no
+#                                                          verified healthy successor, and no
+#                                                          successor this arm could start
 # It NEVER reports started/attached/healthy off a stale beacon or a dead/reused pid: a
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
@@ -39,10 +40,13 @@
 # reason; on attached it stays live across identity-matched successors. A cycle
 # that ends with no reason line and no healthy successor is resolved against the
 # watcher's identity-bound delivery record: a matching record reports that wake
-# and exits 0, and only a cycle that delivered nothing is the typed nonzero
-# failure. Neither is ever a clean empty completion. On FAILED it exits non-zero
-# so the failure is loud. A live cycle already present means re-arm attaches - do
-# not start a second watcher.
+# and exits 0. A clean empty close with no delivery record starts exactly one
+# successor watcher and attaches to it rather than failing or leaving the fleet
+# unsupervised; it never starts a second concurrent loop. Only a cycle that
+# delivered nothing AND could not attach or start a successor is the typed
+# nonzero failure. Neither is ever a silent empty completion. On FAILED it exits
+# non-zero so the failure is loud. A live cycle already present means re-arm
+# attaches - do not start a second watcher.
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
@@ -274,6 +278,147 @@ fail_unexplained_cycle() {
   return 1
 }
 
+# An attached arm can become the owner of a replacement child after a clean
+# empty cycle. Install the owning signal handler as soon as that child starts,
+# so interrupting the tracked arm can never orphan its replacement watcher.
+child=
+child_out=
+cleanup_child() {
+  if [ -n "$child" ] && fm_pid_alive "$child"; then
+    kill -TERM "$child" 2>/dev/null || true
+  fi
+  if [ -n "$child_out" ]; then
+    rm -f "$child_out" 2>/dev/null || true
+  fi
+}
+
+# shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
+handle_arm_signal() {
+  local signal=$1 rc=$2
+  trap - HUP TERM INT
+  if [ -n "$child" ] && fm_pid_alive "$child"; then
+    kill -TERM "$child" 2>/dev/null || true
+    wait "$child" 2>/dev/null || true
+  fi
+  cycle_log_append "$rc" "$signal" arm-interrupted none
+  cleanup_child
+  exit "$rc"
+}
+
+install_arm_signal_traps() {
+  trap 'handle_arm_signal HUP 129' HUP
+  trap 'handle_arm_signal TERM 143' TERM
+  trap 'handle_arm_signal INT 130' INT
+}
+
+# Start exactly one successor after a clean empty close. A live healthy holder
+# is attached instead of forking a second loop. A successor that never becomes
+# healthy, or that exits before the confirmation window, is a failed handoff.
+spawn_clean_exit_successor() {
+  local successor successor_out deadline started_at now rc
+  # Every caller has already exhausted the bounded successor wait for the
+  # cycle that just closed. Recheck once for a winner of that final race, then
+  # start the replacement immediately rather than spending a second full
+  # confirmation window with no watcher.
+  if healthy_watcher; then
+    cycle_log_append unknown unknown unexpected-clean-exit "attached:$HEALTHY_PID"
+    cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
+    report_attached
+    cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
+    attach_and_wait "$HEALTHY_PID"
+    return $?
+  fi
+  successor_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || return 1
+  # This child replaces a cycle this same tracked arm already observed. It is
+  # therefore a handling successor regardless of how the arm itself started;
+  # re-emitting downtime recovery here would manufacture a wake from the
+  # intentional handoff and can loop forever.
+  FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$successor_out" &
+  successor=$!
+  child=$successor
+  child_out=$successor_out
+  install_arm_signal_traps
+  cycle_begin "$successor" started "$(fm_pid_identity "$successor" 2>/dev/null || true)"
+  started_at=$(date +%s)
+  deadline=$((started_at + CONFIRM_TIMEOUT + 1))
+  while :; do
+    if healthy_watcher; then
+      if [ "$HEALTHY_PID" = "$successor" ]; then
+        cycle_mark_predecessor_successor "started:$successor"
+        echo "watcher: started pid=$successor (beacon fresh)"
+        wait "$successor"
+        rc=$?
+        now=$(date +%s)
+        if [ "$rc" -eq 0 ] && [ $((now - started_at)) -lt 2 ] \
+          && ! watch_output_has_wake "$successor_out"; then
+          print_watch_output "$successor_out"
+          rm -f "$successor_out" 2>/dev/null || true
+          child=
+          child_out=
+          cycle_log_append "$rc" none successor-immediate-clean-exit none
+          return 1
+        fi
+        if [ "$rc" -eq 0 ] && watch_output_has_wake "$successor_out"; then
+          cycle_log_append "$rc" none "$(watch_output_reason_type "$successor_out")" none
+          print_watch_output "$successor_out"
+          rm -f "$successor_out" 2>/dev/null || true
+          child=
+          child_out=
+          return 0
+        fi
+        if [ "$rc" -eq 0 ]; then
+          print_watch_output "$successor_out"
+          rm -f "$successor_out" 2>/dev/null || true
+          child=
+          child_out=
+          if close_unobserved_cycle; then
+            cycle_log_append "$rc" none clean-exit-delivered-wake none
+            return 0
+          fi
+          spawn_clean_exit_successor
+          return $?
+        fi
+        cycle_log_append "$rc" "$(cycle_signal_name "$rc")" successor-nonzero-exit none
+        print_watch_output "$successor_out"
+        rm -f "$successor_out" 2>/dev/null || true
+        child=
+        child_out=
+        return "$rc"
+      fi
+      wait "$successor" 2>/dev/null || true
+      rm -f "$successor_out" 2>/dev/null || true
+      child=
+      child_out=
+      cycle_log_append unknown unknown unexpected-clean-exit "attached:$HEALTHY_PID"
+      cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
+      report_attached
+      cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
+      attach_and_wait "$HEALTHY_PID"
+      return $?
+    fi
+    if ! fm_pid_alive "$successor"; then
+      wait "$successor" 2>/dev/null || true
+      print_watch_output "$successor_out"
+      rm -f "$successor_out" 2>/dev/null || true
+      child=
+      child_out=
+      cycle_log_append 1 none successor-start-failed none
+      return 1
+    fi
+    [ "$(date +%s)" -ge "$deadline" ] && break
+    sleep 0.2
+  done
+  if [ -n "$successor" ] && fm_pid_alive "$successor"; then
+    kill -TERM "$successor" 2>/dev/null || true
+    wait "$successor" 2>/dev/null || true
+  fi
+  rm -f "$successor_out" 2>/dev/null || true
+  child=
+  child_out=
+  cycle_log_append 1 none successor-start-failed none
+  return 1
+}
+
 # Close a cycle whose reason line this arm could not read against the bounded
 # terminal-delivery ledger the watcher publishes before releasing its lock.
 close_unobserved_cycle() {
@@ -281,10 +426,7 @@ close_unobserved_cycle() {
   clean_identity=$(printf '%s' "$cycle_watcher_identity" | tr '\t\r\n' '   ')
   i=0
   while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
-    [ "$i" -lt 20 ] || {
-      fail_unexplained_cycle
-      return 1
-    }
+    [ "$i" -lt 20 ] || return 1
     sleep 0.02
     i=$((i + 1))
   done
@@ -301,7 +443,6 @@ close_unobserved_cycle() {
     printf '%s\n' "$reason"
     return 0
   fi
-  fail_unexplained_cycle
   return 1
 }
 
@@ -333,7 +474,11 @@ attach_and_wait() {
       cycle_log_append unknown unknown attached-delivered-wake none
       return 0
     fi
+    if spawn_clean_exit_successor; then
+      return 0
+    fi
     cycle_log_append unknown unknown attached-cycle-ended none
+    fail_unexplained_cycle
     return 1
   done
 }
@@ -446,34 +591,7 @@ fi
 # stays our child for its whole life: we wait on it, so killing this arm (the
 # harness-tracked task) tears the watcher down too, and the watcher's eventual
 # wake exit propagates out so the harness re-notifies firstmate.
-child=
-child_out=
-cleanup_child() {
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
-  fi
-  if [ -n "$child_out" ]; then
-    rm -f "$child_out" 2>/dev/null || true
-  fi
-}
-
-# shellcheck disable=SC2329 # Invoked indirectly by the signal traps below.
-handle_arm_signal() {
-  local signal=$1 rc=$2
-  trap - HUP TERM INT
-  if [ -n "$child" ] && fm_pid_alive "$child"; then
-    kill -TERM "$child" 2>/dev/null || true
-    wait "$child" 2>/dev/null || true
-  fi
-  cycle_log_append "$rc" "$signal" arm-interrupted none
-  cleanup_child
-  exit "$rc"
-}
-
-trap 'handle_arm_signal HUP 129' HUP
-trap 'handle_arm_signal TERM 143' TERM
-trap 'handle_arm_signal INT 130' INT
-
+install_arm_signal_traps
 child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   echo "watcher: FAILED - no live watcher with a fresh beacon"
   exit 1
@@ -521,7 +639,11 @@ owned_child_finished() {
       cycle_log_append "$rc" "$signal" clean-exit-delivered-wake none
       return 0
     fi
+    if spawn_clean_exit_successor; then
+      return 0
+    fi
     cycle_log_append "$rc" "$signal" unexpected-clean-exit none
+    fail_unexplained_cycle
     return 1
   fi
 

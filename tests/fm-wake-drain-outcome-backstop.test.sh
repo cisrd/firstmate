@@ -505,7 +505,46 @@ test_backstop_output_is_bounded() {
   pass "the outcome backstop caps each item and its total task output deterministically"
 }
 
+test_rewritten_status_file_does_not_reannounce_the_same_terminal_result() {
+  local dir state out retry_out new_out old
+  dir=$(make_case identity-stable)
+  state="$dir/state"
+  out="$dir/first.out"
+  retry_out="$dir/retry.out"
+  new_out="$dir/new.out"
+  old=$(( $(date +%s) - 20 ))
+
+  printf 'done: PR https://example.test/identity/pull/1 checks green\n' > "$state/ident.status"
+  set_mtime "$old" "$state/ident.status"
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
+    || fail "first identity drain failed"
+  grep -F 'ident done: PR https://example.test/identity/pull/1 checks green' "$out" >/dev/null \
+    || fail "first drain did not present the terminal result: $(cat "$out")"
+
+  # Replace the log so the inode/file identity changes while the terminal
+  # result stays the same. Byte-offset receipts reset; the result identity
+  # must not.
+  rm -f "$state/ident.status"
+  printf 'done: PR https://example.test/identity/pull/1 checks green\n' > "$state/ident.status"
+  set_mtime "$old" "$state/ident.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$retry_out" \
+    || fail "rewritten-same-result drain failed"
+  [ ! -s "$retry_out" ] \
+    || fail "the same terminal result was re-announced after a log rewrite: $(cat "$retry_out")"
+
+  rm -f "$state/ident.status"
+  printf 'failed: the follow-up PR could not be opened\n' > "$state/ident.status"
+  set_mtime "$old" "$state/ident.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$new_out" \
+    || fail "new-identity drain failed"
+  grep -F 'ident failed: the follow-up PR could not be opened' "$new_out" >/dev/null \
+    || fail "a genuinely new terminal result was not re-announced: $(cat "$new_out")"
+  pass "a rewritten log does not re-announce the same terminal result and does announce a new identity"
+}
+
 test_uncovered_keyless_captain_events_surface_on_the_next_main_drain
+test_rewritten_status_file_does_not_reannounce_the_same_terminal_result
 test_newer_task_outcome_and_routine_latest_events_stay_silent
 test_older_or_other_task_outcome_cannot_hide_a_new_captain_event
 test_branch_annotation_cannot_consume_the_main_resurfacing_backstop

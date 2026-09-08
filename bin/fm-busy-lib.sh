@@ -42,21 +42,25 @@
 #   fm-interrupt     the legacy Claude fm-send --key Escape idle event
 #   fm-recovery      a documented recovery reset after relaunch
 # Classifier-only sources (never written into a record):
-#   endpoint-gone, herdr-native, grok-regex, rovo-regex, muse-session-log,
-#   cursor-transcript, missing, malformed, gen-mismatch, source-mismatch,
-#   kimi-unverified, codex-unverified, capture-failed, no-target
+#   endpoint-gone, shell-no-agent, herdr-native, grok-regex, rovo-regex,
+#   muse-session-log, cursor-transcript, missing, malformed, gen-mismatch,
+#   source-mismatch, kimi-unverified, codex-unverified, capture-failed,
+#   no-target
 #
 # Classification (fm_busy_classify): busy | idle | unknown | dead, always
 # with the producing source as the second token. Precedence:
 #   1. dead endpoint (fm_busy_classify_live only) -> dead endpoint-gone
-#   2. standalone Kimi before verification       -> unknown kimi-unverified
-#   3. a valid, gen-matching, source-trusted record -> its state and source
-#   4. no record at all: herdr's native busy verdict is trusted as busy
+#   2. pane that exists with no agent, recovery-grade `dead` (live only)
+#      -> dead shell-no-agent; this structural verdict wins regardless of
+#      Cursor, Grok, Muse, Codex, or Kimi classifier order
+#   3. standalone Kimi before verification       -> unknown kimi-unverified
+#   4. a valid, gen-matching, source-trusted record -> its state and source
+#   5. no record at all: herdr's native busy verdict is trusted as busy
 #      (generation state is sufficient for busy, not for idle), then the
 #      muse session-log and cursor transcript pull sources, then the Grok/Rovo
 #      temporary regex fallbacks classify a grok or rovo task from its
 #      rendered tail, then unknown missing
-#   5. malformed, stale, or untrusted records -> unknown, never a fallback
+#   6. malformed, stale, or untrusted records -> unknown, never a fallback
 # Grok and Rovo are the ONLY rendered-text classifications that survive the
 # redesign, because neither's structured lifecycle was credited-live-verified
 # in the approved audit (Rovo's clean ACP stopReason lives outside the TUI
@@ -987,11 +991,17 @@ fm_busy_classify() {  # <backend> <target> <harness> <id> <state-dir> [tail40]
   printf 'unknown missing'
 }
 
-# fm_busy_classify_live: fm_busy_classify behind the one process-level
-# override - a gone endpoint is dead, never busy. Requires fm-backend.sh to
-# be sourced for fm_backend_target_exists.
-fm_busy_classify_live() {  # <backend> <target> <harness> <id> <state-dir> [expected-label]
-  local backend=$1 target=$2 harness=$3 id=$4 state=$5 label=${6-}
+# fm_busy_classify_live: fm_busy_classify behind the process-level overrides.
+# A gone endpoint is dead, never busy. A pane that still exists but whose
+# recovery-grade classifier reports `dead` (nothing but a shell) is
+# `dead shell-no-agent`, and that structural verdict wins before Cursor,
+# Grok, Muse, Codex, or Kimi classifiers run. Ambiguous, unreadable, and
+# unverified agent-state results do not override harness classifiers.
+# Requires fm-backend.sh to be sourced for fm_backend_target_exists.
+# Optional <tail40> is forwarded to the Grok/Rovo arms unchanged.
+fm_busy_classify_live() {  # <backend> <target> <harness> <id> <state-dir> [expected-label] [tail40]
+  local backend=$1 target=$2 harness=$3 id=$4 state=$5 label=${6-} tail40=${7-}
+  local agent_state
   if [ -z "$target" ]; then
     printf 'unknown no-target'
     return 0
@@ -1000,13 +1010,23 @@ fm_busy_classify_live() {  # <backend> <target> <harness> <id> <state-dir> [expe
     printf 'dead endpoint-gone'
     return 0
   fi
-  fm_busy_classify "$backend" "$target" "$harness" "$id" "$state"
+  if command -v fm_backend_agent_state >/dev/null 2>&1; then
+    agent_state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null || true)
+    case "$agent_state" in
+      dead)
+        printf 'dead shell-no-agent'
+        return 0
+        ;;
+    esac
+  fi
+  fm_busy_classify "$backend" "$target" "$harness" "$id" "$state" "$tail40"
 }
 
 # fm_busy_classify_meta: classify a task from its recorded metadata, so every
 # consumer resolves backend, target, and harness the same way instead of
 # re-deriving them. Requires fm-backend.sh to be sourced. <tail40> is
-# optional pre-captured plain output reused by the Grok arm.
+# optional pre-captured plain output reused by the Grok arm. Process-level
+# overrides (gone endpoint, shell without agent) run through classify_live.
 fm_busy_classify_meta() {  # <meta-file> <id> <state-dir> [tail40]
   local meta=$1 id=$2 state=$3 tail40=${4-} backend target harness
   [ -f "$meta" ] || { printf 'unknown missing'; return 0; }
@@ -1017,7 +1037,7 @@ fm_busy_classify_meta() {  # <meta-file> <id> <state-dir> [tail40]
     printf 'unknown no-target'
     return 0
   fi
-  fm_busy_classify "$backend" "$target" "$harness" "$id" "$state" "$tail40"
+  fm_busy_classify_live "$backend" "$target" "$harness" "$id" "$state" "fm-$id" "$tail40"
 }
 
 # fm_busy_is_busy: boolean view for callers that only gate on provable

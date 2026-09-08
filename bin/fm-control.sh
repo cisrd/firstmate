@@ -30,7 +30,10 @@
 #              every uncommitted change. Interrupts first when the task reads
 #              busy, then submits the harness's exit command. Postcondition:
 #              the backend's recovery-grade classifier reports the agent gone.
-#              Already-stopped is success (idempotent).
+#              Already-stopped is success (idempotent). When the task still has
+#              an armed PR merge poll, exit records state/<id>.voluntary-exit so
+#              supervision treats the dead pane as an expected external wait
+#              instead of a repeating stale alarm, without dropping the poll.
 #   relaunch   Transactionally replace the running agent with a new one, in the
 #              SAME endpoint and SAME worktree, on the same or a newly chosen
 #              harness/model/effort - so switching harness is one ordinary use
@@ -444,14 +447,68 @@ retire_busy_incarnation() {
   fi
 }
 
+# state/<id>.voluntary-exit is the durable record that an explicit exit verb
+# stopped the agent while an external wait (an armed PR merge poll) still
+# stands. Schema:
+#   schema=fm-voluntary-exit.v1
+#   reason=external-wait
+#   wait=pr-poll
+#   exited_at=<epoch>
+# Relaunch removes it. Teardown removes it. The watcher ignores it once the
+# poll sidecar is gone, so a later genuine death is not hidden.
+record_voluntary_exit_wait() {
+  local rec tmp exited_at
+  [ -f "$STATE/$ID.pr-poll" ] && [ ! -L "$STATE/$ID.pr-poll" ] || {
+    rm -f "$STATE/$ID.voluntary-exit"
+    return 0
+  }
+  rec="$STATE/$ID.voluntary-exit"
+  tmp="$rec.tmp.$$"
+  exited_at=$(date +%s) || return 1
+  case "$exited_at" in ''|*[!0-9]*) return 1 ;; esac
+  {
+    printf 'schema=fm-voluntary-exit.v1\n'
+    printf 'reason=external-wait\n'
+    printf 'wait=pr-poll\n'
+    printf 'exited_at=%s\n' "$exited_at"
+  } > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$rec"
+}
+
+voluntary_exit_wait_record_valid() {
+  local rec="$STATE/$ID.voluntary-exit"
+  [ -f "$rec" ] && [ -r "$rec" ] && [ ! -L "$rec" ] \
+    && [ -f "$STATE/$ID.pr-poll" ] && [ ! -L "$STATE/$ID.pr-poll" ] \
+    && grep -qxF 'schema=fm-voluntary-exit.v1' "$rec" \
+    && grep -qxF 'reason=external-wait' "$rec" \
+    && grep -qxF 'wait=pr-poll' "$rec" \
+    && grep -qxE 'exited_at=[0-9]+' "$rec" \
+    && [ "$(wc -l < "$rec" | tr -d '[:space:]')" = 4 ]
+}
+
+clear_voluntary_exit_wait() {
+  rm -f "$STATE/$ID.voluntary-exit"
+}
+
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
-# `already-stopped` or `stopped`.
+# `already-stopped` or `stopped`. Pass `record-wait` from the exit verb so an
+# armed PR poll is remembered as an expected external wait. Relaunch omits
+# that token and clears any prior record.
 do_exit() {
-  local state cmd verdict cancel interrupt_result=not-needed
+  local state cmd verdict cancel interrupt_result=not-needed record_wait=${1:-}
   require_state_verified_backend exit
   state=$(agent_state)
   case "$state" in
     dead)
+      if [ "$record_wait" = record-wait ]; then
+        # Idempotence may preserve a record written by an earlier successful
+        # exit, but an agent already found dead was not stopped by this call.
+        # Never mint a voluntary-wait record that could hide that true death.
+        voluntary_exit_wait_record_valid || clear_voluntary_exit_wait
+      else
+        clear_voluntary_exit_wait
+      fi
       printf 'already-stopped'
       return 0
       ;;
@@ -493,6 +550,12 @@ do_exit() {
   # The incarnation is over: retire its busy wiring so no stale record or
   # orphaned generation survives the agent that produced it.
   retire_busy_incarnation
+  if [ "$record_wait" = record-wait ]; then
+    record_voluntary_exit_wait \
+      || die "agent stopped but its external-wait record could not be persisted"
+  else
+    clear_voluntary_exit_wait
+  fi
   printf 'stopped'
 }
 
@@ -871,7 +934,7 @@ case "$VERB" in
     echo "interrupt-delivered $ID harness=$HARNESS backend=$BACKEND verified=$proof"
     ;;
   exit)
-    result=$(do_exit)
+    result=$(do_exit record-wait)
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)
