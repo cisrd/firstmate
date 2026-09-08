@@ -31,8 +31,13 @@ A recorded `harness=` is not always an exact adapter name: a task launched from 
 | Verb | Effect | Postcondition |
 | --- | --- | --- |
 | `interrupt` | Deliver the harness's verified interrupt sequence while leaving the agent running. | Delivery succeeds while the endpoint still exists and the agent is still alive where the backend can classify that; cancellation is confirmed only from an adapter-owned acknowledgement and otherwise reports `cancel=unconfirmed`. |
-| `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. When a PR merge poll is still armed, it also writes `state/<id>.voluntary-exit` so the dead pane is an expected external wait rather than a repeating stale alarm. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. The merge poll keeps running. |
+| `exit` | Stop the agent, preserving the endpoint, the worktree, and every uncommitted change. When this call stops a live agent with a PR merge poll armed, it records an expected external wait; an already-dead agent cannot create that record. | The backend's recovery-grade classifier reports the agent gone. Already-stopped is idempotent success. The merge poll keeps running. |
 | `relaunch` | Replace the running agent with a new one in the same endpoint and worktree, on the exact recorded adapter or an explicitly chosen harness, model, and effort. | The new agent is alive on the recorded endpoint, and the durable record names the harness that is actually running. |
+
+A recorded voluntary exit keeps the merge poll running and bounds stale-pane churn to the watcher's pause recheck cadence rather than silencing supervision indefinitely.
+The watcher requires the poll to remain armed and the endpoint to remain a shell without an agent; a missing endpoint is not an expected wait.
+Relaunch and teardown retire the record, and the watcher retires it when the poll disappears.
+`bin/fm-pr-lib.sh` owns record validation; `tests/fm-control.test.sh` and `tests/fm-watch-triage.test.sh` exercise both consumers with `tests/voluntary-exit-fixtures.sh`.
 
 An exit that delivers lifecycle input but cannot prove the agent stopped fails with `exit=unconfirmed`, reports the observed agent state and any interrupt cancellation claim, and never claims that nothing changed.
 Interrupt never rewrites busy state as proof of its own success.

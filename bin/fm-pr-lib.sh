@@ -17,6 +17,11 @@
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
 
+# Shared grammar owner for state/<id>.voluntary-exit: a readable regular,
+# non-symlink record with exactly four newline-terminated lines, in any order:
+# schema=fm-voluntary-exit.v1, reason=external-wait, wait=pr-poll, and
+# exited_at=<nonnegative epoch integer>. Poll presence and agent liveness are
+# consumer checks, not record grammar.
 fm_voluntary_exit_record_valid() {
   local rec="$1/$2.voluntary-exit"
   [ -f "$rec" ] && [ -r "$rec" ] && [ ! -L "$rec" ] \

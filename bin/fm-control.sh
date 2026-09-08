@@ -449,11 +449,7 @@ retire_busy_incarnation() {
 
 # state/<id>.voluntary-exit is the durable record that an explicit exit verb
 # stopped the agent while an external wait (an armed PR merge poll) still
-# stands. Schema:
-#   schema=fm-voluntary-exit.v1
-#   reason=external-wait
-#   wait=pr-poll
-#   exited_at=<epoch>
+# stands. fm_voluntary_exit_record_valid in fm-pr-lib.sh owns its grammar.
 # Relaunch removes it. Teardown removes it. The watcher ignores it once the
 # poll sidecar is gone, so a later genuine death is not hidden.
 record_voluntary_exit_wait() {
