@@ -56,6 +56,44 @@ test_uncovered_keyless_captain_events_surface_on_the_next_main_drain() {
   pass "a newest keyless done, blocked, or needs-decision event with no newer branch outcome surfaces on the next main drain"
 }
 
+test_recurring_nonterminal_event_surfaces_again_at_its_new_position() {
+  local dir state first_out second_out third_out fourth_out body blocker
+  dir=$(make_case recurring-blocker)
+  state="$dir/state"
+  first_out="$dir/first.out"
+  second_out="$dir/second.out"
+  third_out="$dir/third.out"
+  fourth_out="$dir/fourth.out"
+  blocker='blocked [key=bad/value]: waiting on the captain to pick a provider'
+
+  printf '%s\n' "$blocker" > "$state/recur.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$first_out" \
+    || fail "first recurring-blocker drain failed"
+  body=$(backstop_body "$first_out")
+  case "$body" in *"recur $blocker"*) ;; *) fail "the blocker did not surface on its first drain: $body" ;; esac
+
+  # Unchanged bytes stay silent: the byte receipt already covers them.
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$second_out" \
+    || fail "unchanged recurring-blocker drain failed"
+  [ ! -s "$second_out" ] \
+    || fail "an unchanged blocker was re-announced: $(cat "$second_out")"
+
+  # The crew worked on, then hit the very same blocker again. This is a NEW
+  # event at a new position, not the one already presented.
+  printf 'working: retrying with the other provider\n' >> "$state/recur.status"
+  printf '%s\n' "$blocker" >> "$state/recur.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$third_out" \
+    || fail "recurring-blocker drain failed"
+  body=$(backstop_body "$third_out")
+  case "$body" in *"recur $blocker"*) ;; *) fail "a recurring blocker was suppressed by its earlier identical text: $body" ;; esac
+
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$fourth_out" \
+    || fail "post-recurrence drain failed"
+  [ ! -s "$fourth_out" ] \
+    || fail "the recurring blocker repeated after its own presentation: $(cat "$fourth_out")"
+  pass "an identical nonterminal captain event appended later surfaces again, then falls silent"
+}
+
 test_newer_task_outcome_and_routine_latest_events_stay_silent() {
   local dir state out old
   dir=$(make_case covered-and-routine)
@@ -545,6 +583,7 @@ test_rewritten_status_file_does_not_reannounce_the_same_terminal_result() {
 
 test_uncovered_keyless_captain_events_surface_on_the_next_main_drain
 test_rewritten_status_file_does_not_reannounce_the_same_terminal_result
+test_recurring_nonterminal_event_surfaces_again_at_its_new_position
 test_newer_task_outcome_and_routine_latest_events_stay_silent
 test_older_or_other_task_outcome_cannot_hide_a_new_captain_event
 test_branch_annotation_cannot_consume_the_main_resurfacing_backstop

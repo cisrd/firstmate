@@ -982,11 +982,19 @@ EOF
   printf '%s' "$offset"
 }
 
-# Stable identity of one captain-facing status event, independent of the
-# status file's inode or byte offset. A rewritten log that still ends on the
-# same terminal result keeps this identity; a genuinely new event does not.
+# Stable identity of one terminal status outcome (done, failed), independent of
+# the status file's inode or byte offset. A rewritten log that still ends on the
+# same terminal result keeps this identity; a genuinely new result does not.
+# Only an outcome verb has an identity: a blocked or needs-decision line states a
+# live condition that can legitimately recur, so it stays offset-sensitive and
+# the same text appended later is a new event, not the one already presented.
+# Empty output means "no identity", which every caller reads as "do not dedupe".
 status_terminal_event_identity() {  # <event-line>
   local line=$1
+  case "$(status_line_verb "$line")" in
+    done|failed) ;;
+    *) return 0 ;;
+  esac
   printf '%s' "$line" | LC_ALL=C tr -d '\r' | cksum | awk '{printf "e1:%s-%s", $1, $2}'
 }
 
