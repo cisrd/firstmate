@@ -13,7 +13,7 @@
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
-#   (g2) --method=queue, --method queue, and --no-method skip default --squash
+#   (g2) --queue skips default --squash
 #        and forward no strategy flag, so a merge-queue branch can choose
 #   (g3) that path uses the same live outcome read as every other GitHub merge,
 #        so an enqueued still-open PR is named queued rather than merged
@@ -1632,31 +1632,23 @@ test_method_equals_merge_method_not_overridden() {
 }
 
 test_forge_decides_method_omits_strategy() {
-  local case_dir spelling
-  for spelling in \
-    'canonical|--queue' \
-    'method-equals-queue|--method=queue' \
-    'method-queue|--method queue' \
-    'no-method|--no-method'
-  do
-    case_dir=$(make_case "queue-token-${spelling%%|*}")
-    mkdir -p "$case_dir/wt"
-    add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
-    write_github_outcome "$case_dir" OPEN false false main
-    printf 'merge_method=MERGE\n' > "$case_dir/github-rules"
-    : > "$case_dir/gh-axi.log"
-    : > "$case_dir/gh.log"
+  local case_dir
+  case_dir=$(make_case "queue-token-canonical")
+  mkdir -p "$case_dir/wt"
+  add_gh_mocks "$case_dir" eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  write_github_outcome "$case_dir" OPEN false false main
+  printf 'merge_method=MERGE\n' > "$case_dir/github-rules"
+  : > "$case_dir/gh-axi.log"
+  : > "$case_dir/gh.log"
 
-    # shellcheck disable=SC2086  # The spelling is one or two extra merge flags.
-    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/24 -- ${spelling#*|} \
-      > "$case_dir/stdout" 2> "$case_dir/stderr" \
-      || fail "queue-token-${spelling%%|*}: fm-pr-merge failed"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/24 -- --queue \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "queue-token-canonical: fm-pr-merge failed"
 
-    [ ! -s "$case_dir/gh-axi.log" ] \
-      || fail "queue-token-${spelling%%|*}: queue request reached gh-axi's merge parser"
-    assert_grep 'enqueuePullRequest' "$case_dir/gh.log" \
-      "queue-token-${spelling%%|*}: queue request did not use enqueuePullRequest"
-  done
+  [ ! -s "$case_dir/gh-axi.log" ] \
+    || fail "queue-token-canonical: queue request reached gh-axi's merge parser"
+  assert_grep 'enqueuePullRequest' "$case_dir/gh.log" \
+    "queue-token-canonical: queue request did not use enqueuePullRequest"
   pass "fm-pr-merge sends every supported queue token through enqueuePullRequest"
 }
 
@@ -1688,12 +1680,10 @@ test_forge_decides_method_forwards_other_flags() {
 test_forge_decides_conflicting_strategy_refuses_before_forge() {
   local case_dir rc name rest args forge explicit
   for spec in \
-    'queue-squash|--method=queue --squash|--method=queue|--squash' \
-    'queue-merge|--method=queue --merge|--method=queue|--merge' \
-    'queue-rebase|--method=queue --rebase|--method=queue|--rebase' \
-    'no-method-squash|--no-method --squash|--no-method|--squash' \
-    'method-queue-merge|--method queue --merge|--method queue|--merge' \
-    'queue-method-squash|--method=queue --method=squash|--method=queue|--method=squash'
+    'queue-squash|--queue --squash|--queue|--squash' \
+    'queue-merge|--queue --merge|--queue|--merge' \
+    'queue-rebase|--queue --rebase|--queue|--rebase' \
+    'queue-method-squash|--queue --method=squash|--queue|--method=squash'
   do
     name=${spec%%|*}
     rest=${spec#*|}
@@ -1741,7 +1731,7 @@ test_forge_decides_reports_queued_and_merged_outcomes() {
   : > "$case_dir/gh.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 -- --method=queue \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 -- --queue \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -1764,7 +1754,7 @@ test_forge_decides_reports_queued_and_merged_outcomes() {
   : > "$case_dir/gh.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 -- --method=queue \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 -- --queue \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -1786,13 +1776,13 @@ test_queue_request_rejects_repeated_tokens_before_recording() {
   add_gh_mocks "$case_dir" 4141414141414141414141414141414141414141
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 -- --queue --no-method \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/34 -- --queue --queue \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
 
   expect_code 1 "$rc" "queue-repeated-token: repeated queue request must refuse"
-  assert_grep 'repeat the queue request (--queue --no-method); pass exactly one queue token' \
+  assert_grep 'repeat the queue request (--queue --queue); pass exactly one queue token' \
     "$case_dir/stderr" "queue-repeated-token: refusal did not name both repeated tokens"
   assert_no_grep 'pr=https://github.com/example/repo/pull/34' "$case_dir/state/task-x1.meta" \
     "queue-repeated-token: repeated request was recorded before refusal"
@@ -1895,7 +1885,7 @@ test_forge_decides_unreadable_state_reports_without_failing() {
   : > "$case_dir/gh.log"
 
   set +e
-  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 -- --no-method \
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 -- --queue \
     > "$case_dir/stdout" 2> "$case_dir/stderr"
   rc=$?
   set -e
@@ -1920,27 +1910,24 @@ test_forge_decides_unreadable_state_reports_without_failing() {
 # GitLab already applies the project's own merge method, so they are refused by
 # name before anything is recorded rather than forwarded to glab afterwards.
 test_gitlab_forge_decides_method_refuses_before_recording() {
-  local case_dir rc spelling
-  for spelling in 'no-method|--no-method' 'method-equals-queue|--method=queue' 'method-queue|--method queue'; do
-    case_dir=$(make_gitlab_case "gitlab-forge-decides-${spelling%%|*}")
+  local case_dir rc
+  case_dir=$(make_gitlab_case "gitlab-forge-decides-canonical")
 
-    set +e
-    # shellcheck disable=SC2086  # The spelling is one or two extra merge flags.
-    run_pr_merge "$case_dir" task-x1 "$MR_URL" -- ${spelling#*|} \
-      > "$case_dir/stdout" 2> "$case_dir/stderr"
-    rc=$?
-    set -e
+  set +e
+  run_pr_merge "$case_dir" task-x1 "$MR_URL" -- --queue \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
 
-    expect_code 1 "$rc" "gitlab-forge-decides-${spelling%%|*}: fm-pr-merge should refuse the forge-decides token"
-    assert_grep "extra merge arguments must not request GitHub's merge queue on GitLab" \
-      "$case_dir/stderr" "gitlab-forge-decides-${spelling%%|*}: refusal did not name the queue token"
-    assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
-      "gitlab-forge-decides-${spelling%%|*}: the URL was recorded before rejecting the token"
-    assert_absent "$case_dir/state/task-x1.check.sh" \
-      "gitlab-forge-decides-${spelling%%|*}: the refused token armed a merge poll"
-    [ ! -s "$case_dir/glab.log" ] \
-      || fail "gitlab-forge-decides-${spelling%%|*}: glab was invoked with a flag it does not define"
-  done
+  expect_code 1 "$rc" "gitlab-forge-decides-canonical: fm-pr-merge should refuse the forge-decides token"
+  assert_grep "extra merge arguments must not request GitHub's merge queue on GitLab" \
+    "$case_dir/stderr" "gitlab-forge-decides-canonical: refusal did not name the queue token"
+  assert_no_grep "pr=$MR_URL" "$case_dir/state/task-x1.meta" \
+    "gitlab-forge-decides-canonical: the URL was recorded before rejecting the token"
+  assert_absent "$case_dir/state/task-x1.check.sh" \
+    "gitlab-forge-decides-canonical: the refused token armed a merge poll"
+  [ ! -s "$case_dir/glab.log" ] \
+    || fail "gitlab-forge-decides-canonical: glab was invoked with a flag it does not define"
   pass "fm-pr-merge refuses forge-decides merge methods on GitLab before recording state"
 }
 

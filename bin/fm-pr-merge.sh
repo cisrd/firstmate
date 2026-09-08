@@ -9,8 +9,6 @@
 # GitHub direct merges default to --squash when the caller names no method.
 # `--queue` is the canonical merge-queue request and invokes GitHub's supported
 # GraphQL enqueuePullRequest mutation rather than the gh-axi merge parser.
-# --no-method, --method=queue, and --method queue remain accepted aliases for
-# retry commands emitted by the earlier implementation.
 # One parser owns every queue spelling and all caller-argument interpretation.
 # It refuses repeated queue tokens, a queue token mixed with an explicit merge
 # strategy, and any extra argument the enqueue mutation cannot honour.
@@ -110,9 +108,7 @@ shift 2
 
 # Parse the caller's merge arguments once for every provider path.
 # This is the single owner of queue-token grammar and of how caller arguments
-# are interpreted. `--queue` is the canonical enqueue request; --no-method,
-# --method=queue, and --method queue remain accepted aliases for commands the
-# earlier merge-queue implementation printed. Queue tokens are Firstmate flags,
+# are interpreted. Queue tokens are Firstmate flags,
 # never forge CLI flags. A repeated queue token, a queue token mixed with an
 # explicit strategy, or an argument the GraphQL enqueue path cannot honour is
 # refused rather than dropped or forwarded with changed meaning.
@@ -139,21 +135,14 @@ fm_pr_parse_merge_args() {
     arg=$1
     shift
     if [ "$pending_method" = true ]; then
-      if [ "$arg" = queue ]; then
-        FM_PR_CALLER_QUEUE=true
-        FM_PR_CALLER_QUEUE_COUNT=$((FM_PR_CALLER_QUEUE_COUNT + 1))
-        FM_PR_CALLER_QUEUE_TOKENS="${FM_PR_CALLER_QUEUE_TOKENS:+$FM_PR_CALLER_QUEUE_TOKENS }--method queue"
-        FM_PR_CALLER_METHOD=queue
-      else
-        FM_PR_CALLER_METHOD=$arg
-        FM_PR_CALLER_EXPLICIT_METHODS="${FM_PR_CALLER_EXPLICIT_METHODS:+$FM_PR_CALLER_EXPLICIT_METHODS }--method $arg"
-        FM_PR_CALLER_FORWARD+=(--method "$arg")
-      fi
+      FM_PR_CALLER_METHOD=$arg
+      FM_PR_CALLER_EXPLICIT_METHODS="${FM_PR_CALLER_EXPLICIT_METHODS:+$FM_PR_CALLER_EXPLICIT_METHODS }--method $arg"
+      FM_PR_CALLER_FORWARD+=(--method "$arg")
       pending_method=false
       continue
     fi
     case "$arg" in
-      --queue|--no-method|--method=queue)
+      --queue)
         FM_PR_CALLER_HAS_METHOD=true
         FM_PR_CALLER_METHOD=queue
         FM_PR_CALLER_QUEUE=true
