@@ -198,9 +198,14 @@ fm_dod_block() {  # <mode> <task-id>
 # Definition of done
 Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
+Do not run /no-mistakes unless firstmate explicitly instructs you to change this task's delivery path.
 The task is complete only when committed on your branch.
-When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
-Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
+When it is implemented and committed, push your branch and open a PR with \`gh-axi\`.
+If a push, PR creation, or PR verification fails, diagnose the forge failure first, including the reported authentication, remote, branch, or API error; do not use no-mistakes as a workaround.
+Before the final status, verify with \`gh-axi\` that the branch was actually pushed and that the forge reports a full \`https://...\` PR URL for that branch.
+A local commit, an attempted push, a bare PR number, or an inferred URL is not done.
+Only after those checks append \`done: PR {url}\` to the status file and stop.
+The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
       ;;
     local-only)
@@ -237,6 +242,9 @@ So background the drive call and poll \`no-mistakes axi status\` from a separate
 Where a harness's own command limit is not established, assume it bounds commands and use that same background-and-poll shape.
 A killed or timed-out call is never evidence the daemon died: the daemon accepts your response immediately and runs the round in the background, so the call was only ever waiting for a read while the run kept working.
 Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.
+After every \`no-mistakes axi respond\`, continue in the same turn with bounded calls to the structured \`no-mistakes axi status\` interface until the attributed run changes step, reaches a terminal outcome, or presents a genuine ask-user decision.
+An accepted response or a status that still reports active work is not a stopping point; the same continuation rule applies after starting or reattaching to a run.
+Never end your turn or promise to resume or check later while structured status shows that validation is active.
 
 Two firstmate-specific rules layer on top of that guidance:
 - ask-user findings are never yours to answer: escalate to firstmate using rule 6's ask-user format and stop.
