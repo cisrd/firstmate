@@ -1,0 +1,18 @@
+Behavioral CLI replay using simulated GitHub responses; no live PR mutation.
+ok - fm-pr-merge's merge-queue refusal names a retry that base branch accepts
+
+$ execute fm-pr-merge.sh emitted --queue retry
+armed: state/task-x1.check.sh
+verified: https://github.com/example/repo/pull/71 is queued (state=OPEN, merged=false, isInMergeQueue=true)
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+
+Observed forge requests:
+pr view https://github.com/example/repo/pull/71 --json headRefOid -q .headRefOid
+api graphql -f query=query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state merged isInMergeQueue baseRefName}}} -F owner=example -F repo=repo -F number=71 --jq .data.repository.pullRequest | "state=" + (.state // ""), "merged=" + (.merged | tostring), "queued=" + (.isInMergeQueue | tostring), "base=" + (.baseRefName // "")
+api --paginate repos/example/repo/rules/branches/main --jq .[] | select(.type == "merge_queue") | "merge_method=" + (.parameters.merge_method // "")
+pr view https://github.com/example/repo/pull/71 --json headRefOid -q .headRefOid
+api graphql -f query=query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){viewerPermission pullRequest(number:$number){id state merged isInMergeQueue baseRefName headRefOid commits(last:1){nodes{commit{statusCheckRollup{state}}}}}}} -F owner=example -F repo=repo -F number=71 --jq .data.repository as $r | $r.pullRequest | "state=" + (.state // ""), "merged=" + (.merged | tostring), "queued=" + (.isInMergeQueue | tostring), "base=" + (.baseRefName // ""), "node=" + (.id // ""), "head=" + (.headRefOid // ""), "checks=" + (.commits.nodes[0].commit.statusCheckRollup.state // "NONE"), "permission=" + ($r.viewerPermission // "")
+api --paginate repos/example/repo/rules/branches/main --jq .[] | select(.type == "merge_queue") | "merge_method=" + (.parameters.merge_method // "")
+api graphql -f query=mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){mergeQueueEntry{id state}}} -f pullRequestId=PR_NODE -f expectedHeadOid=8484848484848484848484848484848484848484 --jq .data.enqueuePullRequest.mergeQueueEntry | "entry_id=" + (.id // ""), "entry_state=" + (.state // "")
+api graphql -f query=query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state merged isInMergeQueue baseRefName}}} -F owner=example -F repo=repo -F number=71 --jq .data.repository.pullRequest | "state=" + (.state // ""), "merged=" + (.merged | tostring), "queued=" + (.isInMergeQueue | tostring), "base=" + (.baseRefName // "")
+ok - fm-pr-merge refuses a read-only queue destination before enqueueing

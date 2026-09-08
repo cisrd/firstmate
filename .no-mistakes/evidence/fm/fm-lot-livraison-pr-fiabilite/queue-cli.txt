@@ -1,0 +1,39 @@
+Isolated CLI demonstration; GitHub responses simulated by existing behavioral fixtures. No live PR mutations.
+$ fm-pr-merge.sh task-x1 https://github.com/cisrd/firstmate/pull/71
+exit=1
+armed: state/task-x1.check.sh
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4NWNXE2DM2P601DTGMY5/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4NWNXE2DM2P601DTGMY5/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+error: the merge command's own output follows, quoted; it is the forge CLI's report, not this script's verdict:
+error: > merged:
+error: >   number: 71
+error: >   status: ok
+error: GitHub merge outcome was not successful: state=OPEN, merged=false, isInMergeQueue=false
+error: base branch main requires the merge queue, which sets the merge method (rebase) itself and refuses an explicit strategy; retry with: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4NWNXE2DM2P601DTGMY5/bin/fm-pr-merge.sh task-x1 https://github.com/cisrd/firstmate/pull/71 -- --queue
+$ execute the emitted retry verbatim
+WARNING: watcher still down (same stale episode; last beat: never, grace 300s) - full banner already printed this episode.
+armed: state/task-x1.check.sh
+verified: https://github.com/cisrd/firstmate/pull/71 is queued (state=OPEN, merged=false, isInMergeQueue=true)
+exit=0
+Persisted PR identity:
+project=/tmp/fm-pr-merge-tests.Cu3kWs/evidence-queue/project
+pr=https://github.com/cisrd/firstmate/pull/71
+pr_head=8484848484848484848484848484848484848484
+Observed GraphQL enqueue request:
+api graphql -f query=mutation($pullRequestId:ID!,$expectedHeadOid:GitObjectID!){enqueuePullRequest(input:{pullRequestId:$pullRequestId,expectedHeadOid:$expectedHeadOid}){mergeQueueEntry{id state}}} -f pullRequestId=PR_NODE -f expectedHeadOid=8484848484848484848484848484848484848484 --jq .data.enqueuePullRequest.mergeQueueEntry | "entry_id=" + (.id // ""), "entry_state=" + (.state // "")
+Read-only GitHub target (simulated permission response):
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4NWNXE2DM2P601DTGMY5/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4NWNXE2DM2P601DTGMY5/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+armed: state/task-x1.check.sh
+error: refusing to enqueue https://github.com/example/repo/pull/35: repository example/repo grants only READ permission, not merge authority
+exit=1

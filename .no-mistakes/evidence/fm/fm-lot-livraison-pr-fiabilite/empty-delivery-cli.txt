@@ -1,0 +1,3 @@
+Isolated real CLI with simulated no-mistakes completed empty-diff run:
+$ fm-crew-state.sh feat-empty-diff
+state: failed · source: run-step · not validated: run kept no change - review, test, document, lint, push, pr and ci were all skipped
