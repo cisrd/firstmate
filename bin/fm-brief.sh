@@ -54,8 +54,10 @@
 # a linked firstmate worktree names the real primary rather than itself, and a
 # treehouse copy is not told to stop. Ship and scout briefs label the worktree
 # with that resolved name; any other label is rendered verbatim. The assertion
-# uses a Git discriminant (git-dir vs git-common-dir); equality of pwd and
-# git-toplevel does not prove isolation.
+# compares physical paths - `pwd -P` against that primary - because equality of
+# pwd and git-toplevel does not prove isolation, and git-dir vs git-common-dir
+# equality only proves the copy is not a linked worktree, which an ordinary
+# clone and an Orca-managed copy also satisfy.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -469,9 +471,8 @@ $HERDR_SECTION
 You are in a disposable git worktree of $REPO_LABEL, at a detached HEAD on a clean default branch.
 
 **Verify isolation before anything else.** Run \`pwd -P\`. It must be this disposable task worktree (a treehouse pool path or an Orca-managed worktree), not the project's primary checkout${PRIMARY_CLAUSE}.
-Equality of \`pwd\` and \`git rev-parse --show-toplevel\` does not prove isolation: both name the current worktree root in the primary checkout and in a linked worktree.
-A linked worktree has a real Git discriminant: \`git rev-parse --absolute-git-dir\` differs from \`git rev-parse --path-format=absolute --git-common-dir\`. Those paths are equal only in the primary checkout.
-If \`pwd -P\` is the primary checkout, or those two Git directories are equal, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
+Equality of \`pwd\` and \`git rev-parse --show-toplevel\` does not prove isolation: both name the current worktree root in the primary checkout and in a linked worktree alike. Compare the physical paths instead.
+If \`pwd -P\` is that primary checkout, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
 1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
 

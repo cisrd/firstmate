@@ -3359,9 +3359,9 @@ test_lsof_absent_reaps_via_proc_cwd() {
   pass "missing lsof still reaps leaked cwd processes on the first teardown via /proc"
 }
 
-test_no_lsof_reap_spares_the_invoking_shell() {
+test_no_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy() {
   local case_dir rc pid path_without_lsof
-  case_dir=$(make_case no-lsof-spare-invoker)
+  case_dir=$(make_case no-lsof-invoker-inside)
   write_meta "$case_dir" no-mistakes ship
   land_shippable_commit "$case_dir"
   path_without_lsof=$(make_path_without_lsof "$case_dir")
@@ -3380,12 +3380,16 @@ test_no_lsof_reap_spares_the_invoking_shell() {
     FM_TEARDOWN_TEST_PATH="$path_without_lsof" run_teardown "$case_dir"
   ) > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
-  expect_code 0 "$rc" "no-lsof-spare-invoker: teardown should not signal the shell that invoked it"$'\n'"$(cat "$case_dir/stderr")"
-  if kill -0 "$pid" 2>/dev/null; then
-    kill -KILL "$pid" 2>/dev/null || true
-    fail "no-lsof-spare-invoker: the actual leaked process survived"
+  expect_code 1 "$rc" "no-lsof-invoker-inside: teardown should refuse while its own invoker occupies the copy"$'\n'"$(cat "$case_dir/stderr")"
+  assert_grep "invoked from inside $case_dir/wt" "$case_dir/stderr" \
+    "no-lsof-invoker-inside: the refusal did not name the occupying invoker"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    fail "no-lsof-invoker-inside: teardown signalled processes in the copy before refusing"
   fi
-  pass "missing lsof reaps task leftovers without signalling the shell that invoked teardown"
+  kill -KILL "$pid" 2>/dev/null || true
+  assert_present "$case_dir/wt" "no-lsof-invoker-inside: teardown removed the copy it refused to reap"
+  assert_present "$case_dir/state/task-x1.meta" "no-lsof-invoker-inside: teardown cleared metadata after refusing"
+  pass "missing lsof refuses rather than reporting a copy its own invoker still occupies as free"
 }
 
 test_lsof_absent_reaps_tmux_process_group() {
@@ -3803,7 +3807,7 @@ test_own_autonomous_run_is_left_alone
 test_leaked_worktree_process_is_reaped
 test_leaked_tasktmp_process_is_reaped
 test_lsof_absent_reaps_via_proc_cwd
-test_no_lsof_reap_spares_the_invoking_shell
+test_no_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy
 test_lsof_absent_reaps_tmux_process_group
 test_lsof_error_refuses_before_removal
 test_reused_pid_identity_is_not_force_killed

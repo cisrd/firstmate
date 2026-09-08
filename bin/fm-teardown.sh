@@ -78,10 +78,10 @@
 # claim: no OTHER task record in this home or any locally registered Firstmate
 # home may name the same copy in its worktree= or home=. Identity is the
 # canonical physical directory, so two spellings of one copy are one claim.
-# The check runs for any ship or scout worktree being removed, not only a
-# recognized pool slot, and on the forced-teardown descendant path as well, so
-# a shared ordinary worktree is refused before any process is signalled. One
-# live copy with two
+# The check runs for any ship or scout worktree being removed, whatever its
+# backend and whether or not it is a recognized pool slot, and on the
+# forced-teardown descendant path as well, so a shared ordinary worktree is
+# refused before any process is signalled. One live copy with two
 # task records is the reuse collision itself, whichever record is stale. The
 # recorded endpoint's exact task identity and the record's spawn incarnation
 # are validated separately before cleanup. Its current working directory is
@@ -1840,8 +1840,9 @@ proc_cwd_scan_available() {
   [ "$seen_real" = "$here" ]
 }
 
-# The shells that invoked this teardown are the cleanup control plane, not
-# leftovers. Resolve only their exact pid chain; descendants remain eligible.
+# The exact pid chain that invoked this teardown. A shell in that chain is the
+# cleanup control plane, so finding one INSIDE the copy is a refusal, never a
+# reap and never a silent exemption. Descendants remain ordinary leftovers.
 teardown_ancestor_pids() {
   local current=$$ parent hops=0
   while [ "$hops" -lt 64 ]; do
@@ -1854,29 +1855,34 @@ teardown_ancestor_pids() {
   done
 }
 
-pid_list_has() {  # <list> <pid>
-  printf '%s\n' "$1" | grep -Fxq "$2"
-}
-
 # Bounded /proc/<pid>/cwd scan: process count, never a file-tree walk, never
 # a process-name match, never another home's processes. Only pids whose cwd
-# is exactly <dir> or under it. Never this teardown or its invoking shells.
-pids_with_cwd_under_proc() {  # <dir> <ancestor-pids>
-  local dir=$1 ancestors=$2 proc_root pid pid_dir cwd cwd_real
+# is exactly <dir> or under it, never this teardown's own pid. A process from
+# this teardown's own invocation chain sitting in <dir> fails the scan: it
+# cannot be reaped without killing the operator's shell, and calling the copy
+# free would hand a still-occupied worktree to destructive cleanup.
+pids_with_cwd_under_proc() {  # <dir>
+  local dir=$1 proc_root pid pid_dir cwd cwd_real ancestors
   proc_root=${FM_PROC_ROOT_OVERRIDE:-/proc}
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   dir=$(cd "$dir" && pwd -P) || return 1
+  ancestors=$(teardown_ancestor_pids)
   for pid_dir in "$proc_root"/[0-9]*; do
     [ -e "$pid_dir" ] || continue
     pid=${pid_dir##*/}
     case "$pid" in ''|*[!0-9]*) continue ;; esac
     [ "$pid" != "$$" ] || continue
-    pid_list_has "$ancestors" "$pid" && continue
     cwd=$(readlink "$pid_dir/cwd" 2>/dev/null) || continue
     cwd_real=$(CDPATH='' cd -- "$cwd" 2>/dev/null && pwd -P) || cwd_real=$cwd
     case "$cwd_real" in
-      "$dir"|"$dir"/*) printf '%s\n' "$pid" ;;
+      "$dir"|"$dir"/*) ;;
+      *) continue ;;
     esac
+    if printf '%s\n' "$ancestors" | grep -Fxq "$pid"; then
+      echo "REFUSED: teardown was invoked from inside $dir (process $pid still has it as its working directory); leave that copy and re-run." >&2
+      return 1
+    fi
+    printf '%s\n' "$pid"
   done
 }
 
@@ -1889,14 +1895,13 @@ pids_with_cwd_under_proc() {  # <dir> <ancestor-pids>
 # output when nothing matches; failure means the scan could not establish a
 # safe result.
 pids_with_cwd_under() {  # <dir>
-  local dir=$1 out pid path line ancestors
+  local dir=$1 out pid path line
   [ -n "$dir" ] && [ -d "$dir" ] || return 0
   dir=$(cd "$dir" && pwd -P) || return 1
-  ancestors=$(teardown_ancestor_pids)
   if ! command -v lsof >/dev/null 2>&1; then
     proc_cwd_scan_available || return 1
-    pids_with_cwd_under_proc "$dir" "$ancestors"
-    return 0
+    pids_with_cwd_under_proc "$dir"
+    return
   fi
   out=$(lsof -a -d cwd -Fpn 2>/dev/null) || return 1
   [ -n "$out" ] || return 0
@@ -1913,10 +1918,7 @@ pids_with_cwd_under() {  # <dir>
         path=${line#n}
         case "$path" in
           "$dir"|"$dir"/*)
-            if [ -n "$pid" ] && [ "$pid" != "$$" ] \
-               && ! pid_list_has "$ancestors" "$pid"; then
-              printf '%s\n' "$pid"
-            fi
+            [ -n "$pid" ] && [ "$pid" != "$$" ] && printf '%s\n' "$pid"
             ;;
         esac
         ;;
@@ -2022,11 +2024,11 @@ reap_task_backend_process_group() {  # <label>
 # - both unique per task and never shared - before either is removed. TERM
 # first, then KILL after a short grace period for anything still alive; a
 # process that exits on its own between the two passes is simply absent from
-# the recheck. The scan runs from outside the roots and excludes the exact
-# invoker ancestry, so neither cleanup helpers nor the shell that invoked
-# teardown are mistaken for leftovers. A missing lsof uses the /proc cwd scan
-# when that is available, else the backend process-group fallback; an lsof
-# scan error refuses before destructive teardown.
+# the recheck. The scan runs from outside the roots, so the helpers this
+# cleanup itself forks are never mistaken for leftovers. A missing lsof uses
+# the /proc cwd scan when that is available, else the backend process-group
+# fallback; an lsof scan error refuses before destructive teardown, and so
+# does a /proc scan that finds this teardown's own invoker inside the copy.
 reap_task_worktree_processes() {  # <label> <dir>...
   local previous rc=0
   previous=$(pwd -P 2>/dev/null) || previous=/
@@ -2756,14 +2758,13 @@ preflight_descendant_treehouse_slots() {
     backend=$(fm_backend_of_meta "$meta")
     worktree=$(meta_value "$meta" worktree)
     project=$(meta_value "$meta" project)
-    if [ "$kind" = secondmate ] || [ "$backend" = orca ]; then
+    if [ "$kind" = secondmate ]; then
       continue
     fi
-    if is_treehouse_pool_slot "$project" "$worktree"; then
+    if [ "$backend" != orca ] && is_treehouse_pool_slot "$project" "$worktree"; then
       fm_backend_validate_task_endpoint "$meta" "$task_id" || return 1
-    elif [ -z "$worktree" ] || [ ! -d "$worktree" ]; then
-      continue
     fi
+    [ -n "$worktree" ] && [ -d "$worktree" ] || continue
     require_exclusive_worktree_slot_record "$meta" "$task_id" "$state" "$worktree" || return 1
   done
 }

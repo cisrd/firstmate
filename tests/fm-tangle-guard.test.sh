@@ -148,10 +148,8 @@ test_brief_assertion_precedes_branch() {
     "brief is missing the isolation blocked-status contract"
   assert_grep "does not prove isolation" "$brief" \
     "brief must say pwd vs git-toplevel equality does not prove isolation"
-  assert_grep "absolute-git-dir" "$brief" \
-    "brief must name the git-dir vs git-common-dir discriminant"
-  assert_no_grep "they do not prove you are outside the primary checkout" "$brief" \
-    "brief must not dismiss the Git discriminant"
+  assert_no_grep "absolute-git-dir" "$brief" \
+    "brief must not make git-dir equality a stop condition: an ordinary clone and an Orca copy satisfy it too"
   iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
   br=$(grep -n 'git checkout -b fm/' "$brief" | head -1 | cut -d: -f1)
   if [ -z "$iso" ] || [ -z "$br" ]; then
