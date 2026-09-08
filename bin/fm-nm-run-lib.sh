@@ -126,16 +126,6 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   fm_nm_run_is_active "$1"
 }
 
-# The printed form of an attributed ledger row: the status word, plus the row's
-# PR URL when it has one.
-fm_nm_print_runs_row() {  # <status> <pr-url>
-  if [ -n "${2:-}" ]; then
-    printf '%s %s' "$1" "$2"
-  else
-    printf '%s' "$1"
-  fi
-}
-
 # ONE owner for attribution from the pipeline's own runs ledger, replacing a
 # per-row scan-and-skip. The ledger is the real top-level `no-mistakes runs
 # --limit N` listing (plain text, no run id, no quoting, newest-first, columns
@@ -167,7 +157,7 @@ fm_nm_print_runs_row() {  # <status> <pr-url>
 # Read-only: git reads resolve objects in place; custody never changes.
 fm_nm_runs_status_for_worktree() {  # <worktree> <branch> <runs-list-output> [expected-head]
   local wt=$1 branch=$2 list=$3 expected_head=${4:-}
-  local local_full row st br sha day clock pr extra year_num month_num day_num max_day pending_st='' pending_pr=''
+  local local_full row st br sha day clock pr extra year_num month_num day_num max_day pending_st=''
   local_full=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 0
   [ -n "$list" ] || return 0
   while IFS= read -r row; do
@@ -205,7 +195,7 @@ fm_nm_runs_status_for_worktree() {  # <worktree> <branch> <runs-list-output> [ex
       # the only admissible anchor, and only exact head equality proves the
       # worktree still sits at the submitted head.
       if [ "$(fm_nm_resolve_commit "$wt" "$sha")" = "$local_full" ]; then
-        fm_nm_print_runs_row "$pending_st" "$pending_pr"
+        printf '%s' "$pending_st"
       fi
       return 0
     fi
@@ -219,13 +209,16 @@ fm_nm_runs_status_for_worktree() {  # <worktree> <branch> <runs-list-output> [ex
     fi
     if [ -n "$(fm_nm_resolve_commit "$wt" "$sha")" ]; then
       if fm_nm_head_matches_worktree "$wt" "$sha"; then
-        fm_nm_print_runs_row "$st" "$pr"
+        if [ -n "$pr" ]; then
+          printf '%s %s' "$st" "$pr"
+        else
+          printf '%s' "$st"
+        fi
       fi
       return 0
     fi
     [ "$st" = running ] || return 0
     pending_st=$st
-    pending_pr=$pr
   done <<< "$list"
   return 0
 }
