@@ -844,18 +844,21 @@ fi
 # unverified semantic state remains unknown.
 #
 # A live pane whose agent is gone (`dead shell-no-agent`) is not merely an
-# unreadable busy state: the crew can have finished and had its agent exit
-# outside fm-control, leaving a `done`/`failed` status log that is the last
-# authoritative word on the task. Only those two terminal verbs survive the
-# missing agent - a `working`, `blocked`, `needs-decision`, or `paused` log
-# describes an in-flight intention that the gone agent can no longer own, so
-# it stays unknown.
+# unreadable busy state: the agent can have exited outside fm-control - or been
+# stopped deliberately while something external is pending - leaving a status
+# log that is the last authoritative word on the task. Every settled reading
+# survives the missing agent with its reason: the terminal `done`/`failed`, and
+# the open `blocked`, `needs-decision`, and `paused`, which describe a condition
+# that outlives the agent that reported it. `working` is the one verb that does
+# NOT survive: it claims an activity in progress, which nothing is performing
+# once the agent is gone, so it reads unknown rather than a stale claim.
 if [ "$KIND" != secondmate ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
   if [ "$BUSY_VERDICT" = 'dead shell-no-agent' ]; then
-    case "$(map_log_state "$LOG_LINE")" in
-      done|failed)
-        emit "$(map_log_state "$LOG_LINE")" status-log \
+    AGENT_GONE_STATE=$(map_log_state "$LOG_LINE")
+    case "$AGENT_GONE_STATE" in
+      done|failed|blocked|parked|paused)
+        emit "$AGENT_GONE_STATE" status-log \
           "$(status_line_note "$LOG_LINE")${SEP}agent gone, pane shell remains"
         ;;
     esac

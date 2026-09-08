@@ -1464,10 +1464,42 @@ test_no_run_live_pane_agent_gone_keeps_terminal_log() {
   pass "live pane with no agent still reports its terminal status-log state"
 }
 
-# The other half of the same decision: a NONTERMINAL log describes an in-flight
-# intention that the departed agent can no longer own, so it must not be
-# reported as the current state.
-test_no_run_live_pane_agent_gone_nonterminal_log_is_unknown() {
+# Every settled status-log reading survives the gone agent with its reason: the
+# terminal pair above, and the open conditions here, which outlive the agent
+# that reported them (an unanswered decision or an external wait is still true
+# once the crew is stopped). One case per surviving verb.
+test_no_run_live_pane_agent_gone_keeps_open_status_states() {
+  reset_fakes
+  local d out case_name line want_state want_note
+  while IFS='|' read -r case_name line want_state want_note; do
+    [ -n "$case_name" ] || continue
+    reset_fakes
+    d=$(new_case "husk-$case_name")
+    make_repo_on_branch "$d/wt" "fm/feat-$case_name"
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/$case_name.meta" "window=fm:fm-$case_name" "worktree=$d/wt" "kind=ship" "harness=claude"
+    printf '%s\n' "$line" > "$d/state/$case_name.status"
+    FM_FAKE_AXI_STATUS=""
+    FM_FAKE_TMUX_SHELL_ONLY=1
+    FM_FAKE_TMUX_WINDOWS="fm-$case_name"
+    arm_idle_record "$d/state" "$case_name"
+    out=$(run_crew_state "$d" "$case_name")
+    assert_contains "$out" "state: $want_state" "$case_name log must survive the gone agent"
+    assert_contains "$out" "source: status-log" "$case_name must be attributed to the log"
+    assert_contains "$out" "$want_note" "$case_name must keep its reason"
+    assert_contains "$out" "agent gone, pane shell remains" "$case_name must name why the pane could not answer"
+  done <<'EOF'
+husk-failed|failed: the release job could not be retried|failed|the release job could not be retried
+husk-blocked|blocked [key=provider]: which provider?|blocked|which provider?
+husk-parked|needs-decision: choose REST or RPC|parked|choose REST or RPC
+husk-paused|paused: holding for the vendor maintenance window|paused|holding for the vendor maintenance window
+EOF
+  pass "live pane with no agent keeps failed, blocked, needs-decision, and paused with their reasons"
+}
+
+# The one verb that does NOT survive: `working` claims an activity in progress,
+# and nothing is performing it once the agent is gone.
+test_no_run_live_pane_agent_gone_stale_working_is_unknown() {
   reset_fakes
   local d; d=$(new_case husk-working)
   make_repo_on_branch "$d/wt" fm/feat-husk-working
@@ -1479,12 +1511,37 @@ test_no_run_live_pane_agent_gone_nonterminal_log_is_unknown() {
   FM_FAKE_TMUX_WINDOWS='fm-feat-husk-working'
   arm_idle_record "$d/state" feat-husk-working
   local out; out=$(run_crew_state "$d" feat-husk-working)
-  assert_contains "$out" "state: unknown" "a nonterminal log cannot outlive its agent"
+  assert_contains "$out" "state: unknown" "a stale working claim cannot outlive its agent"
   assert_contains "$out" "shell-no-agent" "the unknown verdict names the structural cause"
   case "$out" in
     *"state: working"*) fail "a gone agent must not keep reporting working" ;;
   esac
-  pass "live pane with no agent reports unknown for a nonterminal status log"
+  pass "live pane with no agent reports unknown for a stale working status log"
+}
+
+# The structural verdict outranks the harness classifiers it is defined to
+# precede: an un-retired BUSY lifecycle record must not report the crew working
+# when the pane holds nothing but a shell.
+test_agent_gone_outranks_a_busy_lifecycle_record() {
+  reset_fakes
+  local d; d=$(new_case husk-busy-record)
+  make_repo_on_branch "$d/wt" fm/feat-husk-busy
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-husk-busy.meta" "window=fm:fm-feat-husk-busy" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: waiting on the captain to pick a provider\n' > "$d/state/feat-husk-busy.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_TMUX_SHELL_ONLY=1
+  FM_FAKE_TMUX_WINDOWS='fm-feat-husk-busy'
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-husk-busy)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-husk-busy busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-husk-busy)
+  case "$out" in
+    *"state: working"*) fail "a busy record outranked the shell-without-agent verdict: $out" ;;
+  esac
+  assert_contains "$out" "state: blocked" "the blocker survives an un-retired busy record"
+  assert_contains "$out" "waiting on the captain to pick a provider" "the blocker keeps its reason"
+  pass "the shell-without-agent verdict outranks an un-retired busy lifecycle record"
 }
 
 test_no_run_idle_pane_uses_log() {
@@ -2424,7 +2481,9 @@ test_no_run_herdr_husk_dead_still_reads_gone
 test_no_run_herdr_idle_agent_status_outranked_by_record
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
 test_no_run_live_pane_agent_gone_keeps_terminal_log
-test_no_run_live_pane_agent_gone_nonterminal_log_is_unknown
+test_no_run_live_pane_agent_gone_keeps_open_status_states
+test_no_run_live_pane_agent_gone_stale_working_is_unknown
+test_agent_gone_outranks_a_busy_lifecycle_record
 test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
