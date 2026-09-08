@@ -214,7 +214,8 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # non-busy stale - so it escalates via the existing stale reason, escalation
 # counter, and demand-deep-inspection marker for human inspection only, never an
 # automatic interrupt, signal, or restart - unless the crew declared the wait
-# itself, which takes the long pause cadence instead. A completed turn touches
+# itself, which takes the long pause cadence instead, or an attributed
+# no-mistakes run is still live, which is absorbed as the active wait it is. A completed turn touches
 # turn-ended and resets the age. Set generously above any legitimate interval
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
@@ -947,7 +948,15 @@ handle_paused_stale() {  # <window> <task> <hash>
 # A busy pane past BUSY_TURN_MAX_SECS is normally a wedge suspect because a hung
 # foreground call can hide behind a busy signature. A `paused:` declaration or
 # verified captain-held transfer instead identifies that live foreground call as
-# the expected external wait. The caller has already confirmed liveness through
+# the expected external wait, and so does an attributed no-mistakes run that is
+# still live (crew_run_step_is_live): a validating worker holds ONE turn open for
+# the whole run by contract, so its completed-turn age is expected to cross the
+# bound, and the run-step is the authoritative evidence that the wait is real
+# work rather than a wedge. That absorber is deliberately the narrow run-step
+# proof, never crew_absorb_class's `working`, whose busy-pane half would let the
+# very pane under test vouch for itself. A run record no longer attributed to
+# this worktree, a terminal run, and a proven-down daemon are all NOT live, so
+# stale run state still escalates on the normal wedge cadence. The caller has already confirmed liveness through
 # the busy verdict, so this exception does not suppress undeclared wedges or
 # alter the separate non-busy classification. handle_paused_stale keeps the
 # exception bounded by re-surfacing it once per PAUSE_RESURFACE_SECS. Away mode
@@ -991,6 +1000,13 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
     fi
     handle_paused_stale "$win" "$task" "$h"
     return 0
+  fi
+  if crew_run_step_is_live "$task"; then
+    key=$(window_key "$win")
+    rm -f "$since_file" "$escalation_file"
+    clear_write_tracking "$key"
+    triage_log "absorbed busy bound (attributed no-mistakes run still live): $win"
+    return 1
   fi
   wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task"
   return 1

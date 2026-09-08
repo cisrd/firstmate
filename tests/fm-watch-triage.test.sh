@@ -3176,6 +3176,90 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
   pass "repeated busy turn-age escalations reuse the existing escalation counter and demand deep inspection at the threshold"
 }
 
+# --- live no-mistakes run + busy pane: the run IS the declared wait ----------
+# A worker driving no-mistakes holds ONE turn open for the whole validation by
+# its generated Definition of done (bin/fm-dod-lib.sh), and a run chains fix
+# rounds well past BUSY_TURN_MAX_SECS, so a healthy validating crew crosses the
+# completed-turn bound as a matter of course. The bound absorbs it on the
+# attributed run-step alone - never on the busy pane, which cannot be its own
+# bound - so only a run that is genuinely live silences the wedge escalator.
+test_busy_pane_with_live_run_step_is_absorbed_past_turn_age_bound() {
+  local dir state fakebin out capture_file window key sig pid
+  dir=$(make_case busy-live-run-step); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-validating"
+  printf 'Working... (4210.6s)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/validating.meta"
+  record_pi_busy "$state" validating
+  printf 'working: validating\n' > "$state/validating.status"
+  sig=$(seen_sig "$state/validating.status"); printf '%s' "$sig" > "$state/.seen-validating_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch -t 200001010000 "$state/validating.turn-ended"
+  prime_turnend_seen "$state/validating.turn-ended"
+
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)' \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=1 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a busy pane with a live attributed run-step was wedge-escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || fail "a busy pane with a live attributed run-step printed a wake reason"
+  [ ! -e "$state/.stale-since-$key" ] || fail "a live attributed run-step still started a wedge timer"
+  [ ! -e "$state/.wedge-escalations-$key" ] || fail "a live attributed run-step still counted a wedge escalation"
+  reap "$pid"
+  pass "a busy worker whose attributed no-mistakes run is still live is absorbed past the completed-turn bound"
+}
+
+# The complement of the absorb above, on the same fixture shape: run state that
+# is no longer live - a terminal or unattributed record, or a daemon an explicit
+# probe proves down (both reported by fm-crew-state.sh as something other than
+# working/run-step) - is exactly the case the bound exists for, so it must still
+# reach the wedge escalation with its stale reason and escalation counter.
+test_busy_pane_with_dead_run_state_still_escalates_past_turn_age_bound() {
+  local dir state fakebin out capture_file window key sig pid
+  dir=$(make_case busy-dead-run-state); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; capture_file="$dir/pane.txt"; window="test:fm-dead-daemon"
+  printf 'Working... (4210.6s)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/dead-daemon.meta"
+  record_pi_busy "$state" dead-daemon
+  printf 'working: validating\n' > "$state/dead-daemon.status"
+  sig=$(seen_sig "$state/dead-daemon.status"); printf '%s' "$sig" > "$state/.seen-dead-daemon_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  touch -t 200001010000 "$state/dead-daemon.turn-ended"
+  prime_turnend_seen "$state/dead-daemon.turn-ended"
+
+  # Phase A: the stale run record cannot vouch for the pane, so the bound starts
+  # the ordinary wedge timer exactly as it does with no run at all.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no-mistakes daemon unreachable; last ledger record failed - unverified' \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a busy pane with dead run state escalated before the wedge threshold: $(cat "$out")"
+  fi
+  [ -s "$state/.stale-since-$key" ] || fail "a busy pane with dead run state did not start a wedge timer"
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional dead-run-state phase-A stop"
+
+  # Phase B: past the escalation threshold it wedge-escalates for human inspection.
+  echo $(( $(date +%s) - 500 )) > "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: unknown · source: none · no-mistakes daemon unreachable; last ledger record failed - unverified' \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a busy pane with dead run state did not wedge-escalate past the turn-age bound"
+  grep -F "stale: $window" "$out" >/dev/null || fail "dead run state escalation did not print the stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "dead run state escalation did not flag a possible wedge"
+  pass "a busy worker whose no-mistakes run state is stale or daemon-down still escalates past the completed-turn bound"
+}
+
 # --- declared pause + busy pane: the busy-turn bound must honor the declaration
 # A single foreground call can keep a declared external wait semantically busy
 # past the completed-turn bound, bypassing the ordinary stale-pause path.
@@ -4432,6 +4516,8 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound
 test_busy_pane_changing_hash_escalates_past_turn_age_bound
 test_busy_pane_turn_end_touch_resets_age
 test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
+test_busy_pane_with_live_run_step_is_absorbed_past_turn_age_bound
+test_busy_pane_with_dead_run_state_still_escalates_past_turn_age_bound
 test_busy_pane_default_turn_age_bound_is_3600s
 test_busy_declared_pause_is_rechecked_not_wedge_escalated
 test_afk_busy_declared_pause_hands_off_plain_stale

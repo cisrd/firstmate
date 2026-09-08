@@ -1744,6 +1744,22 @@ status_span_has_actionable() {  # <status-file> <start-offset>
   status_span_first_actionable_record "$1" "${2:-0}" > /dev/null
 }
 
+# Read bin/fm-crew-state.sh's one authoritative current-state line
+# ("state: <s> · source: <src> · <detail>") and print it as "<state> <source>",
+# the two fields every absorb decision is made from. Fails (prints nothing) when
+# no id is given or the read is missing/unparseable, so a caller cannot mistake an
+# unreadable crew for a classified one. Not a pure read: see crew_absorb_class.
+# FM_CREW_STATE_BIN lets tests stub the verdict.
+crew_state_verdict() {  # <id>
+  local id=$1 line state src=
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) return 1 ;; esac
+  state=${line#state: }; state=${state%% *}
+  case "$line" in *"source: "*) src=${line#*source: }; src=${src%% *} ;; esac
+  printf '%s %s' "$state" "$src"
+}
+
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
 # from bin/fm-crew-state.sh's one authoritative current-state line
 # ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
@@ -1761,14 +1777,11 @@ status_span_has_actionable() {  # <status-file> <start-offset>
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
-  local id=$1 line state src
-  [ -n "$id" ] || { printf 'none'; return; }
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
-  case "$line" in state:*) ;; *) printf 'none'; return ;; esac
-  state=${line#state: }; state=${state%% *}
+  local verdict state src
+  verdict=$(crew_state_verdict "$1") || { printf 'none'; return; }
+  state=${verdict%% *}; src=${verdict##* }
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
-    src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
   printf 'none'
@@ -1793,6 +1806,17 @@ crew_is_provably_working() {  # <id>
 # escalating a possible wedge.
 crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
+}
+
+# 0 iff crew <id> is working BECAUSE an attributed no-mistakes run-step is live -
+# the run-step half of crew_absorb_class's `working`, without the busy-pane half.
+# Callers that already hold a busy verdict need this narrower proof: a busy pane
+# cannot also be its own bound. Attribution is fm-crew-state.sh's (branch AND code
+# identity, or pipeline-owned custody), so a run record that no longer matches this
+# worktree, a terminal run, and a daemon an explicit probe proves down all report
+# something other than working/run-step and are NOT a live run.
+crew_run_step_is_live() {  # <id>
+  [ "$(crew_state_verdict "$1")" = "working run-step" ]
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.

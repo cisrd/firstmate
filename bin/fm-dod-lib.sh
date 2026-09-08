@@ -242,7 +242,6 @@ Where a harness's own command limit is not established, assume it bounds command
 A killed or timed-out call is never evidence the daemon died: the daemon accepts your response immediately and runs the round in the background, so the call was only ever waiting for a read while the run kept working.
 Reattach and keep going rather than reporting the pipeline blocked; rule 7 owns the checks that decide when a pipeline block is real.
 After every \`no-mistakes axi respond\`, continue in the same turn with bounded calls to the structured \`no-mistakes axi status\` interface until the attributed run changes step, reaches a terminal outcome, presents a genuine ask-user decision, or rule 7's daemon checks establish a real block.
-An accepted response or a status that still reports active work is not a stopping point; the same continuation rule applies after starting or reattaching to a run.
 Never end your turn or promise to resume or check later while structured status shows that validation is active and rule 7's daemon checks have not established a real block.
 
 Two firstmate-specific rules layer on top of that guidance:
