@@ -2410,28 +2410,30 @@ freshen_spawn_worktree_base() {  # <worktree> <project-name>
     fi
     return 1
   fi
+  default=$(declared_integration_branch "$project") || return 1
   if ! spawn_worktree_has_origin_config "$worktree"; then
-    return 0
-  fi
-  if ! git -C "$worktree" fetch --quiet origin; then
-    echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  fi
-  if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
-    echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  fi
-  # A registered integration branch is the base new task copies must be cut from,
-  # so a project that integrates on develop never starts work from origin/main.
-  # An unannotated project keeps origin's default branch (fm-integration-branch-lib.sh).
-  default=$(integration_branch "$worktree" "$project") || {
-    echo "error: could not determine the integration branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
-  }
-  target="origin/$default"
-  if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
-    echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
-    return 1
+    [ -n "$default" ] || return 0
+    target="refs/heads/$default"
+  else
+    if ! git -C "$worktree" fetch --quiet origin; then
+      echo "error: could not fetch origin for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
+    if [ -z "$default" ]; then
+      if ! git -C "$worktree" remote set-head origin --auto >/dev/null 2>&1; then
+        echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+        return 1
+      fi
+      default=$(integration_branch "$worktree" "$project") || {
+        echo "error: could not determine the integration branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+        return 1
+      }
+    fi
+    target="origin/$default"
+    if ! git -C "$worktree" fetch --quiet origin "+refs/heads/$default:refs/remotes/origin/$default"; then
+      echo "error: could not fetch '$target' for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+      return 1
+    fi
   fi
   expected=$(git -C "$worktree" rev-parse --verify --quiet "$target^{commit}" 2>/dev/null) || {
     echo "error: '$target' is not a commit for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2

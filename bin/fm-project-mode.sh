@@ -87,7 +87,7 @@ parsed=$(awk -v n="$NAME" '
       if (a[1] != "" && a[1] != "+yolo" && a[1] !~ /^integration-branch=/) mode = a[1];
       for (j=1; j<=k; j++) {
         if (a[j]=="+yolo") yolo="on";
-        if (a[j] ~ /^integration-branch=/) integration=substr(a[j], 20);
+        if (a[j] ~ /^integration-branch=/) integration=a[j];
       }
     }
     print mode, yolo, integration; exit
@@ -108,11 +108,14 @@ yolo=${parsed#* }
 yolo=${yolo%% *}
 integration_branch=${parsed##* }
 if [ "$QUERY" = integration-branch ]; then
-  if [ -n "$integration_branch" ] && ! git check-ref-format --branch "$integration_branch" >/dev/null 2>&1; then
-    echo "error: invalid integration branch \"$integration_branch\" for $NAME; fix the registry entry" >&2
-    exit 1
+  if [ -n "$integration_branch" ]; then
+    integration_branch=${integration_branch#integration-branch=}
+    if ! git check-ref-format --branch "$integration_branch" >/dev/null 2>&1; then
+      echo "error: invalid integration branch \"$integration_branch\" for $NAME; fix the registry entry" >&2
+      exit 1
+    fi
   fi
-  [ "$integration_branch" = "-" ] || printf '%s\n' "$integration_branch"
+  printf '%s\n' "$integration_branch"
   exit 0
 fi
 case "$mode" in
