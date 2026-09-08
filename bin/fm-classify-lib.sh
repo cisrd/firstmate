@@ -1633,6 +1633,9 @@ _fm_status_open_decision_origins() {  # <status-file>
 status_span_first_actionable_record() {  # <status-file> <start-offset> [record-var] [needs-decision-var]
   local f=$1 start=${2:-0} output_var=${3-} needs_var=${4-} size ident cur_ident scratch chunk_file full_file prefix_file result
   local line verb key origins='' folded=0 rc=1 failed=0 prefix_lines=0 line_number=0 live_line='' events='' _line _key _fm_span_needs_decision=0
+  local resolve held
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   [ -e "$f" ] || { [ -L "$f" ] && return 2; return 1; }
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 2
   ident=$(_fm_open_decisions_file_ident "$f") || return 2
@@ -1667,17 +1670,18 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
     # here before either is treated as a close: a rejected close leaves its key
     # open, and that outcome has to be visible rather than a silent no-op.
     case "$verb" in
-      "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
+      "$resolve"|"$held")
         key=$(_fm_decision_key "$line") || key=''
         if [ -n "$key" ] && ! _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")"; then
           [ -n "$events" ] && events="${events} ; "
           events="${events}reconciliation-required: ${line}"
+          [ "$verb" = "$held" ] && _fm_span_needs_decision=1
           rc=0
           continue
         fi
         ;;
     esac
-    if status_is_captain_held "$line"; then
+    if [ "$verb" = "$held" ]; then
       # A transfer closes the status-log decision and remains non-actionable to
       # stale classification. The side-band marker lets signal routing surface
       # the captain-owned hold without changing that established stale verdict.

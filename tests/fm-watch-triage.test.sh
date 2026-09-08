@@ -1582,6 +1582,26 @@ test_captain_held_signal_payload_marked_for_branch_exclusion() {
   pass "a captain-held signal stays actionable while the crew is still working"
 }
 
+# A captain-held transfer whose note does not speak a reserved key's owner
+# vocabulary is REJECTED by the fold, so the decision stays open and the row is
+# reported as a "reconciliation-required: " event. It is still a captain-owned
+# decision row, so it keeps the main-only marker every other captain-held line
+# gets - the reconciliation error must reach the captain, not the Pi
+# supervision branch (docs/pi-supervision-branch.md).
+test_rejected_captain_held_transfer_still_marked_for_branch_exclusion() {
+  local dir state fakebin out status_file pid
+  dir=$(make_case rejected-transfer-payload); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'captain-held [key=pending-reply-abcdef0123456789]: tracked by call-1\n' > "$status_file"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for a rejected captain-held transfer"
+  grep -F "$(printf 'signal\ttask.status\tneeds-decision:')" "$state/.wake-queue" >/dev/null \
+    || fail "a rejected captain-held transfer was not payload-marked for branch exclusion: $(cat "$state/.wake-queue")"
+  pass "a rejected captain-held transfer keeps its main-only routing marker"
+}
+
 test_pending_reply_escalation_signal_payload_marked_for_branch_exclusion() {
   local dir state fakebin out status_file pid corr
   dir=$(make_case pending-reply-escalation-payload); state="$dir/state"; fakebin="$dir/fakebin"
@@ -4414,6 +4434,7 @@ test_actionable_signal_surfaced
 test_needs_decision_signal_payload_marked_for_branch_exclusion
 test_needs_decision_reconciliation_required_still_marked
 test_captain_held_signal_payload_marked_for_branch_exclusion
+test_rejected_captain_held_transfer_still_marked_for_branch_exclusion
 test_pending_reply_escalation_signal_payload_marked_for_branch_exclusion
 test_ordinary_blocked_signal_payload_remains_branch_eligible
 test_routine_signal_payload_not_marked_needs_decision
