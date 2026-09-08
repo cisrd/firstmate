@@ -126,13 +126,27 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
   fm_nm_run_is_active "$1"
 }
 
+# The printed form of an attributed ledger row: the status word, plus the row's
+# PR URL when it has one.
+fm_nm_print_runs_row() {  # <status> <pr-url>
+  if [ -n "${2:-}" ]; then
+    printf '%s %s' "$1" "$2"
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # ONE owner for attribution from the pipeline's own runs ledger, replacing a
 # per-row scan-and-skip. The ledger is the real top-level `no-mistakes runs
 # --limit N` listing (plain text, no run id, no quoting, newest-first, columns
 # "<status> <branch> <short-sha> <date> [<pr-url>]"; the `axi` surface has no
 # runs-listing subcommand - verified against the installed CLI). Prints the
-# status word of the branch's CURRENT run row, or nothing when the ledger
-# cannot prove attribution. When optional expected head $4 is supplied, its
+# branch's CURRENT run row as "<status>[ <pr-url>]" - the status word alone
+# when the row carries no PR column - or nothing when the ledger cannot prove
+# attribution. Callers that only want the word read the first field. The PR
+# column is carried because it is the ledger's ONLY positive evidence that a
+# row's run actually pushed a branch and opened a PR, which no status word can
+# establish on its own. When optional expected head $4 is supplied, its
 # abbreviated commit identity must match the newest row. The branch's NEWEST
 # row alone decides; older rows are history and never answer for the present:
 #   - newest row's head resolves and matches the worktree (fm_nm_head_matches_worktree):
@@ -153,7 +167,7 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
 # Read-only: git reads resolve objects in place; custody never changes.
 fm_nm_runs_status_for_worktree() {  # <worktree> <branch> <runs-list-output> [expected-head]
   local wt=$1 branch=$2 list=$3 expected_head=${4:-}
-  local local_full row st br sha day clock pr extra year_num month_num day_num max_day pending_st=''
+  local local_full row st br sha day clock pr extra year_num month_num day_num max_day pending_st='' pending_pr=''
   local_full=$(git -C "$wt" rev-parse HEAD 2>/dev/null) || return 0
   [ -n "$list" ] || return 0
   while IFS= read -r row; do
@@ -191,7 +205,7 @@ fm_nm_runs_status_for_worktree() {  # <worktree> <branch> <runs-list-output> [ex
       # the only admissible anchor, and only exact head equality proves the
       # worktree still sits at the submitted head.
       if [ "$(fm_nm_resolve_commit "$wt" "$sha")" = "$local_full" ]; then
-        printf '%s' "$pending_st"
+        fm_nm_print_runs_row "$pending_st" "$pending_pr"
       fi
       return 0
     fi
@@ -205,12 +219,13 @@ fm_nm_runs_status_for_worktree() {  # <worktree> <branch> <runs-list-output> [ex
     fi
     if [ -n "$(fm_nm_resolve_commit "$wt" "$sha")" ]; then
       if fm_nm_head_matches_worktree "$wt" "$sha"; then
-        printf '%s' "$st"
+        fm_nm_print_runs_row "$st" "$pr"
       fi
       return 0
     fi
     [ "$st" = running ] || return 0
     pending_st=$st
+    pending_pr=$pr
   done <<< "$list"
   return 0
 }

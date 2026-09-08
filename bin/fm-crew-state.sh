@@ -67,9 +67,11 @@
 #      reviewed, tested, pushed, or opened as a PR, and validity must not be
 #      inferred from that word alone (nm_run_skipped_every_mandatory_step;
 #      2026-09-08 fm-nm-depot-livraison-non-modifiable incident). The coarse
-#      fallback carries no steps table and the runs ledger names no run id to
-#      fetch one with, so it can neither prove nor exclude that shape: there a
-#      terminal COMPLETED record reads unknown-unverified, never done.
+#      fallback carries no steps table, and the runs ledger names no run id to
+#      fetch one with, so its only delivery evidence is the row's own PR URL:
+#      a COMPLETED row carrying one proves push and pr ran and reads done,
+#      while a bare COMPLETED row proves nothing either way and reads
+#      unknown-unverified rather than validated.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -605,6 +607,7 @@ HAVE_RUN=0
 # the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
+COARSE_PR=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
@@ -625,7 +628,11 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # `[ -n "$RUN_OUT" ]`: an empty/timed-out primary call means the CLI
       # itself did not respond, so retrying it immediately with a second
       # bounded call would just double the wait for no better answer.
-      COARSE_STATUS=$(fm_nm_runs_status_for_worktree "$WT" "$CREW_BRANCH" "$(nm_runs_list)")
+      coarse_row=$(fm_nm_runs_status_for_worktree "$WT" "$CREW_BRANCH" "$(nm_runs_list)")
+      COARSE_STATUS=${coarse_row%% *}
+      case "$coarse_row" in
+        *' '*) COARSE_PR=${coarse_row#* } ;;
+      esac
       if [ -n "$COARSE_STATUS" ]; then
         HAVE_RUN=1
         # A branch-matching answer the strict rule rejected is this branch's
@@ -659,18 +666,21 @@ if [ "$HAVE_RUN" = 1 ]; then
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
       completed)
-        # Symmetric to the failed row below: a terminal ledger word is not a
-        # verdict here. The vacuous-pass shape the full path refuses
+        # A terminal ledger word is not a verdict on its own here: the
+        # vacuous-pass shape the full path refuses
         # (nm_run_skipped_every_mandatory_step) is recorded `completed` too,
-        # and this path has no steps table to tell the two apart - the runs
-        # ledger carries no run id, so no per-run lookup can supply one
-        # either. Reporting done would accept as validated exactly the run
-        # that validated nothing, so the record is reported unverified and
-        # the crew's own done/failed status-log line stays the only thing
-        # that can conclude it.
-        RUN_STATE=unknown
-        RUN_DETAIL="last ledger record completed; no steps table to prove any delivery phase ran - unverified"
-        ;;
+        # and this path has neither a steps table nor a run id to fetch one
+        # with. The row's PR URL is the ledger's own positive delivery
+        # evidence - a run that skipped push and pr has none - so a completed
+        # row that carries one is a real delivery and keeps its done verdict,
+        # while a bare completed row cannot be told from the vacuous shape
+        # and is reported unverified rather than validated.
+        if [ -n "$COARSE_PR" ]; then
+          RUN_STATE="done"; RUN_DETAIL="run completed: $COARSE_PR"
+        else
+          RUN_STATE=unknown
+          RUN_DETAIL="last ledger record completed with no PR; nothing proves a delivery phase ran - unverified"
+        fi ;;
       failed)
         # The ledger row is terminal but the coarse path has no steps table
         # and no ci log, so the orphaned-monitor shape cannot be recognized

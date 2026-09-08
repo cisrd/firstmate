@@ -1136,10 +1136,12 @@ test_completed_run_with_partial_skip_still_reads_done() {
 # reach: crew A's run ended in the vacuous empty-diff shape, and crew B then
 # started a run on the same repo, so the shared daemon's bare `axi status`
 # answers with B's branch. A's state read therefore falls to the coarse runs
-# ledger, whose newest row for A's branch is `completed` at A's own head - and
-# that ledger carries no steps table and no run id, so nothing here can prove
-# any delivery phase ran. It must not be reported as a validated done.
-test_coarse_completed_ledger_row_is_not_reported_done() {
+# ledger, whose newest row for A's branch is `completed` at A's own head. That
+# row carries no PR, because the vacuous run skipped push and pr, and the
+# ledger offers no steps table and no run id to check any further - so nothing
+# here proves a delivery phase ran and the row must not read as a validated
+# done.
+test_coarse_completed_ledger_row_without_pr_is_not_reported_done() {
   reset_fakes
   local d short; d=$(new_case coarse-completed-unverified)
   make_repo_on_branch "$d/wt" fm/feat-coarse-completed
@@ -1155,11 +1157,38 @@ EOF
 )"
   local out; out=$(run_crew_state "$d" feat-coarse-completed)
   assert_not_contains "$out" "state: done" \
-    "a coarse completed row cannot prove the run validated anything"
+    "a coarse completed row with no PR cannot prove the run validated anything"
   assert_contains "$out" "state: unknown" "an unprovable terminal record reads unknown"
   assert_contains "$out" "unverified" "the detail must say the record is unverified"
   assert_contains "$out" "source: run-step" "the ledger row is still this branch's attributed run"
-  pass "coarse completed ledger row reads unverified, never done"
+  pass "coarse completed ledger row without a PR reads unverified, never done"
+}
+
+# The same two-crew coarse fallback for a run that really delivered: crew A ran
+# every phase and opened its PR, so its ledger row carries the PR URL - the
+# ledger's own positive proof that push and pr executed, which the vacuous
+# shape can never have. That terminal outcome must still reach the captain as
+# done, whether or not crew A managed to append its own `done:` status line.
+test_coarse_completed_ledger_row_with_pr_still_reads_done() {
+  reset_fakes
+  local d short; d=$(new_case coarse-completed-delivered)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-delivered
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-coarse-delivered.meta" \
+    "window=fm:fm-feat-coarse-delivered" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-09-08 22:10
+  completed  fm/feat-coarse-delivered ${short}  2026-09-08 22:05  https://github.com/o/r/pull/311
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-coarse-delivered)
+  assert_contains "$out" "state: done" "a completed row with a PR is a proven delivery"
+  assert_contains "$out" "https://github.com/o/r/pull/311" "the done detail names the delivered PR"
+  assert_not_contains "$out" "unverified" "proven delivery is not qualified as unverified"
+  assert_contains "$out" "source: run-step" "the ledger row is this branch's attributed run"
+  pass "coarse completed ledger row with a PR still reads done"
 }
 
 test_terminal_failed_ci_genuine_red_stays_failed() {
@@ -2443,7 +2472,8 @@ test_completed_run_with_every_phase_skipped_reads_failed
 test_passed_outcome_with_every_phase_skipped_reads_failed
 test_completed_run_with_full_delivery_still_reads_done
 test_completed_run_with_partial_skip_still_reads_done
-test_coarse_completed_ledger_row_is_not_reported_done
+test_coarse_completed_ledger_row_without_pr_is_not_reported_done
+test_coarse_completed_ledger_row_with_pr_still_reads_done
 test_terminal_failed_ci_orphan_second_failed_step_stays_failed
 test_cross_branch_attribution_via_runs_list
 test_coarse_socket_refusal_reports_blocked
