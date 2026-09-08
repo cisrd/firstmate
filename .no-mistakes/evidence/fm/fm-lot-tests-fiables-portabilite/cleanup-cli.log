@@ -1,0 +1,6 @@
+ok - remote worker cleanup fixture completed
+Command: FM_TEST_ONLY=test_remote_worker_cleanup_fixture bash tests/fm-public-followup.test.sh
+Suite exit status: 0
+Authoritative worker process group: 1444096
+Immediate group probe: absent
+Fixture root: removed

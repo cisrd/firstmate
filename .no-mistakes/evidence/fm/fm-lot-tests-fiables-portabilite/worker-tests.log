@@ -1,0 +1,2 @@
+ok - the Linux start path puts the whole worker tree in its own process group
+not ok - the fixture worker is not orphaned to init, so this case does not reproduce the leak

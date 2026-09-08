@@ -1,0 +1,8 @@
+FM_TEST_BEGIN 2026-09-08T16:57:36Z tests/fm-ci-herdr-timeout.test.sh family=pure-contract-unit expected_gate_skip=none
+skip: ruby absent; YAML assertion not run
+fm-test-run: gate skip: tests/fm-ci-herdr-timeout.test.sh: ruby absent; YAML assertion not run
+FM_TEST_END 2026-09-08T16:57:36Z tests/fm-ci-herdr-timeout.test.sh exit=0 duration_ms=23 gate_skip=true
+FM_TEST_SUMMARY total=1 failed=0 skipped_gate=1 duration_ms=109
+FM_TEST_SUMMARY_FAMILY family=pure-contract-unit count=1 duration_ms=23 failed=0
+FM_TEST_SLOWEST rank=1 script=tests/fm-ci-herdr-timeout.test.sh duration_ms=23
+fm-test-run: wrote timing artifact: /home/awilliam/.no-mistakes/evidence/01M20Y3NK7YVT8QNY821YRCBBQ/ruby-absent.json

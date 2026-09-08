@@ -1,0 +1,3 @@
+ok - a tree whose serving child exits before its leader is stopped gracefully and reported stopped
+tests/.phase-worker-stop.sh: line 111: 1411564 Killed                  "$CASE4/bin/fm-remote-job-worker.sh" > /dev/null 2>&1
+ok - a worker tree that ignores TERM is escalated to KILL and reported stopped

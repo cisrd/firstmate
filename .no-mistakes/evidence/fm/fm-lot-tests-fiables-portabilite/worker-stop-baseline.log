@@ -1,0 +1,2 @@
+tests/.phase-worker-stop.sh: line 111: 1441635 Killed                  LEADER_MARKER="$CASE3_MARKER" "$CASE3/bin/fm-remote-job-worker.sh" > /dev/null 2>&1
+not ok - stopping a tree whose serving child exits first reported a survivor

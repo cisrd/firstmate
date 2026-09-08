@@ -1,0 +1,31 @@
+{
+  "families": [
+    {
+      "count": 1,
+      "duration_ms": 23,
+      "failed": 0,
+      "name": "pure-contract-unit"
+    }
+  ],
+  "finished_at": "2026-09-08T16:57:36Z",
+  "run_id": "fm-test-run-1788886656885-1407881",
+  "scripts": [
+    {
+      "duration_ms": 23,
+      "exit": 0,
+      "expected_gate_skip": "none",
+      "family": "pure-contract-unit",
+      "gate_skip": true,
+      "gate_skip_reason": "ruby absent; YAML assertion not run",
+      "path": "tests/fm-ci-herdr-timeout.test.sh"
+    }
+  ],
+  "selection": "scripts;jobs=1",
+  "started_at": "2026-09-08T16:57:36Z",
+  "summary": {
+    "duration_ms": 109,
+    "failed": 0,
+    "skipped_gate": 1,
+    "total": 1
+  }
+}

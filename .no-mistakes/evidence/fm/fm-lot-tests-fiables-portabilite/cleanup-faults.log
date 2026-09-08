@@ -1,0 +1,6 @@
+errexit enabled; assertion exit=0; worker-stop return=0; temp-cleanup return=1; suite exit=0
+errexit enabled; assertion exit=37; worker-stop return=0; temp-cleanup return=1; suite exit=37
+not ok - the remote job worker survived suite cleanup
+errexit enabled; assertion exit=0; worker-stop return=1; temp-cleanup return=1; suite exit=1
+not ok - the remote job worker survived suite cleanup
+errexit enabled; assertion exit=37; worker-stop return=1; temp-cleanup return=1; suite exit=37
