@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# The required Herdr lane's hang tripwire is the family-run step bound, not
+# the job cap. Parse YAML so nested with.name artifact keys cannot masquerade
+# as the step contract.
 set -u
 
 if ! command -v ruby >/dev/null 2>&1; then
