@@ -9,6 +9,7 @@ if ! command -v ruby >/dev/null 2>&1; then
   exit 0
 fi
 
+# shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ruby -ryaml -e '

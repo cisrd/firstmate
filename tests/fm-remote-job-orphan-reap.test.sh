@@ -90,7 +90,7 @@ start_worker() {
     export FM_REMOTE_JOB_STATE_ROOT="$state_root"
     export FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
     export FM_REMOTE_JOB_ORPHAN_GRACE_SECONDS=1
-    # shellcheck source=bin/fm-remote-job-lib.sh
+    # shellcheck source=/dev/null
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_start_linux_worker "$root" "$account_home" >&2 || exit 1
     deadline=$(( $(date +%s) + 10 ))
@@ -213,7 +213,7 @@ pass "the reaper is idempotent"
 
 stop_worker_tree() { # <pid>
   (
-    # shellcheck source=bin/fm-remote-job-lib.sh
+    # shellcheck source=/dev/null
     . "$ROOT/bin/fm-remote-job-lib.sh"
     fm_remote_job_stop_worker_tree "$1"
   )
