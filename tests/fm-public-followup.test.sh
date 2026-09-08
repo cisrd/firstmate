@@ -3135,7 +3135,7 @@ test_remote_worker_cleanup_fixture() {
 }
 
 test_suite_exit_status_and_remote_cleanup() {
-  local tmp out rc root supervisor command i=0
+  local tmp out rc root supervisor survived=0
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-public-followup-cleanup.XXXXXX")
   set +e
   PF_TEST_ROOT_MARKER="$tmp/root" PF_TEST_SUPERVISOR_MARKER="$tmp/supervisor" \
@@ -3147,27 +3147,17 @@ test_suite_exit_status_and_remote_cleanup() {
   root=$(cat "$tmp/root" 2>/dev/null || true)
   supervisor=$(cat "$tmp/supervisor" 2>/dev/null || true)
   case "$supervisor" in ''|*[!0-9]*) supervisor= ;; esac
-  while [ -n "$supervisor" ] && [ "$i" -lt 50 ]; do
-    kill -0 -- "-$supervisor" 2>/dev/null || break
-    i=$((i + 1))
-    sleep 0.1
-  done
-  command=$(ps -p "${supervisor:-1}" -o command= 2>/dev/null || true)
-  case "$command" in
-    *fm-remote-job-worker.sh*) kill -KILL -- "-$supervisor" 2>/dev/null || true ;;
-  esac
+  if [ -n "$supervisor" ] && kill -0 -- "-$supervisor" 2>/dev/null; then
+    survived=1
+    kill -KILL -- "-$supervisor" 2>/dev/null || true
+  fi
   [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "a green executable suite must exit 0: $out"; }
   [ -n "$root" ] || { rm -rf "$tmp"; fail "the cleanup fixture did not record its temporary root: $out"; }
   [ -n "$supervisor" ] \
     || { rm -rf "$tmp"; fail "the cleanup fixture did not record its worker process group: $out"; }
   [ ! -e "$root" ] || { rm -rf "$tmp"; fail "the green executable suite leaked fixture files: $root"; }
-  case "$command" in
-    *fm-remote-job-worker.sh*)
-      rm -rf "$tmp"
-      fail "the green executable suite leaked its remote worker supervisor: $command" ;;
-  esac
-  kill -0 -- "-$supervisor" 2>/dev/null \
-    && { rm -rf "$tmp"; fail "the green executable suite leaked members of its remote worker group"; }
+  [ "$survived" -eq 0 ] \
+    || { rm -rf "$tmp"; fail "the green executable suite leaked members of its remote worker group"; }
   rm -rf "$tmp"
   pass "a green executable suite returns 0 and leaves no remote worker tree or fixture files"
 }
