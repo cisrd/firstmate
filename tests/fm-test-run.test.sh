@@ -25,8 +25,8 @@ test_list_all_exact_suite_coverage() {
     done | LC_ALL=C sort
   )
   [ -n "$listed" ] || fail "--list --all printed nothing"
-  missing=$(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
-  extra=$(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  missing=$(LC_ALL=C comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
+  extra=$(LC_ALL=C comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$listed") || true)
   [ -z "$missing" ] || fail "--list --all missing scripts: $missing"
   [ -z "$extra" ] || fail "--list --all unexpected scripts: $extra"
   # No duplicates.
@@ -971,7 +971,7 @@ test_portable_shard_union_and_coverage_guard() {
   herdr=$("$RUNNER" --list --family real-herdr-gated)
   [ -n "$s1" ] && [ -n "$s2" ] || fail "portable parallel shards must be non-empty"
   # Shards disjoint.
-  overlap=$(comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
+  overlap=$(LC_ALL=C comm -12 <(printf '%s\n' "$s1" | LC_ALL=C sort) <(printf '%s\n' "$s2" | LC_ALL=C sort) || true)
   [ -z "$overlap" ] || fail "portable parallel shards overlap: $overlap"
   # Union of shards equals proven-isolated.
   [ "$(printf '%s\n' "$s1" "$s2" | LC_ALL=C sort -u)" = \
@@ -1508,8 +1508,10 @@ test_herdr_ci_family_run_has_a_step_timeout() {
   # The required Herdr lane's hang tripwire is the family-run *step* bound, not
   # the 75-minute job cap. Parse the workflow as YAML so nested `with.name`
   # artifact keys cannot masquerade as the step contract.
-  command -v ruby >/dev/null 2>&1 \
-    || fail "ruby is required to parse .github/workflows/ci.yml as YAML"
+  if ! command -v ruby >/dev/null 2>&1; then
+    printf 'skip: ruby absent; YAML assertion not run\n'
+    return 0
+  fi
   local json job_timeout step_timeout
   json=$(ruby -ryaml -rjson -e '
 doc = YAML.load_file(ARGV[0])
@@ -1580,6 +1582,30 @@ assert len(doc["scripts"])==3
   pass "aggregate-json merges lane timing artifacts"
 }
 
+# Prove the Ruby capability skip through this executable test interface rather
+# than inspecting the implementation text.
+test_yaml_assertion_skips_when_ruby_is_absent() {
+  local tmp out rc
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-ruby-skip.XXXXXX")
+  set +e
+  PATH=/usr/bin:/bin FM_TEST_ONLY=test_herdr_ci_family_run_has_a_step_timeout \
+    "$BASH" "${BASH_SOURCE[0]}" >"$tmp/out" 2>"$tmp/err"
+  rc=$?
+  set -e
+  out=$(cat "$tmp/out" "$tmp/err")
+  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "the executable test must skip cleanly without Ruby: $out"; }
+  printf '%s\n' "$out" | grep -Fq 'skip: ruby absent; YAML assertion not run' \
+    || { rm -rf "$tmp"; fail "the missing Ruby dependency was not declared: $out"; }
+  rm -rf "$tmp"
+  pass "the executable YAML test declares its Ruby dependency when Ruby is absent"
+}
+
+if [ -n "${FM_TEST_ONLY:-}" ]; then
+  "$FM_TEST_ONLY"
+  exit 0
+fi
+
+test_yaml_assertion_skips_when_ruby_is_absent
 test_list_all_exact_suite_coverage
 test_family_selection
 test_single_script_selection
