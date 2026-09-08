@@ -108,10 +108,28 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 ID=${1:-}
 [ -n "$ID" ] || { echo "usage: fm-crew-state.sh <id>" >&2; exit 2; }
 
-# Fleet snapshot composition supplies its captured metadata path here so every
-# state read resolves the same task generation selected by that snapshot.
-META=${FM_CREW_STATE_META_OVERRIDE:-"$STATE/$ID.meta"}
-LOG=${FM_CREW_STATE_STATUS_OVERRIDE:-"$STATE/$ID.status"}
+# Fleet snapshot composition supplies captured metadata through these
+# overrides, confined to that child process. A set override - including an
+# empty value - is never treated as "use the default path": an absent path or
+# a path whose basename belongs to another task is refused so a leftover
+# snapshot variable cannot make every worker look missing.
+fm_crew_state_apply_override() {  # <varname> <override-is-set 0|1> <override-value> <default-path> <expected-basename>
+  local dest=$1 is_set=$2 override=$3 default_path=$4 expected=$5
+  if [ "$is_set" != 1 ]; then
+    printf -v "$dest" '%s' "$default_path"
+    return 0
+  fi
+  if [ -z "$override" ] || [ ! -f "$override" ] || [ -L "$override" ]; then
+    printf -v "$dest" 'missing'
+    return 1
+  fi
+  if [ "$(basename "$override")" != "$expected" ]; then
+    printf -v "$dest" 'foreign'
+    return 1
+  fi
+  printf -v "$dest" '%s' "$override"
+}
+
 NM_TIMEOUT=${FM_CREW_STATE_NM_TIMEOUT:-10}
 case "$NM_TIMEOUT" in ''|*[!0-9]*) NM_TIMEOUT=10 ;; esac
 # How many of the most recent `no-mistakes runs` rows the cross-branch fallback
@@ -131,6 +149,23 @@ emit() {  # <state> <source> [detail]
 }
 
 # --- meta resolution --------------------------------------------------------
+
+_crew_meta_set=0
+_crew_status_set=0
+[ "${FM_CREW_STATE_META_OVERRIDE+x}" = x ] && _crew_meta_set=1
+[ "${FM_CREW_STATE_STATUS_OVERRIDE+x}" = x ] && _crew_status_set=1
+if ! fm_crew_state_apply_override META "$_crew_meta_set" "${FM_CREW_STATE_META_OVERRIDE-}" "$STATE/$ID.meta" "$ID.meta"; then
+  if [ "$META" = foreign ]; then
+    emit unknown none "snapshot override belongs to another task ($ID.meta)"
+  fi
+  emit unknown none "snapshot override path missing for $ID.meta"
+fi
+if ! fm_crew_state_apply_override LOG "$_crew_status_set" "${FM_CREW_STATE_STATUS_OVERRIDE-}" "$STATE/$ID.status" "$ID.status"; then
+  if [ "$LOG" = foreign ]; then
+    emit unknown none "snapshot override belongs to another task ($ID.status)"
+  fi
+  emit unknown none "snapshot override path missing for $ID.status"
+fi
 
 [ -f "$META" ] || emit unknown none "no metadata for $ID"
 
@@ -247,7 +282,7 @@ crew_busy_verdict() {  # <target>
   case "$HARNESS" in
     grok*) tail40=$(fm_backend_capture "$TASK_BACKEND" "$1" 40 "$EXPECTED_LABEL" 2>/dev/null) || tail40='' ;;
   esac
-  fm_busy_classify "$TASK_BACKEND" "$1" "$HARNESS" "$ID" "$STATE" "$tail40"
+  fm_busy_classify_live "$TASK_BACKEND" "$1" "$HARNESS" "$ID" "$STATE" "$EXPECTED_LABEL" "$tail40"
 }
 
 # --- no-mistakes run lookup (authoritative when a run matches this branch) --
@@ -807,8 +842,27 @@ fi
 # Only an exact busy verdict reports working here, and only an exact idle
 # verdict permits the status-log fallback below. Missing, malformed, stale, or
 # unverified semantic state remains unknown.
+#
+# A live pane whose agent is gone (`dead shell-no-agent`) is not merely an
+# unreadable busy state: the agent can have exited outside fm-control - or been
+# stopped deliberately while something external is pending - leaving a status
+# log that is the last authoritative word on the task. Every settled reading
+# survives the missing agent with its reason: the terminal `done`/`failed`, and
+# the open `blocked`, `needs-decision`, and `paused`, which describe a condition
+# that outlives the agent that reported it. `working` is the one verb that does
+# NOT survive: it claims an activity in progress, which nothing is performing
+# once the agent is gone, so it reads unknown rather than a stale claim.
 if [ "$KIND" != secondmate ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
+  if [ "$BUSY_VERDICT" = 'dead shell-no-agent' ]; then
+    AGENT_GONE_STATE=$(map_log_state "$LOG_LINE")
+    case "$AGENT_GONE_STATE" in
+      done|failed|blocked|parked|paused)
+        emit "$AGENT_GONE_STATE" status-log \
+          "$(status_line_note "$LOG_LINE")${SEP}agent gone, pane shell remains"
+        ;;
+    esac
+  fi
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;

@@ -111,6 +111,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# Snapshot overrides are child-only. Drop any inherited leak so a prior
+# snapshot cannot make every later crew-state read look missing or foreign.
+unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
@@ -294,18 +297,32 @@ last_nonempty_line() {  # <file>
 # A local crew-state read is bounded so one slow child cannot extend this
 # snapshot without limit. Remote secondmate endpoint liveness is never read here.
 # A local read that hits the bound folds to state unknown.
+# Snapshot overrides live only in this child env: they are never exported in
+# this process, so a captured path reaches exactly the one task it was captured
+# for and nothing survives into a later read. Whether a captured path is
+# acceptable is fm-crew-state.sh's own call (fm_crew_state_apply_override): it
+# refuses an absent, symlinked, or foreign path for every caller, and its
+# refusal line parses into this function's JSON like any other verdict.
 crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
   local id=$1 captured_meta=${2:-} captured_status=${3:-} raw rest state source detail sep
+  local -a crew_env
+  crew_env=(
+    FM_ROOT_OVERRIDE="$FM_ROOT"
+    FM_HOME="$FM_HOME"
+    FM_STATE_OVERRIDE="$STATE"
+    FM_DATA_OVERRIDE="$DATA"
+    FM_PROJECTS_OVERRIDE="$PROJECTS"
+    FM_CONFIG_OVERRIDE="$CONFIG"
+  )
+  if [ -n "$captured_meta" ]; then
+    crew_env+=(FM_CREW_STATE_META_OVERRIDE="$captured_meta")
+  fi
+  if [ -n "$captured_status" ]; then
+    crew_env+=(FM_CREW_STATE_STATUS_OVERRIDE="$captured_status")
+  fi
   raw=$(
     fm_run_timed "$FM_SNAPSHOT_CREW_STATE_TIMEOUT" \
-      env FM_ROOT_OVERRIDE="$FM_ROOT" \
-      FM_HOME="$FM_HOME" \
-      FM_STATE_OVERRIDE="$STATE" \
-      FM_CREW_STATE_META_OVERRIDE="$captured_meta" \
-      FM_CREW_STATE_STATUS_OVERRIDE="$captured_status" \
-      FM_DATA_OVERRIDE="$DATA" \
-      FM_PROJECTS_OVERRIDE="$PROJECTS" \
-      FM_CONFIG_OVERRIDE="$CONFIG" \
+      env "${crew_env[@]}" \
       "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true
   )
   raw=$(printf '%s\n' "$raw" | head -1)

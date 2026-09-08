@@ -45,6 +45,9 @@ set -u
 
 CREW_STATE="$ROOT/bin/fm-crew-state.sh"
 TMP_ROOT=$(fm_test_tmproot fm-crew-state)
+# The test process itself may be launched from a fleet snapshot child. Each
+# override case opts in explicitly below; ordinary cases start uncontaminated.
+unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
 fm_git_identity fmtest fmtest@example.invalid
 
 # A real git repo checked out on <branch>, so the helper's branch attribution
@@ -106,15 +109,27 @@ set -u
 # trimmed PATH) or errors non-definitively - so even the inventory fails, with
 # a message that is NOT one of the definitive no-session/no-server/no-socket
 # responses that fm_backend_tmux_agent_state owns as death.
+# FM_FAKE_TMUX_SHELL_ONLY: the window is alive and listed, but its foreground
+# process group is nothing but a shell, which is exactly the input
+# fm_backend_tmux_agent_state resolves to `dead` (pane there, agent gone). The
+# fake `ps` beside this file serves the process group for the fake pane tty.
 [ "${FM_FAKE_TMUX_UNREADABLE:-0}" = 1 ] && { printf 'no current client\n' >&2; exit 1; }
 case "${1:-}" in
   list-windows)
     # A successful but empty inventory: it omits the crew's window, so absence
     # is proved by the answer rather than by an addressed call failing. Only
-    # reached once display-message has already failed.
+    # reached once display-message has already failed. Under SHELL_ONLY the
+    # inventory names the crew's own window, so the pane is provably present.
+    [ "${FM_FAKE_TMUX_SHELL_ONLY:-0}" = 1 ] && printf '%s\n' "${FM_FAKE_TMUX_WINDOWS:-}"
     ;;
   display-message)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    if [ "${FM_FAKE_TMUX_SHELL_ONLY:-0}" = 1 ]; then
+      case "${!#}" in
+        '#{pane_tty}') printf 'fmfake0\n'; exit 0 ;;
+        '#{pane_current_command}') printf 'bash\n'; exit 0 ;;
+      esac
+    fi
     printf '%%1\n' ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
@@ -123,6 +138,22 @@ case "${1:-}" in
 esac
 exit 0
 SH
+  local real_ps
+  real_ps=$(command -v ps) || fail "missing tool for the dead-shell classifier: ps"
+  cat > "$fb/ps" <<SH
+#!/usr/bin/env bash
+set -u
+# Only the fake pane tty of FM_FAKE_TMUX_SHELL_ONLY is served here; every other
+# query goes to the real ps, so the rest of the suite is untouched.
+if [ "\${FM_FAKE_TMUX_SHELL_ONLY:-0}" = 1 ]; then
+  case "\$*" in
+    *"-t fmfake0"*) printf '424242 424242 424242 bash\n'; exit 0 ;;
+    *"-p 424242"*) printf -- '-bash\n'; exit 0 ;;
+  esac
+fi
+exec $real_ps "\$@"
+SH
+  chmod +x "$fb/ps"
   cat > "$fb/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -182,7 +213,11 @@ make_no_timeout_toolbin() {  # <dir> -> echoes toolbin path
 # Run the helper for one case dir. FM_FAKE_* env (run output, busy flag) are read
 # from the caller's environment by the fakes above.
 run_crew_state() {  # <case-dir> <id>
-  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" "$CREW_STATE" "$2"
+  # Drop inherited snapshot leaks from the parent environment so a leftover
+  # override cannot make every hermetic case look missing.
+  PATH="$1/fakebin:$PATH" FM_STATE_OVERRIDE="$1/state" \
+    env -u FM_CREW_STATE_META_OVERRIDE -u FM_CREW_STATE_STATUS_OVERRIDE \
+    "$CREW_STATE" "$2"
 }
 
 new_case() {  # <name> -> echoes case dir with an empty state/
@@ -209,6 +244,8 @@ reset_fakes() {
   FM_FAKE_BUSY_TEXT=
   FM_FAKE_TMUX_MISSING=0
   FM_FAKE_TMUX_UNREADABLE=0
+  FM_FAKE_TMUX_SHELL_ONLY=0
+  FM_FAKE_TMUX_WINDOWS=""
   FM_FAKE_HERDR_BUSY=0
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_READ_FAIL=0
@@ -217,6 +254,7 @@ reset_fakes() {
   FM_FAKE_CI_LOGS=""
   FM_FAKE_DAEMON_DOWN=0
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING FM_FAKE_TMUX_UNREADABLE
+  export FM_FAKE_TMUX_SHELL_ONLY FM_FAKE_TMUX_WINDOWS
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_READ_FAIL FM_FAKE_HERDR_HUSK FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
   export FM_FAKE_DAEMON_DOWN
 }
@@ -1401,6 +1439,111 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle() {
 }
 
 # (g) no run + idle pane -> the status-log verb, as-is
+# (g'') no run + a LIVE pane whose agent is gone (the real dead-shell verdict of
+# fm_backend_tmux_agent_state, driven by a foreground group that is nothing but a
+# shell). A crew that finished and whose agent then exited outside fm-control -
+# so nothing retired its busy record - must still surface the terminal word of
+# its status log, because that log is the last authoritative account of the task
+# and the captain's terminal-in-flight list is built from it.
+test_no_run_live_pane_agent_gone_keeps_terminal_log() {
+  reset_fakes
+  local d; d=$(new_case husk-done)
+  make_repo_on_branch "$d/wt" fm/feat-husk-done
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-husk-done.meta" "window=fm:fm-feat-husk-done" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'done: PR https://example.invalid/pr/1 opened\n' > "$d/state/feat-husk-done.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_TMUX_SHELL_ONLY=1
+  FM_FAKE_TMUX_WINDOWS='fm-feat-husk-done'
+  # The busy record was never retired, so it still reads idle claude-hook.
+  arm_idle_record "$d/state" feat-husk-done
+  local out; out=$(run_crew_state "$d" feat-husk-done)
+  assert_contains "$out" "state: done" "terminal log survives the gone agent"
+  assert_contains "$out" "source: status-log" "the terminal reading is attributed to the log"
+  assert_contains "$out" "agent gone, pane shell remains" "the detail names why the pane could not answer"
+  pass "live pane with no agent still reports its terminal status-log state"
+}
+
+# Every settled status-log reading survives the gone agent with its reason: the
+# terminal pair above, and the open conditions here, which outlive the agent
+# that reported them (an unanswered decision or an external wait is still true
+# once the crew is stopped). One case per surviving verb.
+test_no_run_live_pane_agent_gone_keeps_open_status_states() {
+  reset_fakes
+  local d out case_name line want_state want_note
+  while IFS='|' read -r case_name line want_state want_note; do
+    [ -n "$case_name" ] || continue
+    reset_fakes
+    d=$(new_case "husk-$case_name")
+    make_repo_on_branch "$d/wt" "fm/feat-$case_name"
+    make_fakebin "$d" >/dev/null
+    fm_write_meta "$d/state/$case_name.meta" "window=fm:fm-$case_name" "worktree=$d/wt" "kind=ship" "harness=claude"
+    printf '%s\n' "$line" > "$d/state/$case_name.status"
+    FM_FAKE_AXI_STATUS=""
+    FM_FAKE_TMUX_SHELL_ONLY=1
+    FM_FAKE_TMUX_WINDOWS="fm-$case_name"
+    arm_idle_record "$d/state" "$case_name"
+    out=$(run_crew_state "$d" "$case_name")
+    assert_contains "$out" "state: $want_state" "$case_name log must survive the gone agent"
+    assert_contains "$out" "source: status-log" "$case_name must be attributed to the log"
+    assert_contains "$out" "$want_note" "$case_name must keep its reason"
+    assert_contains "$out" "agent gone, pane shell remains" "$case_name must name why the pane could not answer"
+  done <<'EOF'
+husk-failed|failed: the release job could not be retried|failed|the release job could not be retried
+husk-blocked|blocked [key=provider]: which provider?|blocked|which provider?
+husk-parked|needs-decision: choose REST or RPC|parked|choose REST or RPC
+husk-paused|paused: holding for the vendor maintenance window|paused|holding for the vendor maintenance window
+EOF
+  pass "live pane with no agent keeps failed, blocked, needs-decision, and paused with their reasons"
+}
+
+# The one verb that does NOT survive: `working` claims an activity in progress,
+# and nothing is performing it once the agent is gone.
+test_no_run_live_pane_agent_gone_stale_working_is_unknown() {
+  reset_fakes
+  local d; d=$(new_case husk-working)
+  make_repo_on_branch "$d/wt" fm/feat-husk-working
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-husk-working.meta" "window=fm:fm-feat-husk-working" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: refactoring the parser\n' > "$d/state/feat-husk-working.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_TMUX_SHELL_ONLY=1
+  FM_FAKE_TMUX_WINDOWS='fm-feat-husk-working'
+  arm_idle_record "$d/state" feat-husk-working
+  local out; out=$(run_crew_state "$d" feat-husk-working)
+  assert_contains "$out" "state: unknown" "a stale working claim cannot outlive its agent"
+  assert_contains "$out" "shell-no-agent" "the unknown verdict names the structural cause"
+  case "$out" in
+    *"state: working"*) fail "a gone agent must not keep reporting working" ;;
+  esac
+  pass "live pane with no agent reports unknown for a stale working status log"
+}
+
+# The structural verdict outranks the harness classifiers it is defined to
+# precede: an un-retired BUSY lifecycle record must not report the crew working
+# when the pane holds nothing but a shell.
+test_agent_gone_outranks_a_busy_lifecycle_record() {
+  reset_fakes
+  local d; d=$(new_case husk-busy-record)
+  make_repo_on_branch "$d/wt" fm/feat-husk-busy
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-husk-busy.meta" "window=fm:fm-feat-husk-busy" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'blocked: waiting on the captain to pick a provider\n' > "$d/state/feat-husk-busy.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_TMUX_SHELL_ONLY=1
+  FM_FAKE_TMUX_WINDOWS='fm-feat-husk-busy'
+  local gen; gen=$("$ROOT/bin/fm-busy-event.sh" arm "$d/state" feat-husk-busy)
+  "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-husk-busy busy --gen "$gen" \
+    --source claude-hook --event user-prompt-submit
+  local out; out=$(run_crew_state "$d" feat-husk-busy)
+  case "$out" in
+    *"state: working"*) fail "a busy record outranked the shell-without-agent verdict: $out" ;;
+  esac
+  assert_contains "$out" "state: blocked" "the blocker survives an un-retired busy record"
+  assert_contains "$out" "waiting on the captain to pick a provider" "the blocker keeps its reason"
+  pass "the shell-without-agent verdict outranks an un-retired busy lifecycle record"
+}
+
 test_no_run_idle_pane_uses_log() {
   reset_fakes
   local d; d=$(new_case idle)
@@ -1613,7 +1756,11 @@ SH
   "$ROOT/bin/fm-busy-event.sh" apply "$d/state" feat-timeout busy --gen "$gen" \
     --source claude-hook --event user-prompt-submit
   start=$SECONDS
-  out=$(FM_FAKE_NM_CALLS="$calls_file" PATH="$d/fakebin:$toolbin" FM_STATE_OVERRIDE="$d/state" FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" feat-timeout)
+  out=$(
+    unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
+    FM_FAKE_NM_CALLS="$calls_file" PATH="$d/fakebin:$toolbin" FM_STATE_OVERRIDE="$d/state" \
+      FM_CREW_STATE_NM_TIMEOUT=1 "$CREW_STATE" feat-timeout
+  )
   elapsed=$((SECONDS - start))
   assert_contains "$out" "state: working" "timed-out no-mistakes falls back to pane"
   assert_contains "$out" "source: pane" "timed-out no-mistakes -> pane source"
@@ -1766,6 +1913,64 @@ test_missing_meta() {
   assert_contains "$out" "state: unknown" "missing meta -> unknown"
   assert_contains "$out" "source: none" "missing meta -> none source"
   pass "missing meta is handled gracefully"
+}
+
+test_snapshot_override_refuses_empty_and_foreign_paths() {
+  reset_fakes
+  local d a_meta b_meta out
+  d=$(new_case override-guard)
+  make_repo_on_branch "$d/wt" fm/feat-ov
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/alpha.meta" "window=fm:fm-alpha" "worktree=$d/wt" "kind=ship" "harness=claude"
+  fm_write_meta "$d/state/beta.meta" "window=fm:fm-beta" "worktree=$d/wt" "kind=ship" "harness=claude"
+  arm_idle_record "$d/state" alpha
+  arm_idle_record "$d/state" beta
+  printf 'working: alpha is live\n' > "$d/state/alpha.status"
+  printf 'working: beta is live\n' > "$d/state/beta.status"
+  a_meta="$d/state/alpha.meta"
+  b_meta="$d/state/beta.meta"
+
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE='' "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override path missing for beta.meta" \
+    "an empty snapshot override must be refused, not read as missing metadata"
+  assert_not_contains "$out" "no metadata for beta" \
+    "an empty override must not look like every worker is missing"
+
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$a_meta" "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override belongs to another task (beta.meta)" \
+    "a captured path for another task must be refused"
+
+  # A capture that was never taken (the snapshot's temp dir has no file for
+  # this task) is refused as a path, not read as a torn-down worker.
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$d/captures/beta.meta" "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override path missing for beta.meta" \
+    "a captured path that does not exist must be refused"
+  assert_not_contains "$out" "no metadata for beta" \
+    "a missing capture must not look like every worker is missing"
+
+  # A symlink named like this task's capture is refused: the snapshot only ever
+  # hands over regular files it copied itself, so a link is not its capture.
+  mkdir -p "$d/captures"
+  ln -s "$b_meta" "$d/captures/beta.meta"
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$d/captures/beta.meta" "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override path missing for beta.meta" \
+    "a symlinked capture must be refused even when it resolves to this task"
+
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$b_meta" "$CREW_STATE" beta)
+  assert_contains "$out" "state:" "a matching captured meta path must still resolve"
+
+  out=$(
+    export FM_CREW_STATE_META_OVERRIDE="$a_meta"
+    PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" "$CREW_STATE" beta
+  )
+  assert_contains "$out" "snapshot override belongs to another task (beta.meta)" \
+    "a leftover exported override from another task must not contaminate the next read"
+  pass "snapshot overrides refuse empty and foreign paths instead of marking every worker lost"
 }
 
 # (k) crew_is_provably_working end-to-end over the REAL fm-crew-state.sh (not a
@@ -2275,6 +2480,10 @@ test_no_run_herdr_alive_with_failed_read_stays_live
 test_no_run_herdr_husk_dead_still_reads_gone
 test_no_run_herdr_idle_agent_status_outranked_by_record
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
+test_no_run_live_pane_agent_gone_keeps_terminal_log
+test_no_run_live_pane_agent_gone_keeps_open_status_states
+test_no_run_live_pane_agent_gone_stale_working_is_unknown
+test_agent_gone_outranks_a_busy_lifecycle_record
 test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused
@@ -2292,6 +2501,7 @@ test_remote_alive_idle_is_healthy_not_gone
 test_remote_unreachable_is_unknown_remote_not_dead
 test_remote_dead_reports_remote_verdict
 test_missing_meta
+test_snapshot_override_refuses_empty_and_foreign_paths
 test_provably_working_via_runs_list_fallback
 test_not_provably_working_when_stopped
 test_usage_error

@@ -982,6 +982,71 @@ EOF
   printf '%s' "$offset"
 }
 
+# Stable identity of one terminal status outcome (done, failed), independent of
+# the status file's inode or byte offset. A rewritten log that still ends on the
+# same terminal result keeps this identity; a genuinely new result does not.
+# Only an outcome verb has an identity: a blocked or needs-decision line states a
+# live condition that can legitimately recur, so it stays offset-sensitive and
+# the same text appended later is a new event, not the one already presented.
+# Empty output means "no identity", which every caller reads as "do not dedupe".
+status_terminal_event_identity() {  # <event-line>
+  local line=$1
+  case "$(status_line_verb "$line")" in
+    done|failed) ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$line" | LC_ALL=C tr -d '\r' | cksum | awk '{printf "e1:%s-%s", $1, $2}'
+}
+
+status_outcome_identity_path() {  # <state>
+  printf '%s/.status-outcome-identity' "$1"
+}
+
+status_outcome_identity_get() {  # <state> <task>
+  local state=$1 task=$2 path row_task hash extra
+  path=$(status_outcome_identity_path "$state")
+  [ -f "$path" ] && [ -r "$path" ] && [ ! -L "$path" ] || return 1
+  while IFS=$(printf '\t') read -r row_task hash extra; do
+    [ -n "$row_task" ] || continue
+    [ -z "$extra" ] || continue
+    [ -n "$hash" ] || continue
+    if [ "$row_task" = "$task" ]; then
+      printf '%s' "$hash"
+      return 0
+    fi
+  done < "$path"
+  return 1
+}
+
+status_outcome_identity_commit() {  # <state> <task-hash-snapshot>
+  local state=$1 snapshot=$2 path tmp row_task hash extra seen='' line task
+  path=$(status_outcome_identity_path "$state")
+  tmp="$path.tmp.$$"
+  : > "$tmp" || return 1
+  if [ -f "$path" ] && [ -r "$path" ] && [ ! -L "$path" ]; then
+    while IFS=$(printf '\t') read -r row_task hash extra; do
+      [ -n "$row_task" ] || continue
+      [ -z "$extra" ] || continue
+      [ -n "$hash" ] || continue
+      case "
+$snapshot
+" in *$'\n'"$row_task"$'\t'*) continue ;; esac
+      printf '%s\t%s\n' "$row_task" "$hash" >> "$tmp" || { rm -f "$tmp"; return 1; }
+    done < "$path"
+  elif [ -e "$path" ] || [ -L "$path" ]; then
+    rm -f "$tmp"
+    return 1
+  fi
+  while IFS=$(printf '\t') read -r task hash; do
+    [ -n "$task" ] || continue
+    [ -n "$hash" ] || continue
+    printf '%s\t%s\n' "$task" "$hash" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  done <<EOF
+$snapshot
+EOF
+  mv -f "$tmp" "$path" || { rm -f "$tmp"; return 1; }
+}
+
 status_outcome_backstop_cursor_offset() {  # <status-file>
   local f=$1 state task manifest data row_task ident presented row_backstop backstop extra current size
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
@@ -1148,7 +1213,7 @@ status_presentation_marker_commit() {
 
 status_retire_presentation_task() {  # <state> <task-id>
   local state=$1 task=$2 lock manifest tmp data row_task ident offset backstop extra rc=0 found=0
-  local signal_marker heartbeat_marker daemon_marker
+  local signal_marker heartbeat_marker daemon_marker identity_path identity_tmp identity_row identity_hash identity_extra
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"
@@ -1212,6 +1277,25 @@ EOF
     fi
   fi
   if [ "$rc" -eq 0 ]; then
+    identity_path=$(status_outcome_identity_path "$state")
+    if [ -f "$identity_path" ] && [ -r "$identity_path" ] && [ ! -L "$identity_path" ]; then
+      identity_tmp="$identity_path.tmp.$$"
+      if : > "$identity_tmp"; then
+        while IFS=$(printf '\t') read -r identity_row identity_hash identity_extra; do
+          [ -n "$identity_row" ] || continue
+          [ "$identity_row" = "$task" ] && continue
+          [ -z "$identity_extra" ] || continue
+          [ -n "$identity_hash" ] || continue
+          printf '%s\t%s\n' "$identity_row" "$identity_hash" >> "$identity_tmp" || rc=1
+        done < "$identity_path"
+        if [ "$rc" -eq 0 ]; then
+          mv -f "$identity_tmp" "$identity_path" || rc=1
+        fi
+        [ "$rc" -eq 0 ] || rm -f "$identity_tmp"
+      else
+        rc=1
+      fi
+    fi
     rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" \
       "$signal_marker" "$heartbeat_marker" "$daemon_marker" || rc=1
   fi
@@ -1254,7 +1338,7 @@ EOF
 }
 
 status_commit_presentation_snapshot() {  # <state> <snapshot>
-  local state=$1 snapshot=$2 task endpoint ident f cur_ident size tmp backstop acknowledged_task acknowledged_endpoint
+  local state=$1 snapshot=$2 task endpoint ident f cur_ident size tmp backstop acknowledged_task acknowledged_endpoint acknowledged_hash
   tmp="$state/.status-presentation-cursor.tmp.$$"
   : > "$tmp" || return 1
   while IFS=$(printf '\t') read -r task endpoint ident; do
@@ -1270,7 +1354,7 @@ status_commit_presentation_snapshot() {  # <state> <snapshot>
     [ "$cur_ident" = "$ident" ] && [ "$endpoint" -le "$size" ] \
       || { rm -f "$tmp"; return 1; }
     backstop=$(status_outcome_backstop_cursor_offset "$f") || { rm -f "$tmp"; return 1; }
-    while IFS=$(printf '\t') read -r acknowledged_task acknowledged_endpoint; do
+    while IFS=$(printf '\t') read -r acknowledged_task acknowledged_endpoint acknowledged_hash; do
       if [ "$acknowledged_task" = "$task" ]; then backstop=$acknowledged_endpoint; fi
     done <<EOF
 ${STATUS_OUTCOME_BACKSTOP_ACKNOWLEDGED:-}
@@ -1283,6 +1367,9 @@ EOF
 $snapshot
 EOF
   mv -f "$tmp" "$state/.status-presentation-cursor" || { rm -f "$tmp"; return 1; }
+  if [ -n "${STATUS_OUTCOME_IDENTITY_ACK:-}" ]; then
+    status_outcome_identity_commit "$state" "$STATUS_OUTCOME_IDENTITY_ACK" || return 1
+  fi
 }
 
 scan_open_decisions_snapshot() {  # <state> <task-and-endpoint-snapshot>

@@ -6,8 +6,8 @@
 # explicit source attribution; missing, malformed, stale (gen-mismatch), and
 # untrusted (source-mismatch) semantic data classify unknown - never idle;
 # adapter isolation (one adapter's writer or Grok's regex can never classify
-# another adapter); endpoint death is the only process-level override and
-# yields dead, never busy; converted adapters never classify from rendered
+# another adapter); endpoint death and a shell-without-agent pane are the
+# process-level overrides and yield dead, never busy; converted adapters never classify from rendered
 # footer text. All hermetic over temp dirs; no real agent session is invoked.
 set -u
 
@@ -375,6 +375,52 @@ test_dead_endpoint_overrides() {
   pass "endpoint death is the only process-level override and yields dead, never busy"
 }
 
+# A pane that still exists but holds only a shell must classify dead even when
+# a harness-specific arm would otherwise answer first. Ambiguous/unreadable
+# agent-state must not change those normal harness verdicts.
+test_shell_without_agent_overrides_harness_classifiers() {
+  local state out harness
+  state=$(new_state_dir shell-no-agent)
+  mkdir -p "$state"
+  # shellcheck disable=SC2329
+  fm_backend_target_exists() { return 0; }
+
+  for harness in claude codex opencode pi pi-signed grok kimi cursor omp muse gemini rovo; do
+    # shellcheck disable=SC2329
+    fm_backend_agent_state() { printf 'dead'; }
+    out=$(fm_busy_classify_live tmux w1 "$harness" t1 "$state" fm-t1 'Ctrl+c:cancel')
+    [ "$out" = "dead shell-no-agent" ] \
+      || fail "$harness shell-without-agent must win before its own classifier, got '$out'"
+  done
+
+  # Counterproof: an alive agent keeps the normal Grok fallback.
+  # shellcheck disable=SC2329
+  fm_backend_agent_state() { printf 'alive'; }
+  out=$(fm_busy_classify_live tmux w1 grok t1 "$state" fm-t1 'Ctrl+c:cancel')
+  [ "$out" = "busy grok-regex" ] \
+    || fail "an alive grok agent must keep grok-regex, got '$out'"
+
+  # Unreadable/ambiguous must not promote a live grok pane to dead.
+  # shellcheck disable=SC2329
+  fm_backend_agent_state() { printf 'unreadable'; }
+  out=$(fm_busy_classify_live tmux w1 grok t1 "$state" fm-t1 'Ctrl+c:cancel')
+  [ "$out" = "busy grok-regex" ] \
+    || fail "unreadable agent-state must not override grok-regex, got '$out'"
+
+  # Codex/Kimi keep their unverified gates when the agent is alive.
+  # shellcheck disable=SC2329
+  fm_backend_agent_state() { printf 'alive'; }
+  out=$(fm_busy_classify_live tmux w1 codex t1 "$state")
+  [ "$out" = "unknown codex-unverified" ] \
+    || fail "alive codex must keep its unverified gate, got '$out'"
+  out=$(fm_busy_classify_live tmux w1 kimi t1 "$state")
+  [ "$out" = "unknown kimi-unverified" ] \
+    || fail "alive kimi must keep its unverified gate, got '$out'"
+
+  unset -f fm_backend_target_exists fm_backend_agent_state
+  pass "shell-without-agent wins for every verified harness without changing alive verdicts"
+}
+
 test_herdr_native_busy_only() {
   local state out
   state=$(new_state_dir herdr-native)
@@ -458,6 +504,7 @@ test_codex_unverified_gate
 test_kimi_unverified_gate
 test_cursor_ignores_rendered_and_native_signals
 test_dead_endpoint_overrides
+test_shell_without_agent_overrides_harness_classifiers
 test_herdr_native_busy_only
 test_record_read_leaves_caller_shell_intact
 test_boolean_view_never_promotes_unknown

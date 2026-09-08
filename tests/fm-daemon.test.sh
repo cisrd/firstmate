@@ -1025,6 +1025,32 @@ test_housekeeping_paused_resumed_cleared() {
   pass "a busy pane cannot gate the pause clear once its crew's status no longer declares the wait"
 }
 
+test_stale_busy_classifier_gives_shell_death_structural_precedence() {
+  local dir state win pane
+  dir=$(make_supercase structural-death-precedence)
+  state="$dir/state"; win="sess:fm-shell-dead"; pane="$dir/pane.txt"
+  printf 'Ctrl+c:cancel\n' > "$pane"
+  fm_write_meta "$state/shell-dead.meta" "window=$win" "kind=ship" "harness=grok" "backend=tmux"
+
+  if (
+    fm_backend_target_exists() { return 0; }
+    fm_backend_agent_state() { printf 'dead'; }
+    fm_backend_capture() { command cat "$pane"; }
+    stale_window_is_busy "$win" "$state"
+  ); then
+    fail "the daemon let Grok's rendered busy marker override a shell-without-agent verdict"
+  fi
+  if ! (
+    fm_backend_target_exists() { return 0; }
+    fm_backend_agent_state() { printf 'alive'; }
+    fm_backend_capture() { command cat "$pane"; }
+    stale_window_is_busy "$win" "$state"
+  ); then
+    fail "the daemon changed Grok's normal busy verdict while the agent was alive"
+  fi
+  pass "supervise daemon gives structural shell death precedence without changing a live harness verdict"
+}
+
 # The inverse of test_housekeeping_paused_resumed_cleared, and the first half of
 # issue #3149. A declared wait can legitimately hold a pane BUSY - a worker parked on
 # a long foreground call it keeps live for as long as the wait lasts - so a busy
@@ -1291,6 +1317,8 @@ test_housekeeping_herdr_idle_busy_record_clears_stale() {
       [ "$2" = "default:w1:p4" ] || fail "expected herdr busy target, got $2"
       printf 'idle'
     }
+    fm_backend_target_exists() { return 0; }
+    fm_backend_agent_state() { printf 'alive'; }
     fm_backend_capture herdr default:w1:p4 40 >/dev/null
     [ "$(fm_backend_busy_state herdr default:w1:p4)" = idle ] || fail "herdr busy stub did not report idle"
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 housekeeping "$state"
@@ -1319,6 +1347,8 @@ test_housekeeping_herdr_resumed_stale_cleared() {
       [ "$2" = "default:w1:p3" ] || fail "expected herdr busy target, got $2"
       printf 'busy'
     }
+    fm_backend_target_exists() { return 0; }
+    fm_backend_agent_state() { printf 'alive'; }
     fm_backend_capture herdr default:w1:p3 40 >/dev/null
     [ "$(fm_backend_busy_state herdr default:w1:p3)" = busy ] || fail "herdr busy stub did not report busy"
     FM_STATE_OVERRIDE="$state" FM_STALE_ESCALATE_SECS=240 housekeeping "$state"
@@ -2640,6 +2670,7 @@ test_housekeeping_resumed_stale_cleared
 test_housekeeping_paused_resurfaces_and_resets
 test_housekeeping_captain_held_resurfaces_and_resets
 test_housekeeping_paused_resumed_cleared
+test_stale_busy_classifier_gives_shell_death_structural_precedence
 test_housekeeping_busy_declared_wait_matures_its_window
 test_housekeeping_paused_unpaused_cleared
 test_housekeeping_captain_held_resolved_cleared

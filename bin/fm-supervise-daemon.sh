@@ -678,7 +678,7 @@ stale_window_is_busy() {  # <window> <state>
   task=$(window_to_task "$win" "$state")
   label="fm-$task"
   tail40=$(fm_backend_capture "$backend" "$win" 40 "$label" 2>/dev/null) || return 2
-  verdict=$(fm_busy_classify "$backend" "$win" "$harness" "$task" "$state" "$tail40")
+  verdict=$(fm_busy_classify_live "$backend" "$win" "$harness" "$task" "$state" "$label" "$tail40")
   [ "${verdict%% *}" = busy ]
 }
 

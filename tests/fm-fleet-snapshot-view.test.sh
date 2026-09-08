@@ -1045,7 +1045,50 @@ EOF
   pass "home-summary excludes kind=secondmate from unowned_current and terminal_in_flight"
 }
 
+test_snapshot_overrides_do_not_contaminate_later_reads() {
+  local home fakebin out leftover
+  home=$(make_home override-leak)
+  fakebin=$(make_fakebin "$home")
+  leftover="$home/captured/wrong.meta"
+  mkdir -p "$home/projects/alpha-worktree" "$home/captured"
+  fm_write_meta "$home/state/alpha.meta" \
+    "window=firstmate:fm-alpha" \
+    "worktree=$home/projects/alpha-worktree" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  fm_write_meta "$home/state/beta.meta" \
+    "window=firstmate:fm-beta" \
+    "worktree=$home/projects/alpha-worktree" \
+    "project=alpha" \
+    "harness=claude" \
+    "kind=ship" \
+    "mode=no-mistakes"
+  record_claude_idle "$home/state" alpha
+  record_claude_idle "$home/state" beta
+  printf 'working: alpha live\n' > "$home/state/alpha.status"
+  printf 'working: beta live\n' > "$home/state/beta.status"
+  printf 'window=firstmate:fm-wrong\nkind=ship\n' > "$leftover"
+
+  out=$(
+    PATH="$fakebin:$PATH" FM_HOME="$home" \
+      FM_CREW_STATE_META_OVERRIDE="$leftover" \
+      "$SNAPSHOT" --json
+  )
+  printf '%s' "$out" | jq -e '
+    [.tasks[] | select(.id=="alpha" or .id=="beta")] | length == 2
+  ' >/dev/null || fail "snapshot dropped a task under a leftover override: $out"
+  printf '%s' "$out" | jq -e '
+    [.tasks[] | select(.id=="alpha" or .id=="beta") | .current_state.detail // ""]
+    | all((contains("no metadata") | not) and (contains("another task") | not)
+      and (contains("snapshot override") | not))
+  ' >/dev/null || fail "a leftover snapshot override contaminated later reads: $out"
+  pass "fleet snapshot confines override variables to each child and refuses a foreign captured path"
+}
+
 test_empty_fleet_json
+test_snapshot_overrides_do_not_contaminate_later_reads
 test_fixture_snapshot_json
 test_home_summary_excludes_secondmate_from_child_inventory
 test_undated_captain_hold_phrasing_and_aging
