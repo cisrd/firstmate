@@ -173,13 +173,15 @@ test_brief_dot_project_resolves_primary_and_keeps_linked_worktree() {
   brief="$home/data/tangle-dot-hh8/brief.md"
   assert_present "$brief" "dot-project brief was not scaffolded"
   primary_real=$(cd "$primary" && pwd -P)
-  assert_grep "$primary_real" "$brief" \
-    "dot-project brief must bake the resolved primary checkout path"
+  assert_grep "worktree of $(basename "$primary_real")" "$brief" \
+    "dot-project brief must label the copy with the repository's name, not '.'"
   assert_no_grep "worktree of ." "$brief" \
     "dot-project brief must not leave '.' as the repo label"
+  assert_no_grep "$primary_real" "$brief" \
+    "a scaffold must bake no primary path: the spawn-time isolation section owns it"
   assert_grep "does not prove isolation" "$brief" \
     "dot-project brief must not treat pwd vs toplevel as isolation"
-  pass "fm-brief: a project of '.' resolves the primary checkout and does not false-flag a linked worktree"
+  pass "fm-brief: a project of '.' labels the repository and leaves every path to the launch contract"
 }
 
 test_spawn_dot_project_accepts_isolated_worktree() {
@@ -237,6 +239,45 @@ test_spawn_renders_exact_isolation_paths_into_the_launch_brief() {
   assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
     "the launch brief lost the isolation blocked-status contract"
   pass "fm-spawn: the launch brief carries the exact worktree and primary paths, not a repo label"
+}
+
+# A brief scaffolded with `.` in one repository and launched against another
+# must carry exactly one primary-checkout path: the spawn's own.
+test_launch_brief_carries_one_primary_path_for_a_dot_scaffold() {
+  local home scaffold scaffold_real other other_real wt wt_real fakebin out status brief hits
+  home="$TMP_ROOT/dot-scaffold-home"
+  mkdir -p "$home/data"
+  scaffold=$(make_repo "$TMP_ROOT/dot-scaffold-repo")
+  git -C "$scaffold" worktree add -q --detach "$TMP_ROOT/dot-scaffold-linked" >/dev/null 2>&1
+  scaffold_real=$(cd "$scaffold" && pwd -P)
+  other=$(make_repo "$TMP_ROOT/dot-scaffold-other")
+  git -C "$other" worktree add -q --detach "$TMP_ROOT/dot-scaffold-wt" >/dev/null 2>&1
+  other_real=$(cd "$other" && pwd -P)
+  wt="$TMP_ROOT/dot-scaffold-wt"
+  wt_real=$(cd "$wt" && pwd -P)
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/dot-scaffold-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  (
+    CDPATH='' cd -- "$TMP_ROOT/dot-scaffold-linked" || exit 1
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" "$ROOT/bin/fm-brief.sh" dot-scaffold-mm3 . --mode no-mistakes >/dev/null
+  ) || fail "dot-project brief scaffold failed"
+  sed -i.bak 's/{TASK}/Ship the dot-scaffold fixture./; s/{FIRSTMATE_SPEC}/Exercise the launch contract./' \
+    "$home/data/dot-scaffold-mm3/brief.md"
+  rm -f "$home/data/dot-scaffold-mm3/brief.md.bak"
+  out=$(fm_test_run_spawn "$home" "$wt" "$fakebin" \
+    dot-scaffold-mm3 "$other" codex --mode no-mistakes --yolo off); status=$?
+  expect_code 0 "$status" "a dot-scaffolded brief should still spawn against another project"$'\n'"$out"
+  brief="$home/data/dot-scaffold-mm3/launch-brief.md"
+  assert_present "$brief" "the launch brief was not rendered"
+  assert_grep "Your task worktree is \`$wt_real\`" "$brief" \
+    "the launch brief must name the copy this spawn resolved"
+  assert_grep "primary checkout is \`$other_real\`" "$brief" \
+    "the launch brief must name the spawning project's primary checkout"
+  assert_no_grep "$scaffold_real" "$brief" \
+    "the launch brief still carries the scaffold-time repository path"
+  hits=$(grep -c 'primary checkout is `' "$brief")
+  [ "$hits" = 1 ] || fail "the launch brief renders $hits primary-checkout paths; exactly one may govern"
+  pass "fm-spawn: a dot-scaffolded brief carries only the launching project's primary path"
 }
 
 test_spawn_dot_project_still_refuses_the_primary() {
@@ -406,4 +447,5 @@ test_spawn_isolation_abort
 test_spawn_dot_project_accepts_isolated_worktree
 test_spawn_dot_project_still_refuses_the_primary
 test_spawn_renders_exact_isolation_paths_into_the_launch_brief
+test_launch_brief_carries_one_primary_path_for_a_dot_scaffold
 test_spawn_tmux_window_construction

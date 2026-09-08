@@ -48,18 +48,20 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# A project given as exactly `.` - and nothing else, since every other spelling
-# is a repo LABEL rather than a path - is resolved to its repository's primary
-# working tree (fm-tangle-lib.sh) before that assertion is written, so `.` from
-# a linked firstmate worktree names the real primary rather than itself, and a
-# treehouse copy is not told to stop. Ship and scout briefs label the worktree
-# with that resolved name; any other label is rendered verbatim. The assertion
-# itself compares physical paths against the exact copy bin/fm-spawn.sh appends
-# to the launch brief as `# Worktree isolation`, because a repo LABEL is not
+# No path is baked in here: bin/fm-spawn.sh appends the exact copy and the
+# repository primary to the launch brief as `# Worktree isolation`, and owns
+# both, so a scaffold made in one place can never contradict the project the
+# spawn actually launched against. The assertion in this scaffold points at
+# that section and compares physical paths, because a repo LABEL is not
 # comparable with `pwd -P`, equality of pwd and git-toplevel does not prove
 # isolation, and git-dir vs git-common-dir equality only proves the copy is not
 # a linked worktree, which an ordinary clone and an Orca-managed copy also
 # satisfy.
+# A project given as exactly `.` - and nothing else, since every other spelling
+# is a repo LABEL rather than a path - resolves to its repository's primary
+# working tree (fm-tangle-lib.sh) for the worktree LABEL alone, so `.` from a
+# linked firstmate worktree reads as the repository's name rather than a dot;
+# any other label is rendered verbatim.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -324,15 +326,10 @@ exit 0
 fi
 
 REPO=${POS[1]}
-REPO_PRIMARY=
 REPO_LABEL=$REPO
 if [ "$REPO" = . ] && REPO_ABS=$(pwd -P 2>/dev/null); then
   REPO_PRIMARY=$(fm_git_primary_workdir "$REPO_ABS" 2>/dev/null) || REPO_PRIMARY=$REPO_ABS
   REPO_LABEL=$(basename "$REPO_PRIMARY")
-fi
-PRIMARY_CLAUSE=
-if [ -n "$REPO_PRIMARY" ]; then
-  PRIMARY_CLAUSE=", which is \`$REPO_PRIMARY\`"
 fi
 
 if [ "$HERDR_LAB" -eq 1 ]; then
@@ -472,7 +469,7 @@ $HERDR_SECTION
 # Setup
 You are in a disposable git worktree of $REPO_LABEL, at a detached HEAD on a clean default branch.
 
-**Verify isolation before anything else.** Run \`pwd -P\`. It must be exactly the path named in this brief's \`# Worktree isolation\` section, which firstmate renders at launch: your own disposable copy (a treehouse pool path, an Orca-managed worktree, or another isolated worktree), never the project's primary checkout${PRIMARY_CLAUSE}.
+**Verify isolation before anything else.** Run \`pwd -P\`. It must be exactly the path named in this brief's \`# Worktree isolation\` section, which firstmate renders at launch: your own disposable copy (a treehouse pool path, an Orca-managed worktree, or another isolated worktree), never the project's primary checkout.
 Equality of \`pwd\` and \`git rev-parse --show-toplevel\` does not prove isolation: both name the current worktree root in the primary checkout and in a linked worktree alike. Compare the physical paths instead.
 If \`pwd -P\` is not that exact worktree path, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
