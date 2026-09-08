@@ -1566,7 +1566,7 @@ assert len(doc["scripts"])==3
 test_yaml_assertion_skips_when_ruby_is_absent() {
   local out rc
   set +e
-  out=$(hash -r; PATH= "$BASH" "$ROOT/tests/fm-ci-herdr-timeout.test.sh" 2>&1)
+  out=$(hash -r; PATH='' "$BASH" "$ROOT/tests/fm-ci-herdr-timeout.test.sh" 2>&1)
   rc=$?
   set -e
   [ "$rc" -eq 0 ] || fail "the executable test must skip cleanly without Ruby: $out"
