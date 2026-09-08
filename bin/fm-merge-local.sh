@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Perform the approved local merge for a local-only ship task: fast-forward the
-# project's default branch to the crewmate's fm/<id> branch.
+# project's integration branch - its registered integration-branch declaration
+# when it makes one, otherwise its default branch - to the crewmate's fm/<id>
+# branch, so work lands on the branch bin/fm-spawn.sh cut it from.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
@@ -16,6 +18,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# The one resolver for the branch a project integrates on, so the landing target
+# is the branch the task was cut from.
+# shellcheck source=bin/fm-integration-branch-lib.sh
+. "$SCRIPT_DIR/fm-integration-branch-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 # Role partition: landing local-only work is MAIN-owned; the Pi supervision
 # branch reports readiness and never lands (contract: bin/fm-lease-lib.sh;
@@ -31,31 +37,15 @@ PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
 
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
-}
-
 BRANCH="fm/$ID"
 git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $PROJ" >&2; exit 1; }
 
-DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
+DEFAULT=$(integration_branch "$PROJ" "$(basename "$PROJ")") || { echo "error: cannot determine the integration branch for $PROJ; expected a valid registry declaration, origin/HEAD, main, or master" >&2; exit 1; }
 
-# The project's main checkout must be on its default branch and clean, so the
+# The project's main checkout must be on its integration branch and clean, so the
 # fast-forward lands predictably (firstmate never writes here otherwise).
 cur=$(git -C "$PROJ" symbolic-ref --short HEAD 2>/dev/null || echo "")
-[ "$cur" = "$DEFAULT" ] || { echo "error: $PROJ is on '$cur', expected default branch '$DEFAULT'; cannot merge safely" >&2; exit 1; }
+[ "$cur" = "$DEFAULT" ] || { echo "error: $PROJ is on '$cur', expected integration branch '$DEFAULT'; cannot merge safely" >&2; exit 1; }
 if [ -n "$(git -C "$PROJ" status --porcelain 2>/dev/null | head -1)" ]; then
   echo "error: $PROJ has a dirty working tree; refusing to merge into it" >&2
   exit 1

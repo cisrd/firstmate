@@ -23,7 +23,7 @@ TMP_ROOT=$(fm_test_tmproot fm-review-diff-tests)
 make_case() {
   local name=$1 case_dir
   case_dir="$TMP_ROOT/$name"
-  mkdir -p "$case_dir/state"
+  mkdir -p "$case_dir/state" "$case_dir/data"
 
   git init -q --bare "$case_dir/origin.git"
   git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
@@ -70,9 +70,93 @@ stale_and_pr_commits() {
 run_review_diff() {
   local case_dir=$1
   shift
+  # The project registry decides the diff base, so pin it to the case dir: an
+  # ambient FM_HOME would otherwise let the operator's live registry pick it.
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
     "$REVIEW_DIFF" "$@"
+}
+
+declare_integration_branch() {
+  local case_dir=$1 branch=$2
+  printf -- '- project [no-mistakes integration-branch=%s] - fixture (added 2026-09-01)\n' \
+    "$branch" > "$case_dir/data/projects.md"
+}
+
+# The task copy is cut from the declared integration branch, so the review base
+# must be that branch too. Against origin/main the three-dot diff would take the
+# merge base where develop forked and hand the reviewer every develop-only change
+# on top of the task's own - a wrong set, reported with no error.
+test_declared_integration_branch_is_the_diff_base() {
+  local case_dir out
+  case_dir=$(make_case declared-base)
+  declare_integration_branch "$case_dir" develop
+
+  # develop carries a change main never had; the task branch is cut from develop.
+  git -C "$case_dir/project" branch -q develop main
+  git -C "$case_dir/project" push -q origin develop
+  git -C "$case_dir/wt" checkout -q develop
+  printf 'develop-only\n' > "$case_dir/wt/integration.txt"
+  git -C "$case_dir/wt" add integration.txt
+  git -C "$case_dir/wt" commit -qm "integration branch work"
+  git -C "$case_dir/wt" push -q origin develop
+  git -C "$case_dir/wt" branch -qf fm/task-x1 develop
+  git -C "$case_dir/wt" checkout -q fm/task-x1
+  printf 'task-work\n' > "$case_dir/wt/task.txt"
+  git -C "$case_dir/wt" add task.txt
+  git -C "$case_dir/wt" commit -qm "task work"
+  write_task_meta "$case_dir"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" 'diff base: origin/develop' "declared-base: the review base is not the declared branch"
+  assert_contains "$out" '+task-work' "declared-base: the task's own change is missing from the diff"
+  assert_not_contains "$out" 'develop-only' \
+    "declared-base: the diff carried integration-branch commits the task did not write"
+  pass "fm-review-diff diffs a declared-integration project against origin/<declared>, not origin/HEAD"
+}
+
+# An entry with no declaration keeps origin/HEAD, so unannotated projects review
+# exactly as they did before the declaration existed.
+test_legacy_entry_keeps_the_remote_default_diff_base() {
+  local case_dir out
+  case_dir=$(make_case legacy-base)
+  printf -- '- project [no-mistakes] - fixture (added 2026-09-01)\n' \
+    > "$case_dir/data/projects.md"
+  printf 'task-work\n' > "$case_dir/wt/task.txt"
+  git -C "$case_dir/wt" add task.txt
+  git -C "$case_dir/wt" commit -qm "task work"
+  write_task_meta "$case_dir"
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" 'diff base: origin/main' "legacy-base: an undeclared project left origin/HEAD"
+  assert_contains "$out" '+task-work' "legacy-base: the task's change is missing from the diff"
+  pass "fm-review-diff keeps origin/<default> for a registry entry with no declaration"
+}
+
+# A declaration git itself rejects must refuse, not quietly review against main.
+test_invalid_declared_integration_branch_refuses_the_diff() {
+  local case_dir out status err
+  case_dir=$(make_case invalid-base)
+  declare_integration_branch "$case_dir" '..bad'
+  printf 'task-work\n' > "$case_dir/wt/task.txt"
+  git -C "$case_dir/wt" add task.txt
+  git -C "$case_dir/wt" commit -qm "task work"
+  write_task_meta "$case_dir"
+
+  set +e
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+  status=$?
+  set -e
+  err=$(cat "$case_dir/stderr")
+
+  [ "$status" -ne 0 ] || fail "invalid-base: review diff succeeded on an invalid declaration"
+  assert_not_contains "$out" 'diff base:' "invalid-base: an invalid declaration still produced a diff"
+  assert_contains "$err" 'invalid integration branch' \
+    "invalid-base: the refusal did not surface the registry diagnostic"
+  pass "fm-review-diff refuses an invalid integration-branch declaration instead of reviewing against origin/HEAD"
 }
 
 test_pr_meta_uses_pr_head_not_stale_local() {
@@ -169,6 +253,9 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
+test_declared_integration_branch_is_the_diff_base
+test_legacy_entry_keeps_the_remote_default_diff_base
+test_invalid_declared_integration_branch_refuses_the_diff
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
 test_stale_recorded_pr_head_loses_to_fetched_pull_head

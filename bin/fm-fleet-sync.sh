@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
+# Refresh project clones: fast-forward the checked-out registered integration
+# branch, or the remote default branch for legacy registry entries, to its
+# origin/<branch> when safe, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
-# no unique commits (it is an ancestor of origin/<default>) and whose <default>
+# no unique commits (it is an ancestor of origin/<branch>) and whose integration
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
 # Every other off-default state - a non-default named branch, a detached HEAD with
 # unique commits, a dirty tree, or a diverged default - may hold real work, so it
@@ -40,6 +41,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# default_branch and the integration-branch resolver every base-picking path shares.
+# shellcheck source=bin/fm-integration-branch-lib.sh
+. "$SCRIPT_DIR/fm-integration-branch-lib.sh"
 # Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
@@ -113,22 +117,6 @@ resolve_project_arg() {
       ;;
   esac
   printf '%s\n' "$arg"
-}
-
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
 }
 
 first_line() {
@@ -289,8 +277,8 @@ stuck_state() {
 }
 
 # Loud, quantified report for a clone we deliberately leave untouched. Includes
-# how far behind origin/<default> it is, so a chronically-stuck clone is visibly
-# distinct from a benign one-off skip.
+# how far behind the selected origin/<branch> it is, so a chronically-stuck clone
+# is visibly distinct from a benign one-off skip.
 report_stuck() {
   local state=$1 behind
   behind=$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind="?"
@@ -335,8 +323,23 @@ sync_project() {
     return 0
   fi
 
+  # The registry's structured integration branch is authoritative when present;
+  # a legacy entry falls back to the remote default branch (fm-integration-branch-lib.sh).
+  # A declaration the resolver rejects is the registry promising a base that
+  # cannot exist, so it is reported loudly on stdout (session-start discards this
+  # script's stderr) instead of degrading to the legacy no-default-branch skip.
+  if ! DEFAULT=$(integration_branch "$PROJ" "$label"); then
+    if declared_integration_branch "$label" >/dev/null 2>&1; then
+      echo "$label: skipped: cannot determine default branch"
+    else
+      echo "$label: STUCK: the registry declares an invalid integration branch - needs attention"
+    fi
+    return 0
+  fi
+  BASE="origin/$DEFAULT"
+
   if ! fetch_with_packed_refs_lock_guard; then
-    reason="fetch failed"
+    reason="fetch failed for $BASE"
     if [ -n "$FETCH_OUTPUT" ]; then
       reason="$reason: $(first_line "$FETCH_OUTPUT")"
     fi
@@ -345,14 +348,15 @@ sync_project() {
   fi
 
   prune_gone_branches || true
-
-  DEFAULT=$(default_branch) || {
-    echo "$label: skipped: cannot determine default branch"
-    return 0
-  }
-  BASE="origin/$DEFAULT"
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
-    echo "$label: skipped: $BASE does not exist"
+    # A declared branch origin does not publish is a broken registry promise, not
+    # a benign absence: the clone would otherwise never be refreshed again and
+    # never be reported as needing attention.
+    if [ -n "$(declared_integration_branch "$label" 2>/dev/null)" ]; then
+      echo "$label: STUCK: declared integration branch $DEFAULT is not published by origin - needs attention"
+    else
+      echo "$label: skipped: $BASE does not exist"
+    fi
     return 0
   fi
 
@@ -405,9 +409,9 @@ sync_project() {
   }
   if [ "$local_rev" = "$remote_rev" ]; then
     if [ "$recovered" = yes ]; then
-      echo "$label: recovered: re-attached $DEFAULT (already current)"
+      echo "$label: recovered: re-attached $DEFAULT (already current at $BASE)"
     else
-      echo "$label: already current"
+      echo "$label: already current on $DEFAULT ($BASE)"
     fi
     return 0
   fi
@@ -433,9 +437,9 @@ sync_project() {
     return 0
   }
   if [ "$recovered" = yes ]; then
-    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
+    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after to $BASE"
   else
-    echo "$label: synced $before..$after"
+    echo "$label: synced $before..$after to $BASE"
   fi
   return 0
 }

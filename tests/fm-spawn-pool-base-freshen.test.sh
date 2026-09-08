@@ -409,6 +409,61 @@ test_direct_pr_and_scout_refresh_before_launch() {
   pass "direct-PR ships and scouts both refresh stale pooled worktrees before launch"
 }
 
+# A project that integrates on a branch other than origin/HEAD must have its task
+# copies cut from that declared branch, or fleet sync reports the clone current on
+# develop while live work is based on main.
+test_declared_integration_branch_bases_the_task_copy() {
+  local rec id out status publisher declared_tip remote_head=${1:-main}
+  id="pool-integration-branch-$remote_head-r1"
+  rec=$(make_case "integration-branch-$remote_head" "$id")
+  read_case_record "$rec"
+  printf -- '- project [no-mistakes integration-branch=develop] - fixture (added 2026-09-01)\n' \
+    > "$HOME_DIR/data/projects.md"
+  publisher="$CASE_DIR/publisher"
+  git -C "$publisher" checkout --quiet -b develop
+  printf 'only on the declared integration branch\n' > "$publisher/develop-only.txt"
+  git -C "$publisher" add develop-only.txt
+  git -C "$publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm advance-develop
+  git -C "$publisher" push --quiet origin develop
+  declared_tip=$(git -C "$publisher" rev-parse HEAD)
+  git --git-dir="$CASE_DIR/origin.git" symbolic-ref HEAD "refs/heads/$remote_head"
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should base a declared-integration project on its declared branch"$'\n'"$out"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$declared_tip" ] \
+    || fail "spawn did not base the task copy on origin/develop"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" != "$(git -C "$POOL_DIR" rev-parse origin/main)" ] \
+    || fail "fixture did not keep origin/develop distinct from origin/main"
+  assert_grep 'only on the declared integration branch' "$POOL_DIR/develop-only.txt" \
+    "the task copy omitted content that exists only on the declared branch"
+  [ "$(git --git-dir="$CASE_DIR/origin.git" symbolic-ref --short HEAD)" = "$remote_head" ] \
+    || fail "fixture origin default branch changed"
+  pass "a declared integration branch, not origin/HEAD, is the base of a new task copy"
+}
+
+# The declaration is a promise about the base; a branch the origin does not
+# publish must stop the launch rather than silently fall back to origin/HEAD.
+test_unpublished_declared_integration_branch_refuses_pool() {
+  local rec id out status before
+  id='pool-missing-integration-branch-r1'
+  rec=$(make_case missing-integration-branch "$id")
+  read_case_record "$rec"
+  printf -- '- project [no-mistakes integration-branch=develop] - fixture (added 2026-09-01)\n' \
+    > "$HOME_DIR/data/projects.md"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn accepted a declared integration branch the origin does not publish"
+  assert_contains "$out" "could not fetch 'origin/develop'" \
+    "spawn did not name the unresolved declared branch in its refusal"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
+    || fail "spawn moved HEAD after failing to resolve the declared integration branch"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
+  pass "an unpublished declared integration branch refuses the pooled worktree"
+}
+
 test_dirty_pool_refuses_without_discarding_work() {
   local rec id out status before
   id='pool-dirty-refusal-r4'
@@ -676,10 +731,70 @@ test_stale_pin_beside_other_dirt_reports_one_verdict() {
   pass "a stale pin beside other dirt yields the conservative refusal alone, with no stale-pin line"
 }
 
+test_originless_declared_base() {
+  local variant rec id out status tip declaration
+  for variant in develop missing malformed empty dirty; do
+    id="pool-local-declared-$variant"
+    rec=$(make_originless_case "local-declared-$variant" "$id")
+    read_case_record "$rec"
+    git -C "$PROJECT_DIR" checkout --quiet -b develop
+    printf 'local integration content\n' > "$PROJECT_DIR/local.txt"
+    git -C "$PROJECT_DIR" add local.txt
+    git -C "$PROJECT_DIR" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm develop
+    tip=$(git -C "$PROJECT_DIR" rev-parse HEAD)
+    declaration=develop
+    case "$variant" in
+      missing) declaration=missing ;;
+      malformed) declaration=..bad ;;
+      empty) declaration='' ;;
+      dirty) printf 'preserve me\n' > "$POOL_DIR/uncommitted.txt" ;;
+    esac
+    printf -- '- project [local-only integration-branch=%s] - fixture\n' "$declaration" > "$HOME_DIR/data/projects.md"
+    out=$(run_spawn "$id" --mode local-only --yolo off)
+    status=$?
+    if [ "$variant" = develop ]; then
+      expect_code 0 "$status" "originless declared spawn should launch"$'\n'"$out"
+      [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$tip" ] || fail "local task did not start on develop"
+      [ "$tip" != "$INITIAL_SHA" ] || fail "local develop did not advance"
+    else
+      [ "$status" -ne 0 ] || fail "originless $variant declaration launched"
+      case "$variant" in
+        missing) assert_contains "$out" "'refs/heads/missing' is not a commit" "missing local branch not diagnosed" ;;
+        malformed|empty) assert_contains "$out" 'invalid integration branch' "invalid declaration not diagnosed" ;;
+        dirty) assert_contains "$out" 'is not clean' "dirty pool not diagnosed"
+          assert_grep 'preserve me' "$POOL_DIR/uncommitted.txt" "dirty work discarded" ;;
+      esac
+      [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$INITIAL_SHA" ] || fail "refusal moved the local pool"
+      [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refusal published task metadata"
+    fi
+    pass "originless declared base: $variant"
+  done
+}
+
+test_empty_remote_declaration_refuses() {
+  local rec id out status
+  id='pool-empty-remote-declaration'
+  rec=$(make_case empty-remote-declaration "$id")
+  read_case_record "$rec"
+  printf -- '- project [no-mistakes integration-branch=] - fixture\n' > "$HOME_DIR/data/projects.md"
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "empty remote declaration launched"
+  assert_contains "$out" 'invalid integration branch' "empty remote declaration not diagnosed"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$INITIAL_SHA" ] || fail "empty declaration moved pool"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "empty declaration published task metadata"
+  pass "empty remote declaration refuses without fallback"
+}
+
+test_originless_declared_base
+test_empty_remote_declaration_refuses
+test_declared_integration_branch_bases_the_task_copy missing-default
 test_remote_seeded_home_spawns_from_treehouse_pool
 test_linked_spawning_home_rejects_primary_before_refresh
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
+test_declared_integration_branch_bases_the_task_copy
+test_unpublished_declared_integration_branch_refuses_pool
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool

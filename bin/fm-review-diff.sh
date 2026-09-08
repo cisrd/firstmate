@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Review a crewmate branch against the authoritative base.
 #
-# Pooled project clones do not keep their local default branch current, so this
-# helper compares remote-backed projects against origin/<default> after fetching
-# the default branch, and local-only projects against the local default branch.
+# Pooled project clones do not keep their local integration branch current, so
+# this helper compares remote-backed projects against origin/<branch> after
+# fetching it, and local-only projects against the local branch. That branch is
+# the project's registered integration branch when it declares one, and origin's
+# default branch otherwise (bin/fm-integration-branch-lib.sh) - the same
+# resolution bin/fm-spawn.sh cut the task copy from, so the three-dot diff shows
+# the task's work and nothing the integration branch already carried.
 # When state/<id>.meta records pr= (URL or number) for an open PR, the compare
 # side is ALWAYS a freshly fetched refs/pull/<n>/head by default so review stays
 # current after no-mistakes fix rounds push to the PR. A recorded pr_head= is
@@ -18,6 +22,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+# The one resolver for the branch a project integrates on, so the review base is
+# the branch the task was actually cut from.
+# shellcheck source=bin/fm-integration-branch-lib.sh
+. "$SCRIPT_DIR/fm-integration-branch-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 
 usage() {
@@ -49,23 +57,7 @@ PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 [ -d "$WT" ] || { echo "error: worktree for task $ID is missing: $WT" >&2; exit 1; }
 [ -d "$PROJ" ] || { echo "error: project for task $ID is missing: $PROJ" >&2; exit 1; }
 
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
-}
-
-DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
+DEFAULT=$(integration_branch "$PROJ" "$(basename "$PROJ")") || { echo "error: cannot determine the integration branch for $PROJ; expected a valid registry declaration, origin/HEAD, main, or master" >&2; exit 1; }
 
 BRANCH="fm/$ID"
 if ! git -C "$WT" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null; then

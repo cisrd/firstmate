@@ -431,6 +431,72 @@ EOF
   pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
 }
 
+# --integration-branch reads only the structured bracket annotation: the same
+# free-form text in the description is registry prose, never a declaration, and a
+# branch name git itself would reject fails the query with a diagnostic rather
+# than being handed on as a ref or downgraded to a silent remote-default fallback.
+test_project_mode_reads_only_the_structured_integration_branch() {
+  local home out err project status
+  home="$TMP_ROOT/integration-branch/home"
+  mkdir -p "$home/data"
+  cat > "$home/data/projects.md" <<'EOF'
+- declared [no-mistakes integration-branch=develop] - fixture (added 2026-01-01)
+- withyolo [direct-PR +yolo integration-branch=release/2.x] - fixture (added 2026-01-01)
+- yolofirst [no-mistakes integration-branch=develop +yolo] - fixture (added 2026-01-01)
+- proseonly [no-mistakes] - integration-branch=develop is only prose here (added 2026-01-01)
+- legacy [no-mistakes +yolo] - fixture (added 2026-01-01)
+- bareentry - fixture (added 2026-01-01)
+- badbranch [no-mistakes integration-branch=..bad] - fixture (added 2026-01-01)
+EOF
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch declared 2>/dev/null)
+  [ "$out" = develop ] || fail "a declared integration branch was not reported (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch withyolo 2>/dev/null)
+  [ "$out" = release/2.x ] || fail "an integration branch beside +yolo was not reported (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch yolofirst 2>/dev/null)
+  [ "$out" = develop ] || fail "the annotation token order changed the declared branch (got '$out')"
+
+  # The declaration must not change the mode or yolo posture it sits beside.
+  out=$(FM_HOME="$home" "$PROJECT_MODE" declared 2>/dev/null)
+  [ "$out" = "no-mistakes off" ] || fail "a declared integration branch disturbed the mode (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" withyolo 2>/dev/null)
+  [ "$out" = "direct-PR on" ] || fail "a declared integration branch disturbed mode/yolo (got '$out')"
+  out=$(FM_HOME="$home" "$PROJECT_MODE" yolofirst 2>/dev/null)
+  [ "$out" = "no-mistakes on" ] || fail "a trailing +yolo was lost beside a declaration (got '$out')"
+
+  for project in proseonly legacy bareentry unregistered; do
+    out=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch "$project" 2>/dev/null)
+    [ -z "$out" ] || fail "$project reported an integration branch it never declares (got '$out')"
+  done
+  out=$(FM_HOME="$home" "$PROJECT_MODE" legacy 2>/dev/null)
+  [ "$out" = "no-mistakes on" ] || fail "an undeclared entry lost its posture (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch badbranch 2>/dev/null) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "an invalid branch name resolved successfully (got '$out')"
+  [ -z "$out" ] || fail "an invalid branch name was handed on as a ref (got '$out')"
+  err=$(FM_HOME="$home" "$PROJECT_MODE" --integration-branch badbranch 2>&1 >/dev/null || true)
+  assert_contains "$err" "invalid integration branch" "an invalid declared branch failed without saying why"
+
+  # The shared resolver must propagate that failure instead of reporting "no
+  # declaration", which would silently base the clone and every task copy on the
+  # remote default - the exact drift the declaration exists to stop.
+  out=$(FM_HOME="$home" bash -c '. "$1"; declared_integration_branch badbranch' _ \
+    "$ROOT/bin/fm-integration-branch-lib.sh" 2>/dev/null) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "the shared resolver swallowed an invalid declaration (got '$out')"
+  out=$(FM_HOME="$home" bash -c '. "$1"; integration_branch "$2" badbranch' _ \
+    "$ROOT/bin/fm-integration-branch-lib.sh" "$ROOT" 2>/dev/null) && status=0 || status=$?
+  [ "$status" -ne 0 ] || fail "the shared resolver fell back to a default branch (got '$out')"
+  out=$(FM_HOME="$home" bash -c '. "$1"; integration_branch "$2" declared' _ \
+    "$ROOT/bin/fm-integration-branch-lib.sh" "$ROOT") \
+    || fail "the shared resolver failed on a valid declaration"
+  [ "$out" = develop ] || fail "the shared resolver did not return the declaration (got '$out')"
+
+  out=$(FM_HOME="$TMP_ROOT/integration-branch/absent" "$PROJECT_MODE" --integration-branch declared 2>&1)
+  [ -z "$out" ] || fail "a home with no registry reported an integration branch (got '$out')"
+  pass "fm-project-mode: --integration-branch reads only the structured annotation"
+}
+
 # Spawn and promotion refuse leftover Task-subsection placeholders through the
 # public brief/spawn/promote path. Filling both subsections lets the spawn
 # delivery checks proceed (the fake tmux still fails later).
@@ -800,5 +866,6 @@ test_promote_requires_and_records_the_delivery_contract
 test_promote_refuses_a_symlinked_task_record
 test_promotion_delivers_the_real_definition_of_done
 test_project_mode_maps_the_conditional_policy
+test_project_mode_reads_only_the_structured_integration_branch
 test_spawn_and_promote_require_filled_task_subsections
 echo "# all fm-task-delivery tests passed"

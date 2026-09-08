@@ -12,6 +12,11 @@
 # The pre-existing fast-forward / already-current / local-only / no-origin paths
 # must be unchanged, and bootstrap must relay the new outcomes as FLEET_SYNC lines.
 #
+# It also pins registered integration branches: a project may integrate on
+# develop even when origin/HEAD is main, while legacy entries retain the remote
+# default branch. Dirty, divergent, and fast-forward integration clones remain
+# untouched or advance only on the declared branch.
+#
 # It also pins the clone-root guard: a plain directory under projects/ resolves,
 # through git's upward repository discovery, to the ENCLOSING repository - in a
 # firstmate home, the firstmate checkout itself - so it must be skipped by name
@@ -85,6 +90,45 @@ advance_origin() {
   work="$home/work-$name"
   commit_file "$work" file.txt "$msg" "$msg"
   git -C "$work" push -q origin main
+}
+
+# build_integration_pair: origin/HEAD remains main, but the project declares and
+# checks out develop as its integration branch.
+build_integration_pair() {
+  local home=$1 name=$2 work remote clone remote_abs
+  work="$home/work-$name"
+  remote="$home/remotes/$name.git"
+  clone="$home/projects/$name"
+  mkdir -p "$home/remotes"
+
+  git init -q "$work"
+  git -C "$work" symbolic-ref HEAD refs/heads/main
+  commit_file "$work" file.txt v0 C0
+  git -C "$work" branch develop
+  git clone --quiet --bare "$work" "$remote"
+  remote_abs=$(cd "$remote" && pwd)
+  git -C "$work" remote add origin "file://$remote_abs"
+  git -C "$work" push -q -u origin main develop
+
+  git clone --quiet "file://$remote_abs" "$clone"
+  git -C "$clone" branch --track develop origin/develop >/dev/null
+  git -C "$clone" checkout --quiet develop
+  printf '%s\n' "$clone"
+}
+
+advance_integration_origin() {
+  local home=$1 name=$2 msg=$3 work
+  work="$home/work-$name"
+  git -C "$work" checkout --quiet develop
+  commit_file "$work" file.txt "$msg" "$msg"
+  git -C "$work" push -q origin develop
+}
+
+declare_integration_branch() {
+  local home=$1 name=$2
+  mkdir -p "$home/data"
+  printf -- '- %s [no-mistakes integration-branch=develop] - integration fixture (added 2026-09-01)\n' \
+    "$name" > "$home/data/projects.md"
 }
 
 head_sha() { git -C "$1" rev-parse HEAD; }
@@ -235,6 +279,128 @@ run_sync_guarded() {
 }
 
 # --- tests ------------------------------------------------------------------
+
+test_declared_integration_branch_overrides_remote_default() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_integration_pair "$home" integration)
+  declare_integration_branch "$home" integration
+  # Advance both refs so a sync that incorrectly follows origin/HEAD=main is
+  # observably wrong even if it happens to fetch the remote.
+  git -C "$home/work-integration" checkout --quiet main
+  commit_file "$home/work-integration" main.txt main1 "main1"
+  git -C "$home/work-integration" push -q origin main
+  advance_integration_origin "$home" integration develop1
+
+  out=$(run_sync "$home" integration)
+
+  assert_contains "$out" "integration: synced" "declared integration branch did not sync"
+  assert_contains "$out" "origin/develop" "declared branch is absent from the outcome"
+  assert_not_contains "$out" "origin/main" "declared branch was evaluated against origin/main"
+  [ "$(git -C "$clone" rev-parse HEAD)" = "$(git -C "$clone" rev-parse origin/develop)" ] \
+    || fail "declared integration branch did not advance to origin/develop"
+  [ "$(git -C "$clone" rev-parse HEAD)" != "$(git -C "$clone" rev-parse origin/main)" ] \
+    || fail "fixture did not keep integration and remote-default refs distinct"
+  [ "$(git -C "$clone" symbolic-ref --short refs/remotes/origin/HEAD)" = "origin/main" ] \
+    || fail "fixture origin/HEAD no longer points to main"
+  pass "declared integration branch governs fetch, comparison, and fast-forward despite origin/HEAD=main"
+}
+
+test_legacy_registry_entry_uses_remote_default() {
+  local home clone out
+  home=$(new_home)
+  clone=$(build_pair "$home" legacy)
+  advance_origin "$home" legacy C1
+
+  out=$(run_sync "$home" legacy)
+
+  assert_contains "$out" "legacy: synced" "legacy project did not sync"
+  assert_contains "$out" "origin/main" "legacy project did not name the remote default branch"
+  [ "$(git -C "$clone" rev-parse HEAD)" = "$(git -C "$clone" rev-parse origin/main)" ] \
+    || fail "legacy project did not retain its remote-default behavior"
+  pass "project without an integration declaration safely retains remote-default sync"
+}
+
+# A declaration the registry format rejects promises a base that cannot exist.
+# Degrading it to "no declaration" would silently resync the clone against
+# origin/main, so it is reported loudly on stdout - session-start relays this
+# script's stdout and discards its stderr.
+test_invalid_declared_integration_branch_is_stuck() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_integration_pair "$home" bad-integration)
+  mkdir -p "$home/data"
+  printf -- '- bad-integration [no-mistakes integration-branch=..bad] - fixture (added 2026-09-01)\n' \
+    > "$home/data/projects.md"
+  advance_integration_origin "$home" bad-integration develop1
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" bad-integration)
+
+  assert_contains "$out" "bad-integration: STUCK:" "an invalid declaration was not reported as needing attention"
+  assert_contains "$out" "invalid integration branch" "the STUCK line did not name the invalid declaration"
+  assert_not_contains "$out" "origin/main" "an invalid declaration fell back to the remote default"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "an invalid declaration still moved the clone"
+  pass "an invalid integration-branch declaration is reported STUCK, never resolved to the remote default"
+}
+
+# A declared branch origin stopped publishing (renamed or deleted on the forge)
+# would otherwise be a benign one-line skip on every sync forever, leaving the
+# clone silently un-refreshed.
+test_unpublished_declared_integration_branch_is_stuck() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_pair "$home" gone-integration)
+  declare_integration_branch "$home" gone-integration
+  advance_origin "$home" gone-integration C1
+  before=$(head_sha "$clone")
+
+  out=$(run_sync "$home" gone-integration)
+
+  assert_contains "$out" "gone-integration: STUCK:" "an unpublished declared branch was not reported as needing attention"
+  assert_contains "$out" "develop" "the STUCK line did not name the declared branch"
+  assert_not_contains "$out" "skipped:" "an unpublished declared branch degraded to a benign skip"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "an unpublished declared branch still moved the clone"
+  pass "a declared integration branch origin does not publish is reported STUCK, not skipped"
+}
+
+test_declared_integration_branch_dirty_is_stuck_untouched() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_integration_pair "$home" dirty-integration)
+  declare_integration_branch "$home" dirty-integration
+  advance_integration_origin "$home" dirty-integration develop1
+  before=$(head_sha "$clone")
+  printf 'uncommitted edit\n' >> "$clone/file.txt"
+
+  out=$(run_sync "$home" dirty-integration)
+
+  assert_contains "$out" "dirty-integration: STUCK:" "dirty declared branch did not report STUCK"
+  assert_contains "$out" "1 commits behind origin/develop" "dirty result did not name origin/develop"
+  assert_not_contains "$out" "origin/main" "dirty declared branch was evaluated against origin/main"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "dirty declared branch HEAD was moved"
+  grep -q 'uncommitted edit' "$clone/file.txt" || fail "dirty declared branch edit was discarded"
+  pass "dirty declared integration clone is quantified and left untouched"
+}
+
+test_declared_integration_branch_divergence_is_stuck_untouched() {
+  local home clone out before
+  home=$(new_home)
+  clone=$(build_integration_pair "$home" diverged-integration)
+  declare_integration_branch "$home" diverged-integration
+  commit_file "$clone" local.txt local "local divergent develop commit"
+  before=$(head_sha "$clone")
+  advance_integration_origin "$home" diverged-integration develop1
+
+  out=$(run_sync "$home" diverged-integration)
+
+  assert_contains "$out" "diverged-integration: STUCK:" "diverged declared branch did not report STUCK"
+  assert_contains "$out" "diverged develop" "divergence did not name the declared branch"
+  assert_contains "$out" "origin/develop" "divergence did not name the evaluated remote branch"
+  assert_not_contains "$out" "origin/main" "divergence was evaluated against origin/main"
+  [ "$(head_sha "$clone")" = "$before" ] || fail "diverged declared branch was moved"
+  pass "diverged declared integration clone is reported and left untouched"
+}
 
 test_detached_clean_ancestor_recovers() {
   local home clone out before after
@@ -694,6 +860,12 @@ test_non_signature_fetch_failure_is_not_retried() {
   pass "a non-packed-refs.lock fetch failure keeps today's behavior (no retry)"
 }
 
+test_declared_integration_branch_overrides_remote_default
+test_invalid_declared_integration_branch_is_stuck
+test_unpublished_declared_integration_branch_is_stuck
+test_legacy_registry_entry_uses_remote_default
+test_declared_integration_branch_dirty_is_stuck_untouched
+test_declared_integration_branch_divergence_is_stuck_untouched
 test_detached_clean_ancestor_recovers
 test_detached_unique_commit_is_stuck_untouched
 test_detached_clean_ancestor_with_diverged_local_default_is_stuck_untouched
