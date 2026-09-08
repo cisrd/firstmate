@@ -298,8 +298,11 @@ last_nonempty_line() {  # <file>
 # snapshot without limit. Remote secondmate endpoint liveness is never read here.
 # A local read that hits the bound folds to state unknown.
 # Snapshot overrides live only in this child env: they are never exported in
-# this process, and an absent or foreign captured path is omitted rather than
-# passed as an empty override that would make every later worker look missing.
+# this process, so a captured path reaches exactly the one task it was captured
+# for and nothing survives into a later read. Whether a captured path is
+# acceptable is fm-crew-state.sh's own call (fm_crew_state_apply_override): it
+# refuses an absent, symlinked, or foreign path for every caller, and its
+# refusal line parses into this function's JSON like any other verdict.
 crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
   local id=$1 captured_meta=${2:-} captured_status=${3:-} raw rest state source detail sep
   local -a crew_env
@@ -311,23 +314,11 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
     FM_PROJECTS_OVERRIDE="$PROJECTS"
     FM_CONFIG_OVERRIDE="$CONFIG"
   )
-  if [ -n "$captured_meta" ] && [ -f "$captured_meta" ] && [ ! -L "$captured_meta" ] \
-    && [ "$(basename "$captured_meta")" = "$id.meta" ]; then
+  if [ -n "$captured_meta" ]; then
     crew_env+=(FM_CREW_STATE_META_OVERRIDE="$captured_meta")
-  elif [ -n "$captured_meta" ]; then
-    jq -n --arg raw '' --arg state unknown --arg source none \
-      --arg detail "snapshot override path missing or belongs to another task ($id.meta)" \
-      '{state:$state,source:$source,detail:$detail,raw:$raw}'
-    return 0
   fi
-  if [ -n "$captured_status" ] && [ -f "$captured_status" ] && [ ! -L "$captured_status" ] \
-    && [ "$(basename "$captured_status")" = "$id.status" ]; then
+  if [ -n "$captured_status" ]; then
     crew_env+=(FM_CREW_STATE_STATUS_OVERRIDE="$captured_status")
-  elif [ -n "$captured_status" ]; then
-    jq -n --arg raw '' --arg state unknown --arg source none \
-      --arg detail "snapshot override path missing or belongs to another task ($id.status)" \
-      '{state:$state,source:$source,detail:$detail,raw:$raw}'
-    return 0
   fi
   raw=$(
     fm_run_timed "$FM_SNAPSHOT_CREW_STATE_TIMEOUT" \

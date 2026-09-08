@@ -1885,6 +1885,24 @@ test_snapshot_override_refuses_empty_and_foreign_paths() {
   assert_contains "$out" "snapshot override belongs to another task (beta.meta)" \
     "a captured path for another task must be refused"
 
+  # A capture that was never taken (the snapshot's temp dir has no file for
+  # this task) is refused as a path, not read as a torn-down worker.
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$d/captures/beta.meta" "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override path missing for beta.meta" \
+    "a captured path that does not exist must be refused"
+  assert_not_contains "$out" "no metadata for beta" \
+    "a missing capture must not look like every worker is missing"
+
+  # A symlink named like this task's capture is refused: the snapshot only ever
+  # hands over regular files it copied itself, so a link is not its capture.
+  mkdir -p "$d/captures"
+  ln -s "$b_meta" "$d/captures/beta.meta"
+  out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
+    FM_CREW_STATE_META_OVERRIDE="$d/captures/beta.meta" "$CREW_STATE" beta)
+  assert_contains "$out" "snapshot override path missing for beta.meta" \
+    "a symlinked capture must be refused even when it resolves to this task"
+
   out=$(PATH="$d/fakebin:$PATH" FM_STATE_OVERRIDE="$d/state" \
     FM_CREW_STATE_META_OVERRIDE="$b_meta" "$CREW_STATE" beta)
   assert_contains "$out" "state:" "a matching captured meta path must still resolve"
