@@ -1583,27 +1583,20 @@ assert len(doc["scripts"])==3
 }
 
 # Prove the Ruby capability skip through this executable test interface rather
-# than inspecting the implementation text.
+# than inspecting the implementation text. The subshell empties PATH so no host
+# can supply Ruby anyway, and clears bash's command hash, which a subshell
+# inherits and which would otherwise still resolve a Ruby found earlier.
 test_yaml_assertion_skips_when_ruby_is_absent() {
-  local tmp out rc
-  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-ruby-skip.XXXXXX")
+  local out rc
   set +e
-  PATH=/usr/bin:/bin FM_TEST_ONLY=test_herdr_ci_family_run_has_a_step_timeout \
-    "$BASH" "${BASH_SOURCE[0]}" >"$tmp/out" 2>"$tmp/err"
+  out=$(hash -r; PATH=; test_herdr_ci_family_run_has_a_step_timeout 2>&1)
   rc=$?
   set -e
-  out=$(cat "$tmp/out" "$tmp/err")
-  [ "$rc" -eq 0 ] || { rm -rf "$tmp"; fail "the executable test must skip cleanly without Ruby: $out"; }
+  [ "$rc" -eq 0 ] || fail "the executable test must skip cleanly without Ruby: $out"
   printf '%s\n' "$out" | grep -Fq 'skip: ruby absent; YAML assertion not run' \
-    || { rm -rf "$tmp"; fail "the missing Ruby dependency was not declared: $out"; }
-  rm -rf "$tmp"
+    || fail "the missing Ruby dependency was not declared: $out"
   pass "the executable YAML test declares its Ruby dependency when Ruby is absent"
 }
-
-if [ -n "${FM_TEST_ONLY:-}" ]; then
-  "$FM_TEST_ONLY"
-  exit 0
-fi
 
 test_yaml_assertion_skips_when_ruby_is_absent
 test_list_all_exact_suite_coverage
