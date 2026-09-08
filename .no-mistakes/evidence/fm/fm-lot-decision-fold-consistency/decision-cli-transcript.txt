@@ -1,0 +1,41 @@
+CLI demonstration: real fm-send and fm-wake-drain, isolated home; tmux transport stubbed.
+
+$ fm-wake-drain (before answer)
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+t1 [key=secret-abc] blocked: secret-held: choose deployment window
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+$ fm-send t1 --resolve-key secret-abc "deploy Saturday"
+
+Persisted status ledger:
+blocked: [key=secret-abc] secret-held: choose deployment window
+resolved [key=secret-abc]: secret-resolved: answered: deploy Saturday
+
+Delivered inbox body:
+deploy Saturday
+$ fm-wake-drain (after answer)
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+t1 resolved [key=secret-abc]: secret-resolved: answered: deploy Saturday
+
+Full replay of persisted status ledger:
+(no open decisions)
+
+$ fm-wake-drain (after unofficial reserved-key resolution)
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+t1 resolved [key=pending-reply-abcdef0123456789]: manually dismissed
+OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):
+t1 [key=pending-reply-abcdef0123456789] blocked: pending-reply-missed: task=t1 request=ship it
+OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'
+
+Classification of only the rejected close (previous opener already read):
+event=292	strong:65028:12103148:2026-09-08 18:51:37.270500600 +0200	reconciliation-required: resolved [key=pending-reply-abcdef0123456789]: manually dismissed
+needs-decision=1
+
+$ fm-send t1 --resolve-key pending-reply-abcdef0123456789 "confirmed dismissal"
+
+$ fm-wake-drain (after official reserved-key resolution)
+UNREAD STATUS (new since last drain, not re-printed after this presentation):
+t1 resolved [key=pending-reply-abcdef0123456789]: pending-reply-resolved: answered: confirmed dismissal
+
+Full replay:
+(no open decisions)

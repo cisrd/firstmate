@@ -1,0 +1,8 @@
+
+base: classification of a rejected manual reserved-key resolution
+actionable exit=1; decision-owned=0
+event=150	strong:65028:12103132:2026-09-08 18:52:56.607686186 +0200
+
+target: classification of a rejected manual reserved-key resolution
+actionable exit=0; decision-owned=1
+event=150	strong:65028:12103132:2026-09-08 18:52:56.607686186 +0200	reconciliation-required: resolved [key=pending-reply-abcdef0123456789]: manually dismissed
