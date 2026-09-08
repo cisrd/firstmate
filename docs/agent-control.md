@@ -63,9 +63,7 @@ It is not deterministic across the verified adapters: codex, grok, and gemini re
    A harness change resets model and effort unless they are named too, because a model chosen for one adapter does not transfer to another.
 2. **Safe checkpoint.**
    The recorded worktree must exist and be a worktree root; its head and dirty state are recorded.
-   The live shell must occupy that worktree.
-   Verification uses the backend's current-path read (Herdr: foreground cwd, not the frozen launch directory).
-   An unverifiable or mismatched live cwd refuses before the agent is stopped.
+   Live occupancy must pass the [fail-closed boundaries](#fail-closed-boundaries) below.
    For a `kind=secondmate` task, the home's identity marker must match and its child records must be readable, so a relaunch can never strand child work behind an unreadable home.
    A secondmate's own crewmates run in their own endpoints and outlive its relaunch; the relaunched secondmate reconciles them from its home's durable records at startup.
 3. **Record the note.**
