@@ -33,6 +33,10 @@
 #                                                        - a clean cycle ended with no wake, no
 #                                                          verified healthy successor, and no
 #                                                          successor this arm could start
+#   watcher: FAILED - cycle ended without an actionable reason after N successor retries
+#                                                        - every successor of a clean empty close
+#                                                          closed clean and empty too, up to the
+#                                                          bounded retry budget
 # It NEVER reports started/attached/healthy off a stale beacon or a dead/reused pid: a
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
@@ -42,9 +46,12 @@
 # watcher's identity-bound delivery record: a matching record reports that wake
 # and exits 0. A clean empty close with no delivery record starts exactly one
 # successor watcher and attaches to it rather than failing or leaving the fleet
-# unsupervised; it never starts a second concurrent loop. Only a cycle that
-# delivered nothing AND could not attach or start a successor is the typed
-# nonzero failure. Neither is ever a silent empty completion. On FAILED it exits
+# unsupervised; it never starts a second concurrent loop. That retry is bounded:
+# consecutive clean empty closes are retried a fixed number of times with
+# exponential backoff, and the streak resets as soon as a cycle delivers a wake or
+# a verified successor keeps supervising. A cycle that delivered nothing AND could
+# not attach or start a successor, and an exhausted retry budget, are both the
+# typed nonzero failure. Neither is ever a silent empty completion. On FAILED it exits
 # non-zero so the failure is loud. A live cycle already present means re-arm
 # attaches - do not start a second watcher.
 #
@@ -274,9 +281,33 @@ wait_for_healthy_successor() {
 }
 
 fail_unexplained_cycle() {
-  echo "watcher: FAILED - cycle ended without an actionable reason"
+  local detail=${1:-}
+  echo "watcher: FAILED - cycle ended without an actionable reason${detail:+ $detail}"
   return 1
 }
+
+# A clean empty close is not a failure, but an unbroken run of them is. The arm
+# retries a successor this many times, waiting CLEAN_EMPTY_BACKOFF[n] before the
+# nth consecutive attempt, then fails loudly instead of replacing watchers
+# forever. Only consecutive clean empty cycles count: any delivered wake or
+# verified continuing successor resets the streak.
+CLEAN_EMPTY_RETRIES=5
+CLEAN_EMPTY_BACKOFF="0.25 0.5 1 2 4"
+
+clean_empty_backoff() {  # <attempt>
+  local attempt=$1 i=0 delay
+  for delay in $CLEAN_EMPTY_BACKOFF; do
+    i=$((i + 1))
+    [ "$i" -eq "$attempt" ] && { printf '%s' "$delay"; return 0; }
+  done
+  printf '%s' "$delay"
+}
+
+# Set by attach_and_wait and spawn_clean_exit_successor to hand the next step
+# back to supervise() instead of calling each other. Alternating between the two
+# is a loop in one frame, so a persistently empty cycle cannot grow the stack.
+ARM_NEXT=
+ARM_ATTACH_PID=
 
 # An attached arm can become the owner of a replacement child after a clean
 # empty cycle. Install the owning signal handler as soon as that child starts,
@@ -315,7 +346,7 @@ install_arm_signal_traps() {
 # is attached instead of forking a second loop. A successor that never becomes
 # healthy, or that exits before the confirmation window, is a failed handoff.
 spawn_clean_exit_successor() {
-  local successor successor_out deadline started_at now rc
+  local successor successor_out deadline started_at rc
   # Every caller has already exhausted the bounded successor wait for the
   # cycle that just closed. Recheck once for a winner of that final race, then
   # start the replacement immediately rather than spending a second full
@@ -325,8 +356,9 @@ spawn_clean_exit_successor() {
     cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
     report_attached
     cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
-    attach_and_wait "$HEALTHY_PID"
-    return $?
+    ARM_ATTACH_PID=$HEALTHY_PID
+    ARM_NEXT=attach
+    return 0
   fi
   successor_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || return 1
   # This child replaces a cycle this same tracked arm already observed. It is
@@ -348,16 +380,6 @@ spawn_clean_exit_successor() {
         echo "watcher: started pid=$successor (beacon fresh)"
         wait "$successor"
         rc=$?
-        now=$(date +%s)
-        if [ "$rc" -eq 0 ] && [ $((now - started_at)) -lt 2 ] \
-          && ! watch_output_has_wake "$successor_out"; then
-          print_watch_output "$successor_out"
-          rm -f "$successor_out" 2>/dev/null || true
-          child=
-          child_out=
-          cycle_log_append "$rc" none successor-immediate-clean-exit none
-          return 1
-        fi
         if [ "$rc" -eq 0 ] && watch_output_has_wake "$successor_out"; then
           cycle_log_append "$rc" none "$(watch_output_reason_type "$successor_out")" none
           print_watch_output "$successor_out"
@@ -375,8 +397,9 @@ spawn_clean_exit_successor() {
             cycle_log_append "$rc" none clean-exit-delivered-wake none
             return 0
           fi
-          spawn_clean_exit_successor
-          return $?
+          cycle_log_append "$rc" none unexpected-clean-exit none
+          ARM_NEXT=clean-empty
+          return 0
         fi
         cycle_log_append "$rc" "$(cycle_signal_name "$rc")" successor-nonzero-exit none
         print_watch_output "$successor_out"
@@ -393,8 +416,9 @@ spawn_clean_exit_successor() {
       cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
       report_attached
       cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
-      attach_and_wait "$HEALTHY_PID"
-      return $?
+      ARM_ATTACH_PID=$HEALTHY_PID
+      ARM_NEXT=attach
+      return 0
     fi
     if ! fm_pid_alive "$successor"; then
       wait "$successor" 2>/dev/null || true
@@ -468,18 +492,51 @@ attach_and_wait() {
       attached_pid=$HEALTHY_PID
       cycle_begin "$attached_pid" attached "$HEALTHY_IDENTITY"
       report_attached
+      clean_empty_streak=0
       continue
     fi
     if close_unobserved_cycle; then
       cycle_log_append unknown unknown attached-delivered-wake none
       return 0
     fi
-    if spawn_clean_exit_successor; then
-      return 0
-    fi
     cycle_log_append unknown unknown attached-cycle-ended none
-    fail_unexplained_cycle
+    ARM_NEXT=clean-empty
     return 1
+  done
+}
+
+# The arm's whole post-confirmation life: follow a healthy holder, and answer a
+# clean empty close with a bounded, backed-off run of replacement watchers. Both
+# steps return here rather than invoking one another.
+clean_empty_streak=0
+supervise() {  # <attach <pid> | clean-empty>
+  local action=$1 rc
+  ARM_ATTACH_PID=${2:-}
+  clean_empty_streak=0
+  while :; do
+    ARM_NEXT=
+    if [ "$action" = attach ]; then
+      attach_and_wait "$ARM_ATTACH_PID"
+      rc=$?
+    else
+      clean_empty_streak=$((clean_empty_streak + 1))
+      if [ "$clean_empty_streak" -gt "$CLEAN_EMPTY_RETRIES" ]; then
+        fail_unexplained_cycle "after $CLEAN_EMPTY_RETRIES successor retries"
+        return 1
+      fi
+      sleep "$(clean_empty_backoff "$clean_empty_streak")"
+      spawn_clean_exit_successor
+      rc=$?
+    fi
+    case "$ARM_NEXT" in
+      attach) action=attach; clean_empty_streak=0 ;;
+      clean-empty) action=clean-empty ;;
+      *)
+        [ "$rc" -eq 0 ] && return 0
+        fail_unexplained_cycle
+        return 1
+        ;;
+    esac
   done
 }
 
@@ -583,7 +640,7 @@ if [ "$mode" = arm ] && healthy_watcher; then
   cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
   cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
   report_attached
-  attach_and_wait "$HEALTHY_PID"
+  supervise attach "$HEALTHY_PID"
   exit $?
 fi
 
@@ -628,7 +685,7 @@ owned_child_finished() {
       cycle_mark_predecessor_successor "attached:$HEALTHY_PID"
       report_attached
       cycle_begin "$HEALTHY_PID" attached "$HEALTHY_IDENTITY"
-      attach_and_wait "$HEALTHY_PID"
+      supervise attach "$HEALTHY_PID"
       return $?
     fi
     print_watch_output "$child_out"
@@ -639,12 +696,9 @@ owned_child_finished() {
       cycle_log_append "$rc" "$signal" clean-exit-delivered-wake none
       return 0
     fi
-    if spawn_clean_exit_successor; then
-      return 0
-    fi
     cycle_log_append "$rc" "$signal" unexpected-clean-exit none
-    fail_unexplained_cycle
-    return 1
+    supervise clean-empty
+    return $?
   fi
 
   reason_type="nonzero-exit"

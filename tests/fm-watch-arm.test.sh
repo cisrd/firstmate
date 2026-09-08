@@ -299,6 +299,107 @@ test_clean_exit_without_event_starts_a_successor() {
   pass "watch-arm: a clean empty close starts one owned successor instead of failing"
 }
 
+# A cycle that always closes clean and empty must not be answered with an
+# endless run of replacement watchers. The arm retries a bounded number of
+# successors, spaced by the documented exponential backoff, and then fails
+# loudly - rather than recursing one shell frame deeper per empty cycle and
+# never reporting anything.
+test_persistent_clean_empty_cycles_are_bounded_and_loud() {
+  local dir state fakebin armout starts clobber_pid dead status i seen count
+  local started total leftover t2 t3 t4 t5 t6
+  dir=$(make_case clean-exit-retry-bound)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  armout="$dir/arm.out"
+  starts="$dir/started-at"
+  : > "$armout"
+  : > "$starts"
+  dead=$(dead_pid)
+
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_ARM_ATTACH_POLL=0.1 \
+    FM_ARM_CONFIRM_TIMEOUT=5 FM_POLL=0.2 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
+  ARM_PID=$!
+
+  # Hand the singleton lock to a dead pid once each confirmed watcher has run a
+  # normal-length cycle. That watcher self-evicts and closes cleanly with no
+  # wake, so EVERY cycle this arm owns is a clean empty one - and each lasts long
+  # enough to be an ordinary cycle rather than an obvious start-up flap, which is
+  # exactly the condition an unbounded successor loop would ride forever.
+  (
+    seen=0
+    while :; do
+      count=$(grep -c '^watcher: started pid=' "$armout" 2>/dev/null || true)
+      case "$count" in ''|*[!0-9]*) count=0 ;; esac
+      if [ "$count" -gt "$seen" ]; then
+        started=$(sed -n 's/^watcher: started pid=\([0-9][0-9]*\).*/\1/p' "$armout" | tail -1)
+        sleep 2.5
+        if [ -n "$started" ] \
+          && [ "$(cat "$state/.watch.lock/pid" 2>/dev/null || true)" = "$started" ]; then
+          printf '%s\n' "$dead" > "$state/.watch.lock/pid"
+          seen=$count
+        fi
+      fi
+      sleep 0.05
+    done
+  ) &
+  clobber_pid=$!
+
+  # Stamp the wall-clock second each reported watcher appears, so the spacing
+  # between successive successors can be checked against the backoff schedule.
+  seen=0
+  i=0
+  while [ "$i" -lt 1500 ]; do
+    count=$(grep -c '^watcher: started pid=' "$armout" 2>/dev/null || true)
+    case "$count" in ''|*[!0-9]*) count=0 ;; esac
+    while [ "$seen" -lt "$count" ]; do
+      date +%s >> "$starts"
+      seen=$((seen + 1))
+    done
+    is_live_non_zombie "$ARM_PID" || break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  wait_for_exit "$ARM_PID" 100
+  status=$?
+  kill -TERM "$clobber_pid" 2>/dev/null || true
+  wait "$clobber_pid" 2>/dev/null || true
+
+  [ "$status" -ne 0 ] && [ "$status" -ne 124 ] \
+    || fail "an endlessly empty cycle did not fail loudly (status $status): $(cat "$armout")"
+  grep -qF 'watcher: FAILED - cycle ended without an actionable reason after 5 successor retries' "$armout" \
+    || fail "exhausted clean-empty retries omitted the typed failure: $(cat "$armout")"
+
+  # One owned child plus exactly five bounded successor retries.
+  total=$(grep -c '^watcher: started pid=' "$armout" 2>/dev/null || true)
+  [ "$total" -eq 6 ] \
+    || fail "clean empty closes were not bounded to 5 successor retries (started $total watchers): $(cat "$armout")"
+
+  t2=$(sed -n 2p "$starts")
+  t3=$(sed -n 3p "$starts")
+  t4=$(sed -n 4p "$starts")
+  t5=$(sed -n 5p "$starts")
+  t6=$(sed -n 6p "$starts")
+  [ -n "$t2" ] && [ -n "$t6" ] || fail "did not observe every successor start: $(cat "$starts")"
+  # Every cycle costs the same ~2.5s dwell, so only a growing backoff can push
+  # these gaps apart: 1s, 2s and 4s before the third, fourth and fifth retry.
+  [ $((t4 - t3)) -ge 3 ] \
+    || fail "the third successor retry did not wait its 1s backoff (gap $((t4 - t3))s)"
+  [ $((t5 - t4)) -ge 4 ] \
+    || fail "the fourth successor retry did not wait its 2s backoff (gap $((t5 - t4))s)"
+  [ $((t6 - t5)) -ge 6 ] \
+    || fail "the fifth successor retry did not wait its 4s backoff (gap $((t6 - t5))s)"
+  [ $((t6 - t2)) -ge 15 ] \
+    || fail "the retry backoff did not grow across the streak (span $((t6 - t2))s)"
+
+  leftover=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  if [ -n "$leftover" ] && [ "$leftover" != "$dead" ] && is_live_non_zombie "$leftover"; then
+    kill -TERM "$leftover" 2>/dev/null || true
+    fail "the exhausted arm left a watcher running"
+  fi
+  pass "watch-arm: endlessly empty cycles retry a bounded, backed-off successor run and then fail loudly"
+}
+
 test_unrelated_queue_does_not_spoof_delivery_or_block_successor() {
   local dir state fakebin out armout successor_pid i
   dir=$(make_case attached-no-delivery)
@@ -895,6 +996,7 @@ test_downtime_marker_does_not_follow_symlink() {
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_clean_exit_without_event_starts_a_successor
+test_persistent_clean_empty_cycles_are_bounded_and_loud
 test_unrelated_queue_does_not_spoof_delivery_or_block_successor
 test_rearm_resurfaces_durable_queue_and_remote_open_decision
 test_marker_publish_failure_retains_recovery_evidence

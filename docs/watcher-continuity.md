@@ -102,7 +102,8 @@ Before releasing its singleton lock after printing an actionable reason, the wat
 A matching PID and identity lets an attached arm report the delivered reason and exit zero even after its durable wake was handled and acknowledged, while an unrelated queue producer or a recycled PID cannot satisfy the match.
 A clean close with no matching delivery record starts exactly one successor watcher and attaches to it rather than declaring failure or leaving the fleet unsupervised.
 It never starts a second concurrent loop: a live healthy holder is attached instead of forked.
-Only a cycle that delivered nothing and could not attach or start a successor emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero.
+That replacement is bounded: consecutive clean empty closes are answered with at most five successors, waited 250ms, 500ms, 1s, 2s and 4s apart, and the streak resets as soon as a cycle delivers a wake or a verified successor keeps supervising.
+Only a cycle that delivered nothing and could not attach or start a successor emits `watcher: FAILED - cycle ended without an actionable reason` and exits nonzero; an exhausted retry budget emits the same typed failure with an `after 5 successor retries` suffix.
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.
