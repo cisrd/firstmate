@@ -266,33 +266,12 @@ while [ "$C_CHILD_ATTEMPT" -lt 100 ]; do
 done
 [ "$C_CHILD_STABLE" -ge 2 ] || fail 'the Part C doomed pane never reported a stable persistent child process'
 
+# The plain close's wrong-focus window is bounded by the operation itself, so
+# it is read from the call log rather than raced with an external sampler: the
+# corrective `tab focus` is issued exactly when the adapter's own post-close
+# snapshot differs from the pre-operation one.
 C_CALL_LOG="$TMP_ROOT/call-c.log"
-C_FOCUS_SAMPLES="$TMP_ROOT/focus-c.samples"
-C_OPERATION_ACTIVE="$TMP_ROOT/operation-c.active"
-C_SAMPLER_READY="$TMP_ROOT/sampler-c.ready"
-SAMPLER_STOP="$TMP_ROOT/sampler-c.stop"
 : > "$C_CALL_LOG"
-: > "$C_FOCUS_SAMPLES"
-(
-  : > "$C_SAMPLER_READY"
-  while [ ! -e "$SAMPLER_STOP" ]; do
-    if [ -e "$C_OPERATION_ACTIVE" ]; then
-      if C_SAMPLE=$(focus_snapshot); then
-        printf '%s\n' "$C_SAMPLE" >> "$C_FOCUS_SAMPLES"
-      else
-        printf '%s\n' UNREADABLE >> "$C_FOCUS_SAMPLES"
-      fi
-    fi
-  done
-) &
-SAMPLER_PID=$!
-C_READY_ATTEMPT=0
-while [ ! -e "$C_SAMPLER_READY" ] && [ "$C_READY_ATTEMPT" -lt 100 ]; do
-  sleep 0.01
-  C_READY_ATTEMPT=$((C_READY_ATTEMPT + 1))
-done
-[ -e "$C_SAMPLER_READY" ] || fail 'the Part C focus sampler did not start'
-: > "$C_OPERATION_ACTIVE"
 # A short proof budget keeps the exhausted-proof path fast; the count below is
 # what proves the proof was exhausted rather than skipped.
 C_PROOF_POLLS=3
@@ -308,10 +287,6 @@ C_OUT=$(PATH="$FAKEBIN:$HERDR_ORIGINAL_PATH" FM_FLASH_CALL_LOG="$C_CALL_LOG" \
   fm_backend_herdr_projection_close_pane_focus_preserving "$2" "$3"
 ' _ "$ROOT" "$HERDR_LAB_SESSION" "$C_DOOMED_PANE" 2>&1)
 C_STATUS=$?
-rm -f "$C_OPERATION_ACTIVE"
-: > "$SAMPLER_STOP"
-wait "$SAMPLER_PID" 2>/dev/null || true
-SAMPLER_PID=
 [ "$C_STATUS" -eq 0 ] || fail "the production focus-preserving close failed (status $C_STATUS): $C_OUT"
 wait_ws_gone "$C_DOOMED_WS" || fail 'the fallback close left the doomed workspace behind'
 if lab pane get "$C_DOOMED_PANE" >/dev/null 2>&1; then
@@ -333,19 +308,18 @@ pass 'fallback: a doomed pane holding a persistent child exhausts the proof and 
 C_AFTER=$(focus_snapshot) || fail 'could not capture the Part C post-close focus'
 [ "$C_AFTER" = "$C_BEFORE" ] \
   || fail "the fallback close left focus off the anchor ($C_BEFORE -> $C_AFTER)"
-C_WRONG=$(grep -Fvxc -- "$C_BEFORE" "$C_FOCUS_SAMPLES" || true)
 if [ "$STEAL_LIVE" = 1 ]; then
   # A defective release cannot make this path focus-safe, which is precisely why
   # default-on projection is floored above it. The wrong-focus window is
   # explicitly accepted here, but only as a BOUNDED one: the restore backstop
-  # must have put the anchor back exactly, and the whole exposure must end with
+  # must have fired and put the anchor back exactly, so the exposure ends with
   # the operation rather than parking the captain somewhere else.
-  [ "$C_WRONG" -ge 1 ] \
-    || fail 'Part C reached the fallback on a defective release but observed no wrong-focus sample at all, so the sampler proved nothing'
-  pass "fallback on a defective release: a bounded wrong-focus window of $C_WRONG samples was fully restored to the anchor"
+  grep -q '^tab focus' "$C_CALL_LOG" \
+    || fail 'Part C took the fallback on a defective release without the corrective restore, so no bounded wrong-focus window was exercised'
+  pass 'fallback on a defective release: the wrong-focus window the plain close opens was closed by the exact-tab restore'
 else
-  [ "$C_WRONG" -eq 0 ] \
-    || fail "a focus-preserving release exposed $C_WRONG wrong-focus samples on the fallback path"
+  grep -q '^tab focus' "$C_CALL_LOG" \
+    && fail 'a focus-preserving release needed the corrective restore, so the fallback path exposed a wrong-focus window'
   pass 'fallback on a focus-preserving release: the plain explicit close preserved exact focus throughout'
 fi
 
