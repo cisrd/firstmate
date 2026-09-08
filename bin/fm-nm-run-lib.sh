@@ -131,8 +131,12 @@ fm_nm_run_is_pipeline_owned_active() {  # <toon-output>
 # --limit N` listing (plain text, no run id, no quoting, newest-first, columns
 # "<status> <branch> <short-sha> <date> [<pr-url>]"; the `axi` surface has no
 # runs-listing subcommand - verified against the installed CLI). Prints the
-# status word of the branch's CURRENT run row, or nothing when the ledger
-# cannot prove attribution. When optional expected head $4 is supplied, its
+# branch's CURRENT run row as "<status>[ <pr-url>]" - the status word alone
+# when the row carries no PR column - or nothing when the ledger cannot prove
+# attribution. Callers that only want the word read the first field. The PR
+# column is carried because it is the ledger's ONLY positive evidence that a
+# row's run actually pushed a branch and opened a PR, which no status word can
+# establish on its own. When optional expected head $4 is supplied, its
 # abbreviated commit identity must match the newest row. The branch's NEWEST
 # row alone decides; older rows are history and never answer for the present:
 #   - newest row's head resolves and matches the worktree (fm_nm_head_matches_worktree):
@@ -205,7 +209,11 @@ fm_nm_runs_status_for_worktree() {  # <worktree> <branch> <runs-list-output> [ex
     fi
     if [ -n "$(fm_nm_resolve_commit "$wt" "$sha")" ]; then
       if fm_nm_head_matches_worktree "$wt" "$sha"; then
-        printf '%s' "$st"
+        if [ -n "$pr" ]; then
+          printf '%s %s' "$st" "$pr"
+        else
+          printf '%s' "$st"
+        fi
       fi
       return 0
     fi

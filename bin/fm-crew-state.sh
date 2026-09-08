@@ -60,7 +60,18 @@
 #      coarse runs-ledger fallback (no steps table, no ci log), a terminal
 #      FAILED record whose daemon an explicit probe proves down reads unknown,
 #      never failed: an instrument failure must not read as work failure
-#      (nm_daemon_probe_down).
+#      (nm_daemon_probe_down). Conversely a terminal SUCCESS run whose steps
+#      table shows every mandatory delivery phase skipped reads failed, never
+#      done: when a branch's whole diff vanishes into the rebase base,
+#      no-mistakes still records the run completed although nothing was
+#      reviewed, tested, pushed, or opened as a PR, and validity must not be
+#      inferred from that word alone (nm_run_skipped_every_mandatory_step;
+#      2026-09-08 fm-nm-depot-livraison-non-modifiable incident). The coarse
+#      fallback carries no steps table, and the runs ledger names no run id to
+#      fetch one with, so its only delivery evidence is the row's own PR URL:
+#      a COMPLETED row carrying one proves push and pr ran and reads done,
+#      while a bare COMPLETED row proves nothing either way and reads
+#      unknown-unverified rather than validated.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -453,6 +464,43 @@ nm_reclassify_failed_run_as_held_green() {
   return 0
 }
 
+# The delivery phases a no-mistakes ship run must actually execute before its
+# result may be read as validated. `intent` and `rebase` are excluded: they
+# prepare a run rather than validate or deliver it.
+NM_MANDATORY_STEPS="review test document lint push pr ci"
+
+# 0 when the steps table proves a terminal-success run validated and delivered
+# nothing: every phase in NM_MANDATORY_STEPS is present and `skipped`. This is
+# the vacuous-pass shape (2026-09-08 fm-nm-depot-livraison-non-modifiable): a
+# branch whose commits are already contained in the rebase base loses its whole
+# diff, and no-mistakes then logs `empty diff after rebase, skipping remaining
+# steps` and still records the run `completed`. Nothing was reviewed, tested,
+# documented, linted, pushed, or opened as a PR, so the word alone is not
+# validation. Positive evidence is required in both directions: an absent table,
+# or any mandatory row that is missing or not `skipped`, is not this shape and
+# leaves the run's own reported result untouched.
+nm_run_skipped_every_mandatory_step() {
+  local rows want
+  rows=$(nm_steps_rows)
+  [ -n "$rows" ] || return 1
+  for want in $NM_MANDATORY_STEPS; do
+    printf '%s\n' "$rows" \
+      | grep -qE "^[[:space:]]*$want,[[:space:]]*\"?skipped\"?[[:space:]]*," || return 1
+  done
+  return 0
+}
+
+# Reclassify a terminal SUCCESS run as failed when
+# nm_run_skipped_every_mandatory_step matches, so a run that lost its change
+# never reads as shippable. The branch still holds whatever the worker
+# committed; what is refused is calling that outcome validated.
+nm_reclassify_vacuous_success_as_failed() {
+  nm_run_skipped_every_mandatory_step || return 1
+  RUN_STATE=failed
+  RUN_DETAIL="not validated: run kept no change - review, test, document, lint, push, pr and ci were all skipped"
+  return 0
+}
+
 # 0 when an explicit probe proves the shared daemon down: `no-mistakes daemon
 # status` is the canonical down-probe (the same one fm-brief.sh hands crews
 # before a blocked append) and exits non-zero when the daemon is not running.
@@ -559,6 +607,7 @@ HAVE_RUN=0
 # the TOON field parsing entirely for this crew.
 RUN_SOURCE=full
 COARSE_STATUS=""
+COARSE_PR=""
 # Scouts and secondmates never drive a no-mistakes validation of their own
 # worktree, so skip the lookup for them and read state from pane/log directly.
 if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/null 2>&1; then
@@ -579,7 +628,11 @@ if [ "$KIND" = ship ] && [ -n "$CREW_BRANCH" ] && command -v no-mistakes >/dev/n
       # `[ -n "$RUN_OUT" ]`: an empty/timed-out primary call means the CLI
       # itself did not respond, so retrying it immediately with a second
       # bounded call would just double the wait for no better answer.
-      COARSE_STATUS=$(fm_nm_runs_status_for_worktree "$WT" "$CREW_BRANCH" "$(nm_runs_list)")
+      coarse_row=$(fm_nm_runs_status_for_worktree "$WT" "$CREW_BRANCH" "$(nm_runs_list)")
+      COARSE_STATUS=${coarse_row%% *}
+      case "$coarse_row" in
+        *' '*) COARSE_PR=${coarse_row#* } ;;
+      esac
       if [ -n "$COARSE_STATUS" ]; then
         HAVE_RUN=1
         # A branch-matching answer the strict rule rejected is this branch's
@@ -612,7 +665,22 @@ if [ "$HAVE_RUN" = 1 ]; then
     # distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
-      completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
+      completed)
+        # A terminal ledger word is not a verdict on its own here: the
+        # vacuous-pass shape the full path refuses
+        # (nm_run_skipped_every_mandatory_step) is recorded `completed` too,
+        # and this path has neither a steps table nor a run id to fetch one
+        # with. The row's PR URL is the ledger's own positive delivery
+        # evidence - a run that skipped push and pr has none - so a completed
+        # row that carries one is a real delivery and keeps its done verdict,
+        # while a bare completed row cannot be told from the vacuous shape
+        # and is reported unverified rather than validated.
+        if [ -n "$COARSE_PR" ]; then
+          RUN_STATE="done"; RUN_DETAIL="run completed: $COARSE_PR"
+        else
+          RUN_STATE=unknown
+          RUN_DETAIL="last ledger record completed with no PR; nothing proves a delivery phase ran - unverified"
+        fi ;;
       failed)
         # The ledger row is terminal but the coarse path has no steps table
         # and no ci log, so the orphaned-monitor shape cannot be recognized
@@ -638,7 +706,10 @@ if [ "$HAVE_RUN" = 1 ]; then
 
     if [ -n "$outcome" ]; then
       case "$outcome" in
-        passed)        RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed" ;;
+        passed)
+          if nm_reclassify_vacuous_success_as_failed; then :; else
+            RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed"
+          fi ;;
         checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
@@ -666,7 +737,10 @@ if [ "$HAVE_RUN" = 1 ]; then
       case "$status" in
         ci)             RUN_STATE=working; RUN_DETAIL="ci running" ;;
         running|fixing) RUN_STATE=working; RUN_DETAIL="validating ($status)" ;;
-        completed)      RUN_STATE="done"; RUN_DETAIL="run completed" ;;
+        completed)
+          if nm_reclassify_vacuous_success_as_failed; then :; else
+            RUN_STATE="done"; RUN_DETAIL="run completed"
+          fi ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
             RUN_STATE=failed; RUN_DETAIL="run failed"
