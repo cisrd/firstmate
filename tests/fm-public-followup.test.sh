@@ -60,18 +60,19 @@ pf_test_stop_remote_worker() {
 }
 
 pf_test_cleanup() {
-  local exit_status=$? cleanup_rc=0
+  local exit_status=$? worker_rc=0
   if [ -n "$PF_TEST_LOCK_HOLDER" ]; then
     kill "$PF_TEST_LOCK_HOLDER" 2>/dev/null || true
     wait "$PF_TEST_LOCK_HOLDER" 2>/dev/null || true
     PF_TEST_LOCK_HOLDER=
   fi
-  pf_test_stop_remote_worker || cleanup_rc=$?
-  fm_test_cleanup || cleanup_rc=$?
-  if [ "$exit_status" -ne 0 ]; then
-    return "$exit_status"
+  pf_test_stop_remote_worker || worker_rc=1
+  fm_test_cleanup || true
+  if [ "$worker_rc" -ne 0 ]; then
+    printf 'not ok - the remote job worker survived suite cleanup\n' >&2
+    [ "$exit_status" -ne 0 ] || exit_status=1
+    exit "$exit_status"
   fi
-  return "$cleanup_rc"
 }
 trap pf_test_cleanup EXIT
 trap 'pf_test_cleanup; exit 130' INT
