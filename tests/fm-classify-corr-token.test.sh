@@ -165,7 +165,7 @@ test_prose_and_malformed_tokens_never_become_transitions() {
   # contract, not a gap in this one, and tightening it here would silently
   # narrow a separately reviewed rule. The strictness below is what keeps an
   # unbracketed token honest, and a bracketed impostor still has to get a
-  # well-formed key past _fm_decision_key_transition_allowed.
+  # well-formed key past the reserved-key transition guard.
   local -a impostors=(
     'resolved the corr= issue yesterday [key=victim]'
     'resolved corr= [key=victim]'
