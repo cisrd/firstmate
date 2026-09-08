@@ -208,6 +208,37 @@ test_spawn_dot_project_accepts_isolated_worktree() {
   pass "fm-spawn: project '.' from a linked worktree keeps that copy as the project and accepts a genuine isolated worktree"
 }
 
+# The launch brief is the contract the worker actually reads. A repo LABEL
+# cannot be compared with `pwd -P`, so the exact copy and the repository
+# primary have to be in it, whatever spelling the project was given.
+test_spawn_renders_exact_isolation_paths_into_the_launch_brief() {
+  local home proj fakebin out status wt wt_real proj_real brief
+  home="$TMP_ROOT/spawn-label-home"
+  mkdir -p "$home/data"
+  proj=$(make_repo "$TMP_ROOT/spawn-label-proj")
+  fakebin=$(make_spawn_fakebin "$TMP_ROOT/spawn-label-fake")
+  fm_test_fake_sleep_noop "$fakebin"
+  git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-label-wt" >/dev/null 2>&1
+  wt="$TMP_ROOT/spawn-label-wt"
+  wt_real=$(cd "$wt" && pwd -P)
+  proj_real=$(cd "$proj" && pwd -P)
+  fm_test_spawn_brief "$home" spawn-label-kk1 brief
+  out=$(fm_test_run_spawn "$home" "$wt" "$fakebin" \
+    spawn-label-kk1 "$proj" codex --mode no-mistakes --yolo off); status=$?
+  expect_code 0 "$status" "a label-named ship spawn should succeed"$'\n'"$out"
+  brief="$home/data/spawn-label-kk1/launch-brief.md"
+  assert_present "$brief" "the launch brief the worker reads was not rendered"
+  assert_grep "Your task worktree is \`$wt_real\`" "$brief" \
+    "the launch brief must name the exact copy the worker must be in"
+  assert_grep "primary checkout is \`$proj_real\`" "$brief" \
+    "the launch brief must name the exact primary checkout the worker must not work in"
+  assert_grep "is not exactly \`$wt_real\`, STOP" "$brief" \
+    "the launch brief must stop the worker on a path mismatch"
+  assert_grep "blocked: launched in primary checkout, not an isolated worktree" "$brief" \
+    "the launch brief lost the isolation blocked-status contract"
+  pass "fm-spawn: the launch brief carries the exact worktree and primary paths, not a repo label"
+}
+
 test_spawn_dot_project_still_refuses_the_primary() {
   local home proj fakebin out status
   home="$TMP_ROOT/spawn-dot-primary-home"
@@ -374,4 +405,5 @@ test_brief_dot_project_resolves_primary_and_keeps_linked_worktree
 test_spawn_isolation_abort
 test_spawn_dot_project_accepts_isolated_worktree
 test_spawn_dot_project_still_refuses_the_primary
+test_spawn_renders_exact_isolation_paths_into_the_launch_brief
 test_spawn_tmux_window_construction

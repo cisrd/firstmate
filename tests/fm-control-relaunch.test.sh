@@ -1051,18 +1051,21 @@ test_unreadable_occupied_directory_preserves_the_agent() {
   pass "fm-control relaunch: an unverifiable live cwd preserves the agent"
 }
 
-test_idle_shell_reenters_the_recorded_worktree_after_stop() {
+test_idle_shell_outside_the_copy_is_never_walked_back_into_it() {
   local dir out rc
   dir=$(new_case idle-cwd rl45)
   add_ship_task "$dir" rl45 claude
+  # The pane would honour a cd (FM_FAKE_CD_WORKS), so a re-entry attempt would
+  # succeed here: nothing occupies a pooled copy the pool may already have
+  # handed to another task, which is why the relaunch has to refuse instead.
   printf '%s' "$dir/proj" > "$dir/fake/cwd-after-stop"
-  out=$(FM_FAKE_CD_WORKS=1 run_control "$dir" rl45 relaunch --note "return to the task copy"); rc=$?
-  expect_code 0 "$rc" "an idle shell may return to its launch directory after a verified stop"$'\n'"$out"
-  assert_grep "$dir/wt" "$dir/fake/keys" \
-    "relaunch did not explicitly return the idle shell to the recorded worktree"
+  out=$(FM_FAKE_CD_WORKS=1 run_control "$dir" rl45 relaunch --note "do not re-enter an unheld copy"); rc=$?
+  expect_code 1 "$rc" "an endpoint that left the recorded copy should refuse"$'\n'"$out"
+  assert_contains "$out" "not its recorded worktree" "the refusal should name the copy the endpoint left"
+  assert_no_grep "cd " "$dir/fake/keys" "relaunch typed a cd into a copy nothing was holding"
   [ "$(meta_field "$dir" rl45 worktree)" = "$dir/wt" ] \
-    || fail "relaunch changed the recorded copy after returning the idle shell"
-  pass "fm-control relaunch: after pre-stop proof, an idle shell is returned to the recorded copy"
+    || fail "the refusal changed the recorded copy"
+  pass "fm-control relaunch: an endpoint outside the recorded copy refuses instead of re-entering it"
 }
 
 test_launch_failure_keeps_the_prior_record_and_reports_it() {
@@ -1619,7 +1622,7 @@ test_checkpoint_refusal_leaves_the_record_byte_identical
 test_checkpoint_refuses_uninspectable_head_and_status
 test_occupied_directory_mismatch_refuses_before_stop
 test_unreadable_occupied_directory_preserves_the_agent
-test_idle_shell_reenters_the_recorded_worktree_after_stop
+test_idle_shell_outside_the_copy_is_never_walked_back_into_it
 test_launch_failure_keeps_the_prior_record_and_reports_it
 test_prepublication_failure_keeps_concurrent_durable_metadata
 test_post_publication_launch_failure_keeps_the_new_record
