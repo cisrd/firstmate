@@ -1795,6 +1795,35 @@ crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
 }
 
+# The note bin/fm-crew-state.sh appends to an active run-step's detail when the
+# pipeline's own recency verdict says that step is still producing activity. One
+# definition, written by fm-crew-state.sh and matched by the predicate below, so
+# the emitted line and the classifier reading it cannot drift apart.
+FM_CREW_STATE_ACTIVITY_RECENT='run activity recent'
+
+# 0 only on POSITIVE proof that crew <id>'s OWN attributed no-mistakes run is
+# still doing work: fm-crew-state.sh reports a working run-step for THIS crew and
+# marks its active step's activity recent, which is the pipeline's own recency
+# verdict (`axi status` prefixes last_activity with `quiet` once nothing has
+# arrived), never a second threshold invented here and never the liveness of the
+# shared daemon, which any other crew's run keeps up. That distinction is the
+# whole point: a record left at running/fixing after a drive call was killed, or
+# after the daemon exited under it, reports a working run-step while nothing
+# executes it, and must NOT read as work in progress.
+# The busy-pane half of crew_absorb_class's `working` is deliberately excluded: a
+# caller that already holds a busy verdict cannot let that pane vouch for itself.
+# Not a pure read (see crew_absorb_class), so callers run it at most once per
+# STALE_ESCALATE_SECS - never per poll.
+crew_nm_run_activity_is_recent() {  # <id>
+  local id=$1 line
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in
+    "state: working"*"source: run-step"*"$FM_CREW_STATE_ACTIVITY_RECENT"*) return 0 ;;
+  esac
+  return 1
+}
+
 # Directories excluded from the worktree write probe below, and the depth it walks.
 # The excluded set is everything a supervisor read or a package manager can write
 # without the crew doing any work - .git first, so firstmate's own read-only git

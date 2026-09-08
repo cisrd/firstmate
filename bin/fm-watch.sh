@@ -214,8 +214,10 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # non-busy stale - so it escalates via the existing stale reason, escalation
 # counter, and demand-deep-inspection marker for human inspection only, never an
 # automatic interrupt, signal, or restart - unless the crew declared the wait
-# itself, which takes the long pause cadence instead. A completed turn touches
-# turn-ended and resets the age. Set generously above any legitimate interval
+# itself, which takes the long pause cadence instead, or the crew's own
+# no-mistakes run reports recent activity at the escalation threshold, which
+# defers that one escalation and must prove itself again for the next.
+# A completed turn touches turn-ended and resets the age. Set generously above any legitimate interval
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A local secondmate's foreign queue is checked on every poll, but only after this
@@ -853,9 +855,16 @@ clear_write_tracking() {  # <window-key>
 # line that an active run/busy pane outranked).
 # The worktree write probe runs ONLY here, inside the at-threshold branch that is
 # about to escalate: at most one bounded walk per window per STALE_ESCALATE_SECS,
-# never per poll.
-wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task>
-  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 since age n reason
+# never per poll. `defer-live-run` adds the one other evidence a pane can offer
+# there, on the same terms and for the same reason: this crew's OWN no-mistakes
+# run reporting recent activity defers the escalation once, restarting the idle
+# timer so the next window must prove it again. The moment that run stops
+# reporting recent activity - a hung step, a record left behind after the daemon
+# exited, a run that is no longer this crew's - the threshold falls straight
+# through to the unchanged escalation ladder and its demand-deep-inspection
+# marker, so no deferral can repeat without fresh proof of work.
+wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> [defer-live-run]
+  local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 live_run=${6-} since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
   case "$since" in
     ''|*[!0-9]*)
@@ -870,6 +879,11 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
       if [ "$age" -ge "$STALE_ESCALATE_SECS" ]; then
         if crew_worktree_written_since "$task" "$STATE" "$since_file"; then
           wedge_defer_writing "$win" "$since_file" "$label" "$age"
+          return 0
+        fi
+        if [ -n "$live_run" ] && crew_nm_run_activity_is_recent "$task"; then
+          date +%s > "$since_file"
+          triage_log "absorbed $label (this crew's own no-mistakes run reports recent activity, idle ${age}s): $win"
           return 0
         fi
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
@@ -947,9 +961,16 @@ handle_paused_stale() {  # <window> <task> <hash>
 # A busy pane past BUSY_TURN_MAX_SECS is normally a wedge suspect because a hung
 # foreground call can hide behind a busy signature. A `paused:` declaration or
 # verified captain-held transfer instead identifies that live foreground call as
-# the expected external wait. The caller has already confirmed liveness through
-# the busy verdict, so this exception does not suppress undeclared wedges or
-# alter the separate non-busy classification. handle_paused_stale keeps the
+# the expected external wait. An advancing no-mistakes validation is the other
+# real wait - a validating worker holds ONE turn open for the whole run by
+# contract, so its completed-turn age is expected to cross the bound - but that
+# evidence is NOT read here: it is handed to wedge_timer_check as
+# `defer-live-run`, which consults it only in the branch that is about to
+# escalate. That keeps the crew-state read to at most one per window per
+# STALE_ESCALATE_SECS instead of one per poll, and keeps the outcome a single
+# deferral that must be re-earned rather than a standing exemption. The caller
+# has already confirmed liveness through the busy verdict, so this exception does
+# not suppress undeclared wedges or alter the separate non-busy classification. handle_paused_stale keeps the
 # exception bounded by re-surfacing it once per PAUSE_RESURFACE_SECS. Away mode
 # remains daemon-owned and receives the undecorated wake identity for its own
 # classification, which is why the declaration is read before the afk branch
@@ -992,7 +1013,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
     handle_paused_stale "$win" "$task" "$h"
     return 0
   fi
-  wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task"
+  wedge_timer_check "$win" "$since_file" "busy (no completed turn)" "$escalation_file" "$task" defer-live-run
   return 1
 }
 

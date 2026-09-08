@@ -3176,6 +3176,82 @@ test_busy_pane_repeated_escalation_reaches_demand_deep_inspection() {
   pass "repeated busy turn-age escalations reuse the existing escalation counter and demand deep inspection at the threshold"
 }
 
+# --- live no-mistakes run + busy pane: the run IS the declared wait ----------
+# A worker driving no-mistakes holds ONE turn open for the whole validation by its
+# generated Definition of done (bin/fm-dod-lib.sh), and a run chains fix rounds
+# well past BUSY_TURN_MAX_SECS, so a healthy validating crew crosses the
+# completed-turn bound as a matter of course. Its escalation is DEFERRED, never
+# cancelled, and only on the pipeline's own recency verdict for THIS crew's run:
+# `axi status` prefixes an active step's last_activity with `quiet` once nothing
+# is arriving, and fm-crew-state.sh only then withholds the recency note. Phases
+# A and B pin both halves on one window - recent activity defers, the same pane
+# with the activity gone escalates on the unchanged schedule - so a deferral can
+# never become a standing exemption for a hung run or for a record left behind
+# after the daemon exited under it.
+test_busy_turn_bound_defers_only_while_the_run_reports_recent_activity() {
+  local dir state fakebin out drain_out capture_file window key pane_hash sig pid back
+  dir=$(make_case busy-run-activity); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"; drain_out="$dir/drain.out"; capture_file="$dir/pane.txt"
+  window="test:fm-validating"
+  printf 'Working... (4210.6s)' > "$capture_file"
+  printf 'window=%s\nkind=ship\nharness=pi\n' "$window" > "$state/validating.meta"
+  record_pi_busy "$state" validating
+  printf 'working: validating\n' > "$state/validating.status"
+  sig=$(seen_sig "$state/validating.status"); printf '%s' "$sig" > "$state/.seen-validating_status"
+  key=$(printf '%s' "$window" | tr ':/.' '___')
+  pane_hash=$(hash_text "Working... (4210.6s)")
+  printf '%s' "$pane_hash" > "$state/.hash-$key"
+  printf '1\n' > "$state/.count-$key"
+  touch -t 200001010000 "$state/validating.turn-ended"
+  prime_turnend_seen "$state/validating.turn-ended"
+  # The bound crossed long ago and the idle window opened 500s ago, so the very
+  # first poll lands straight on the at-threshold branch that reads the evidence.
+  back=$(( $(date +%s) - 500 ))
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+
+  # Phase A: this crew's own run reports recent activity. Deferred.
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing) · run activity recent' \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_poll_cycle "$state" "$pid"; then
+    reap "$pid"; fail "a busy pane whose own run reports recent activity was wedge-escalated: $(cat "$out")"
+  fi
+  [ ! -s "$out" ] || { reap "$pid"; fail "a recent-activity deferral printed a wake reason: $(cat "$out")"; }
+  [ ! -s "$state/.wake-queue" ] || { reap "$pid"; fail "a recent-activity deferral enqueued a wake"; }
+  [ ! -e "$state/.wedge-escalations-$key" ] || { reap "$pid"; fail "a recent-activity deferral advanced the wedge escalation counter"; }
+  [ "$(cat "$state/.stale-since-$key" 2>/dev/null || echo 0)" -gt "$back" ] \
+    || { reap "$pid"; fail "a recent-activity deferral did not restart the idle timer, so the next window cannot re-prove the run"; }
+  reap "$pid"
+  ack_stopped_cycle "$state" || fail "could not acknowledge the intentional phase-A watcher stop"
+
+  # Phase B: same window, same busy pane, same attributed working run-step - but
+  # the run has gone quiet (a hung step, or a record left behind after the daemon
+  # exited), so fm-crew-state.sh no longer marks its activity recent.
+  echo "$back" > "$state/.stale-since-$key"
+  set_mtime "$back" "$state/.stale-since-$key"
+  : > "$out"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+    FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE='state: working · source: run-step · validating (fixing)' \
+    FM_STATE_OVERRIDE="$state" FM_BUSY_TURN_MAX_SECS=1 FM_STALE_ESCALATE_SECS=240 \
+    FM_PAUSE_RESURFACE_SECS=999 FM_POLL=1 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "a quiet run behind a busy pane did not wedge-escalate past the turn-age bound: $(cat "$out")"
+  grep -F "stale: $window" "$out" >/dev/null || fail "the quiet-run escalation did not print the stale wake"
+  grep -F "possible wedge" "$out" >/dev/null || fail "the quiet-run escalation did not flag a possible wedge"
+  [ "$(cat "$state/.wedge-escalations-$key" 2>/dev/null || true)" = 1 ] || fail "the quiet-run escalation was not counted"
+  [ ! -e "$state/.stale-since-$key" ] || fail "the idle timer was not cleared after a real escalation"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$drain_out" 2>/dev/null || fail "drain after the quiet-run escalation failed"
+  grep "$(printf '\tstale\t')" "$drain_out" | grep -F "$window" >/dev/null || fail "the quiet-run escalation was not queued"
+  pass "a busy worker's wedge escalation is deferred only while its own no-mistakes run reports recent activity"
+}
+
 # --- declared pause + busy pane: the busy-turn bound must honor the declaration
 # A single foreground call can keep a declared external wait semantically busy
 # past the completed-turn bound, bypassing the ordinary stale-pause path.
@@ -4432,6 +4508,7 @@ test_busy_pane_stable_hash_escalates_past_turn_age_bound
 test_busy_pane_changing_hash_escalates_past_turn_age_bound
 test_busy_pane_turn_end_touch_resets_age
 test_busy_pane_repeated_escalation_reaches_demand_deep_inspection
+test_busy_turn_bound_defers_only_while_the_run_reports_recent_activity
 test_busy_pane_default_turn_age_bound_is_3600s
 test_busy_declared_pause_is_rechecked_not_wedge_escalated
 test_afk_busy_declared_pause_hands_off_plain_stale

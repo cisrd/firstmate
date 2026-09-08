@@ -380,6 +380,8 @@ STUB
     "promoted no-mistakes worker did not receive the --yes prohibition"
   assert_grep "It is banned fleet-wide" "$payload" \
     "promoted no-mistakes worker did not receive the fleet-wide ban wording"
+  assert_grep "After every \`no-mistakes axi respond\`, continue in the same turn" "$payload" \
+    "promoted no-mistakes worker can still defer an active validation run"
 
   payload="$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr"
   assert_grep "supersede the scout delivery rules and report-based Definition of done" "$payload" \
@@ -388,8 +390,12 @@ STUB
     "promoted worker lost the scout protocols and safety rules that still apply"
 
   # The faster paths keep their own contracts rather than inheriting the pipeline's.
-  assert_grep "Do NOT run /no-mistakes" "$payload" \
+  assert_grep "Do not run /no-mistakes unless firstmate explicitly instructs you to change this task's delivery path." "$payload" \
     "promoted direct-PR worker lost its no-pipeline contract"
+  assert_grep "verify with \`gh-axi\` that the branch was actually pushed" "$payload" \
+    "promoted direct-PR worker lost its pushed-branch proof"
+  assert_grep "diagnose the forge failure first" "$payload" \
+    "promoted direct-PR worker lost its forge-first diagnosis contract"
   assert_grep "Do NOT push, do NOT open a PR, do NOT merge" "$TMP_ROOT/promote-dod/payload-promote-dod-local-only" \
     "promoted local-only worker lost its no-remote contract"
   assert_no_grep "no-mistakes axi respond" "$TMP_ROOT/promote-dod/payload-promote-dod-direct-pr" \

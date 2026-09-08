@@ -61,6 +61,12 @@
 #      FAILED record whose daemon an explicit probe proves down reads unknown,
 #      never failed: an instrument failure must not read as work failure
 #      (nm_daemon_probe_down).
+#      A working run-step also carries a positive `run activity recent` note in
+#      its detail while the pipeline's own recency verdict says an active step
+#      is still reporting (nm_run_activity_is_recent, which requires the
+#      captured `active_steps[]` table and never treats an absent one as
+#      recency). Supervisors read that note to tell an advancing run from a
+#      record nothing is executing.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -742,6 +748,14 @@ if [ "$HAVE_RUN" = 1 ]; then
       fi
       ;;
   esac
+
+  # Positive recency, for supervisors that must tell an advancing run from a
+  # record nothing is executing: the client's own `quiet` prefix is the verdict
+  # (nm_run_activity_is_recent), so the note appears only while an active step
+  # keeps reporting, and never for a coarse row with no steps table to read.
+  if [ "$RUN_STATE" = working ] && nm_run_activity_is_recent; then
+    RUN_DETAIL="$RUN_DETAIL${SEP}$FM_CREW_STATE_ACTIVITY_RECENT"
+  fi
 
   emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi

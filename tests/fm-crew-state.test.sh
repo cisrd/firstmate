@@ -567,6 +567,41 @@ test_daemon_claim_over_live_run_reads_run_alive() {
   pass "daemon/timeout blocked claim over a live fixing run reads as run alive"
 }
 
+# The emitted line is what supervisors classify from, so an ACTIVE run's own
+# recency verdict has to reach it. `axi status` leaves last_activity unprefixed
+# while a step keeps reporting and prefixes it with `quiet` once nothing arrives;
+# only the first case earns the recency note, so a record still reading fixing
+# while nothing executes it is distinguishable from a run doing work.
+test_active_run_reports_its_own_activity_recency() {
+  reset_fakes
+  local d; d=$(new_case activity-recency)
+  make_repo_on_branch "$d/wt" fm/feat-ar
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-ar.meta" "window=fm:fm-feat-ar" "worktree=$d/wt" "kind=ship"
+
+  FM_FAKE_AXI_STATUS="$(run_fixing_active_recent fm/feat-ar)"
+  local out; out=$(run_crew_state "$d" feat-ar)
+  assert_contains "$out" "state: working" "a reporting fixing run is working"
+  assert_contains "$out" "run activity recent" "a reporting active step earns the recency note"
+
+  FM_FAKE_AXI_STATUS="$(run_fixing_active_quiet fm/feat-ar)"
+  out=$(run_crew_state "$d" feat-ar)
+  assert_contains "$out" "source: run-step" "a quiet fixing run is still run-step sourced"
+  assert_not_contains "$out" "run activity recent" \
+    "a quiet active step must not read as a run doing work"
+
+  # The coarse ledger fallback has no steps table to read, so it can never claim
+  # recency: absent positive evidence, the note stays off.
+  local short; short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="  running    fm/feat-ar ${short}  2026-07-02 22:05"
+  out=$(run_crew_state "$d" feat-ar)
+  assert_contains "$out" "state: working" "the coarse row still attributes this branch's run"
+  assert_not_contains "$out" "run activity recent" \
+    "the coarse runs-list fallback cannot claim activity recency"
+  pass "an active run-step reports the pipeline's own activity recency, and only on positive evidence"
+}
+
 # A genuine refused socket outranks the persisted fixing record, which can
 # survive after the daemon exits.
 test_socket_refusal_over_stale_fixing_run_reports_blocked() {
@@ -2235,6 +2270,7 @@ test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded
 test_daemon_claim_over_live_run_reads_run_alive
+test_active_run_reports_its_own_activity_recency
 test_socket_refusal_over_stale_fixing_run_reports_blocked
 test_socket_refusal_over_terminal_run_reports_blocked
 test_ordinary_blocked_over_live_run_keeps_plain_superseded
