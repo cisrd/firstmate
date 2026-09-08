@@ -216,8 +216,8 @@ status_is_paused_or_captain_held() {  # <status-line>
 # so a summary merely MENTIONING "[key=x]" cannot open or close that decision.
 # A line with no token in either position uses the key "default", preserving
 # the historical one-open-decision-per-task behavior (a bare "resolved:" closes
-# "default"). A stated key whose slug fails the charset below is rejected (the
-# folds skip the line), never rewritten to "default".
+# "default"). A stated key whose slug fails status_decision_key_valid below is
+# rejected (the folds skip the line), never rewritten to "default".
 # The parsers are pure reads of a single line. Status metadata may contain any
 # number of "[name=value]" tags before the colon, in any order, so verb parsing
 # ends at the first tag rather than special-casing "[key=...]".
@@ -249,7 +249,7 @@ status_is_paused_or_captain_held() {  # <status-line>
 # Skipping unknown tokens would be the permissive road - it would let any
 # free-text word carrying an equals sign ("resolved x=1 [key=k]: ...") reduce to
 # a bare verb and impersonate a transition, which is the takeover the strict
-# parse and _fm_decision_key_transition_allowed exist to prevent. Recognising
+# parse and the reserved-key transition guard exist to prevent. Recognising
 # only what a firstmate library actually writes costs one more line here each
 # time a real new token shape is introduced, and that is the intended trade: a
 # new shape is a deliberate, reviewed edit rather than a silent widening. A line
@@ -310,8 +310,8 @@ _fm_key_before_colon() {  # <status-line>
 }
 # Raw slug of a complete "[key=<slug>]" token at the head of the note (the
 # first thing after the line's first colon, ignoring whitespace). Fails when
-# the line has no colon or no complete token there; slug charset validity is
-# the caller's check via _fm_decision_slug_ok, exactly as for the before-colon
+# the line has no colon or no complete token there; slug validity is the
+# caller's check via status_decision_key_valid, exactly as for the before-colon
 # position.
 _fm_key_at_note_head() {  # <status-line> -> raw slug
   local rest
@@ -325,8 +325,11 @@ _fm_key_at_note_head() {  # <status-line> -> raw slug
     *) return 1 ;;
   esac
 }
-# 0 when a stated key slug is well-formed: nonempty, A-Za-z0-9._- only.
-_fm_decision_slug_ok() {  # <slug>
+# 0 when a decision key is well-formed: nonempty, A-Za-z0-9._- only.
+# This public predicate is the ONE owner of decision-key grammar. Status-line
+# parsing and fm-send --resolve-key both call it, so a key accepted into the
+# open set cannot be rejected later by a separately maintained send grammar.
+status_decision_key_valid() {  # <key>
   case "$1" in
     ''|*[!A-Za-z0-9._-]*) return 1 ;;
     *) return 0 ;;
@@ -342,7 +345,7 @@ status_line_note() {  # <status-line> -> text after the first colon, trimmed
   # slug) is key metadata, not note text: strip it so both stated-key positions
   # yield the same note.
   if ! _fm_key_before_colon "$1" && k=$(_fm_key_at_note_head "$1") \
-    && _fm_decision_slug_ok "$k"; then
+    && status_decision_key_valid "$k"; then
     n=${n#"[key=$k]"}
     n=${n#"${n%%[![:space:]]*}"}
   fi
@@ -357,7 +360,7 @@ _fm_decision_key() {  # <status-line> -> key slug, or "default" when no token
   else
     k=$(_fm_key_at_note_head "$1") || { printf 'default'; return 0; }
   fi
-  _fm_decision_slug_ok "$k" || return 1
+  status_decision_key_valid "$k" || return 1
   printf '%s' "$k"
 }
 # Drop the record for <key> from a newline-terminated "<key>\t<verb>\t<note>" set.
@@ -384,38 +387,54 @@ EOF
 # rule, so the two consumption strategies can never drift apart on semantics.
 # Reserved decision-key namespaces, and the rule that makes them mean something.
 #
-# A key like `pending-reply-<id>` names a decision that one library raises and is
-# the only thing that ever closes it. Every writer reaches this same stream: a
-# local mate appends straight into it, and a remote mate's lines are mirrored
-# into it verbatim. So without a rule here, any writer could claim a reserved
-# key with an unrelated note, take the key over in this fold, and permanently
-# block the owner's close - leaving a decision nothing will ever resolve - or
-# clear the owner's decision with a bare resolution.
+# A key like `pending-reply-<id>` names a decision that one library raises.
+# Every writer reaches this same stream: a local mate appends straight into it,
+# and a remote mate's lines are mirrored into it verbatim. Without a guard, any
+# writer could claim a reserved key with an unrelated needs-decision or blocked
+# note and take the owner's open record over permanently.
 #
 # The rule is deliberately generic, so this fold needs no knowledge of any
-# particular owner: a reserved key may only be opened or closed by a line whose
+# particular owner. A reserved key may only be opened or closed by a line whose
 # note speaks that namespace's own vocabulary, which its owner states by
-# beginning the note with a `<namespace>...:` token. A line failing that is not a
-# decision transition at all here and is folded as ordinary status. This is a
-# consumer-side rule on purpose - it protects local and remote writers
-# identically, and it can never fail a whole delta or wedge a stream the way a
-# writer-side rejection would.
+# beginning the note with a `<namespace>...:` token. A rejected line remains
+# ordinary status in the fold and status-span classification surfaces it as a
+# reconciliation error, so it is never a silent manual no-op.
 FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT='pending-reply-'
+
+# Print the configured reserved prefix that owns <key>, or fail when unreserved.
+_fm_decision_reserved_prefix() {  # <key>
+  local key=$1 prefix
+  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
+    case "$key" in "$prefix"*) printf '%s' "$prefix"; return 0 ;; esac
+  done
+  return 1
+}
 
 # 0 when <key> is not reserved, or is reserved and <note> speaks its vocabulary.
 _fm_decision_key_transition_allowed() {  # <key> <note>
   local key=$1 note=$2 prefix
-  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
-    case "$key" in
-      "$prefix"*)
-        case "$note" in
-          "$prefix"*:*) return 0 ;;
-          *) return 1 ;;
-        esac
-        ;;
-    esac
-  done
-  return 0
+  prefix=$(_fm_decision_reserved_prefix "$key") || return 0
+  case "$note" in "$prefix"*:*) return 0 ;; esac
+  return 1
+}
+
+# Print a close note the fold accepts for <key> under the closing <verb>. This
+# public helper is the ONE writer-side owner of reserved-close grammar:
+# ordinary notes pass through, while a reserved key receives its namespace's
+# vocabulary for the transition actually being written. The verb itself is that
+# vocabulary token, so a captain-held transfer states the hold rather than
+# claiming the resolution vocabulary of an answer that nobody gave. Fails on an
+# invalid key or on a verb that is not one of the fold's two closing verbs.
+status_decision_close_note() {  # <verb> <key> <note>
+  local verb=$1 key=$2 note=$3 prefix
+  status_decision_key_valid "$key" || return 1
+  case "$verb" in
+    "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}") ;;
+    "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}") ;;
+    *) return 1 ;;
+  esac
+  prefix=$(_fm_decision_reserved_prefix "$key") || { printf '%s' "$note"; return 0; }
+  printf '%s%s: %s' "$prefix" "$verb" "$note"
 }
 
 _fm_is_pending_reply_escalation() {  # <key> <note>
@@ -1320,9 +1339,9 @@ EOF
 # aborts presentation without advancing any offset. A trusted cursor at EOF
 # prints nothing, so already-presented bytes are not replayed as new. Teardown
 # retires a task's manifest row with its status file, so reusing a task ID starts
-# the replacement log unread at byte 0. Informational `note:` lines and
-# reserved-key pending-reply resolutions are the fleet-wide unread surface;
-# they are not open decisions and are not persisted in the folded open-set.
+# the replacement log unread at byte 0. status_line_is_unread_surface below
+# owns which lines are that fleet-wide unread surface; none of them are open
+# decisions and none are persisted in the folded open-set.
 
 # Read the legacy per-task open-decisions cursor used to seed the presentation
 # offset before the fleet manifest exists. A fold-version mismatch, identity
@@ -1426,11 +1445,15 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   return "$rc"
 }
 
-# 0 when a status line is an informational `note:` or a reserved-key
-# pending-reply resolution. Those lines never fold into OPEN DECISIONS, so the
-# drain's unread-status surface is their only guaranteed presentation.
+# 0 when a status line is an informational `note:`, a reserved-key resolution,
+# or a rejected close attempt on a reserved key. Those lines never stay in the
+# OPEN DECISIONS fold as themselves, so the drain is the only place their
+# outcome is presented rather than being buried under a later append. An
+# ACCEPTED captain-held transfer is excluded: it hands the decision to the
+# durable captain-held ledger, which presents it, so surfacing it here would
+# repeat one still-tracked item on a second captain-facing surface.
 status_line_is_unread_surface() {  # <status-line>
-  local line=$1 verb key note resolve held prefix
+  local line=$1 verb key resolve held
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   [ "$verb" = note ] && return 0
@@ -1441,20 +1464,14 @@ status_line_is_unread_surface() {  # <status-line>
     *) return 1 ;;
   esac
   key=$(_fm_decision_key "$line") || return 1
-  note=$(status_line_note "$line")
-  for prefix in ${FM_CLASSIFY_RESERVED_KEY_PREFIXES:-$FM_CLASSIFY_RESERVED_KEY_PREFIXES_DEFAULT}; do
-    case "$key" in
-      "$prefix"*)
-        _fm_decision_key_transition_allowed "$key" "$note"
-        return
-        ;;
-    esac
-  done
-  return 1
+  _fm_decision_reserved_prefix "$key" >/dev/null || return 1
+  [ "$verb" = "$held" ] || return 0
+  ! _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")"
 }
 
 # Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
-# still-unread `note:` or pending-reply resolution, in glob (task id) order.
+# still-unread line status_line_is_unread_surface accepts, in glob (task id)
+# order.
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
 scan_unread_surface_lines() {  # <state>
@@ -1630,6 +1647,9 @@ _fm_status_open_decision_origins() {  # <status-file>
 status_span_first_actionable_record() {  # <status-file> <start-offset> [record-var] [needs-decision-var]
   local f=$1 start=${2:-0} output_var=${3-} needs_var=${4-} size ident cur_ident scratch chunk_file full_file prefix_file result
   local line verb key origins='' folded=0 rc=1 failed=0 prefix_lines=0 line_number=0 live_line='' events='' _line _key _fm_span_needs_decision=0
+  local resolve held
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   [ -e "$f" ] || { [ -L "$f" ] && return 2; return 1; }
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 2
   ident=$(_fm_open_decisions_file_ident "$f") || return 2
@@ -1659,7 +1679,26 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
   while IFS= read -r line || [ -n "$line" ]; do
     line_number=$((line_number + 1))
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
-    if status_is_captain_held "$line"; then
+    verb=$(status_line_verb "$line")
+    # The fold guards BOTH closing verbs on a reserved key, so both are checked
+    # here before either is treated as a close: a rejected close leaves its key
+    # open, and that outcome has to be visible rather than a silent no-op.
+    # Either way the row reports on a decision that is STILL OPEN, so it carries
+    # the same main-only marker an open decision does - a reconciliation error
+    # about a captain's own decision must never route to the supervision branch.
+    case "$verb" in
+      "$resolve"|"$held")
+        key=$(_fm_decision_key "$line") || key=''
+        if [ -n "$key" ] && ! _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")"; then
+          [ -n "$events" ] && events="${events} ; "
+          events="${events}reconciliation-required: ${line}"
+          _fm_span_needs_decision=1
+          rc=0
+          continue
+        fi
+        ;;
+    esac
+    if [ "$verb" = "$held" ]; then
       # A transfer closes the status-log decision and remains non-actionable to
       # stale classification. The side-band marker lets signal routing surface
       # the captain-owned hold without changing that established stale verdict.
@@ -1667,7 +1706,6 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
       continue
     fi
     status_is_captain_relevant "$line" || continue
-    verb=$(status_line_verb "$line")
     case "$verb" in
       needs-decision|blocked)
         key=$(_fm_decision_key "$line") || {

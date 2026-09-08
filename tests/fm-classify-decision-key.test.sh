@@ -108,6 +108,103 @@ test_blocked_is_position_tolerant_like_needs_decision() {
   pass "blocked [key=X] opens X in both key positions"
 }
 
+# Reserved namespaces protect owner transitions while the public close-note
+# helper lets every interface produce an accepted explicit resolution. A manual
+# note that lacks that vocabulary stays open but surfaces an actionable error.
+test_reserved_key_public_resolution_is_effective_and_rejections_surface() {
+  local dir f expected key offset rejected close_note
+  dir=$(case_dir reserved-resolution)
+  f="$dir/t.status"
+  key=pending-reply-abcdef0123456789
+  printf 'blocked [key=%s]: pending-reply-missed: owner escalation\n' "$key" > "$f"
+  expected=$(printf '%s\tblocked\tpending-reply-missed: owner escalation\n' "$key")
+  assert_fold "$f" "$expected" "reserved owner open"
+
+  printf 'working: prose says resolved [key=%s]: but is not a protocol line\n' "$key" >> "$f"
+  offset=$(LC_ALL=C wc -c < "$f" | tr -d '[:space:]')
+  printf 'captain-held [key=%s]: foreign transfer claim\n' "$key" >> "$f"
+  assert_fold "$f" "$expected" "reserved key rejects prose and foreign transfer"
+  rejected=$(status_span_first_actionable "$f" "$offset")
+  assert_contains "$rejected" "reconciliation-required: captain-held [key=$key]" \
+    "a rejected foreign transfer must produce an actionable diagnostic"
+  status_line_is_unread_surface "captain-held [key=$key]: foreign transfer claim" \
+    || fail "a rejected foreign transfer was absent from the unread-status surface"
+
+  offset=$(LC_ALL=C wc -c < "$f" | tr -d '[:space:]')
+  printf 'resolved [key=%s]: manually dismissed without owner vocabulary\n' "$key" >> "$f"
+  assert_fold "$f" "$expected" "rejected reserved resolution leaves the owner record open"
+  rejected=$(status_span_first_actionable "$f" "$offset")
+  assert_contains "$rejected" "reconciliation-required: resolved [key=$key]" \
+    "a rejected manual resolution must produce an actionable diagnostic"
+  status_line_is_unread_surface "resolved [key=$key]: manually dismissed without owner vocabulary" \
+    || fail "a rejected reserved resolution was absent from the unread-status surface"
+
+  close_note=$(status_decision_close_note resolved "$key" "answered: dismissed after inspection")
+  printf 'resolved [key=%s]: %s\n' "$key" "$close_note" >> "$f"
+  assert_fold "$f" "" "shared reserved close note"
+  pass "reserved closes use one public grammar and rejected manual notes surface actionably"
+}
+
+# The captain-held transfer is the fold's OTHER closing verb, and it reaches a
+# reserved key through the same public close grammar. An authoritative transfer
+# must close the key exactly once and stay non-actionable, while the fold keeps
+# rejecting a transfer that does not speak the namespace's vocabulary.
+test_reserved_key_transfer_closes_through_the_shared_grammar() {
+  local dir f key expected offset close_note actionable rc
+  dir=$(case_dir reserved-transfer)
+  f="$dir/t.status"
+  key=pending-reply-abcdef0123456789
+  printf 'blocked [key=%s]: pending-reply-missed: owner escalation\n' "$key" > "$f"
+  expected=$(printf '%s\tblocked\tpending-reply-missed: owner escalation\n' "$key")
+  assert_fold "$f" "$expected" "reserved owner open"
+
+  offset=$(LC_ALL=C wc -c < "$f" | tr -d '[:space:]')
+  close_note=$(status_decision_close_note captain-held "$key" "tracked by sample-route-call")
+  printf 'captain-held [key=%s]: %s\n' "$key" "$close_note" >> "$f"
+  assert_fold "$f" "" "authoritative transfer closes the reserved key"
+
+  case "$close_note" in
+    *resolved*) fail "a transfer note claimed resolution vocabulary: $close_note" ;;
+  esac
+
+  rc=0
+  actionable=$(status_span_first_actionable "$f" "$offset") || rc=$?
+  [ "$rc" -eq 1 ] \
+    || fail "an accepted transfer must stay non-actionable: rc=$rc events='$actionable'"
+  if status_line_is_unread_surface "captain-held [key=$key]: $close_note"; then
+    fail "an accepted transfer was repeated on the unread-status surface: $close_note"
+  fi
+
+  printf 'blocked [key=%s]: pending-reply-missed: escalated again\n' "$key" >> "$f"
+  printf 'captain-held [key=%s]: tracked by sample-route-call\n' "$key" >> "$f"
+  assert_fold "$f" "$(printf '%s\tblocked\tpending-reply-missed: escalated again\n' "$key")" \
+    "a foreign transfer still cannot close a reserved key"
+  pass "an authoritative captain-held transfer closes a reserved key exactly once"
+}
+
+# Prefix-related keys exercise exact membership and drop semantics. Closing one
+# must leave its twin open, and reopening the first must make it authoritative
+# again for both the full and persisted incremental folds.
+test_twin_keys_close_exactly_and_reopen() {
+  local dir f expected
+  dir=$(case_dir twin-reopen)
+  f="$dir/t.status"
+  printf 'blocked [key=route]: first blocker\n' > "$f"
+  printf 'needs-decision [key=route-long]: second decision\n' >> "$f"
+  printf 'resolved [key=route]: first cleared\n' >> "$f"
+  expected=$(printf 'route-long\tneeds-decision\tsecond decision\n')
+  assert_fold "$f" "$expected" "close exact short twin"
+
+  printf 'blocked [key=route]: reopened after verification\n' >> "$f"
+  printf 'resolved [key=route-long]: second answered\n' >> "$f"
+  expected=$(printf 'route\tblocked\treopened after verification\n')
+  assert_fold "$f" "$expected" "reopened short twin remains after long twin closes"
+
+  printf 'resolved [key=route]: reopened blocker cleared\n' >> "$f"
+  assert_fold "$f" "" "reopened twin closes explicitly"
+  pass "twin keys close exactly and reopened keys remain open until their later resolution"
+}
+
 test_two_colon_form_decisions_stay_distinct() {
   local dir expected
   dir=$(case_dir distinct)
@@ -266,6 +363,9 @@ test_stated_key_is_honored_in_both_positions
 test_bare_keyless_line_still_folds_to_default
 test_resolution_closes_across_positions
 test_blocked_is_position_tolerant_like_needs_decision
+test_reserved_key_public_resolution_is_effective_and_rejections_surface
+test_reserved_key_transfer_closes_through_the_shared_grammar
+test_twin_keys_close_exactly_and_reopen
 test_two_colon_form_decisions_stay_distinct
 test_mid_note_prose_mention_is_not_a_stated_key
 test_malformed_stated_key_never_collapses_to_default

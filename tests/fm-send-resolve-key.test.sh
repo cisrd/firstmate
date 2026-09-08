@@ -26,10 +26,9 @@
 #      message crosses the stubbed ssh transport while the close is the same
 #      local ledger append; a failed transport closes nothing.
 #   7. Flag misuse (--key, empty message, explicit backend target) refuses.
-#   8. A reserved pending-reply-* decision actually closes through --resolve-key
-#      (the operator path the OPEN DECISIONS hint names), while an unrelated
-#      writer's answered: note still cannot hijack or clear that key. A reserved
-#      key this send cannot close refuses before anything is sent.
+#   8. Every reserved key accepted by the fold also closes through --resolve-key
+#      with the universal explicit resolved protocol, while unrelated opens and
+#      prose cannot hijack or clear that key.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -541,10 +540,9 @@ test_flag_misuse_refuses() {
   pass "fm-send --resolve-key: --key, empty message, explicit targets, and malformed keys refuse loudly"
 }
 
-# The reported silent no-op: fm-send --resolve-key on a reserved pending-reply-*
-# key used to write "answered: ..." and exit 0 while the classify fold left the
-# decision open. The operator path must actually close it, using the owning
-# library's vocabulary, without weakening the guard against an unrelated writer.
+# The reported silent no-op: a generic explicit resolution of a reserved
+# pending-reply-* key was ignored. The same public protocol fm-send uses for an
+# ordinary key must close it, without weakening the guard against foreign opens.
 test_reserved_pending_reply_key_closes_through_resolve_key() {
   local dir fb log home rc out key corr
   dir="$TMP_ROOT/reserved-close"; mkdir -p "$dir"
@@ -562,12 +560,9 @@ test_reserved_pending_reply_key_closes_through_resolve_key() {
 
   run_send "$fb" "$home" "$log" mate --resolve-key "$key" "ack, false escalation"; rc=$?
   expect_code 0 "$rc" "closing a reserved pending-reply key via --resolve-key should succeed"
-  grep -F "pending-reply-resolved: task=mate pending-reply-id=$corr via=operator-resolve-key" \
+  grep -F "resolved [key=$key]: pending-reply-resolved: answered: ack, false escalation" \
     "$home/state/mate.status" >/dev/null \
-    || fail "the operator close did not write the owning library's close note:"$'\n'"$(cat "$home/state/mate.status")"
-  if grep -E "resolved \[key=$key\]: answered:" "$home/state/mate.status" >/dev/null; then
-    fail "the operator close still wrote a bare answered: note that the fold ignores:"$'\n'"$(cat "$home/state/mate.status")"
-  fi
+    || fail "the operator close did not write the universal resolved protocol:"$'\n'"$(cat "$home/state/mate.status")"
 
   out=$(drain_out "$home")
   if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
@@ -576,7 +571,7 @@ test_reserved_pending_reply_key_closes_through_resolve_key() {
   pass "fm-send --resolve-key: a reserved pending-reply key actually closes through the operator path"
 }
 
-test_unrelated_writer_cannot_close_or_hijack_reserved_key() {
+test_unrelated_writer_cannot_hijack_or_prose_close_reserved_key() {
   local dir fb log home rc out key corr
   dir="$TMP_ROOT/reserved-guard"; mkdir -p "$dir"
   fb=$(make_stubs "$dir"); log="$dir/send.log"
@@ -588,13 +583,12 @@ test_unrelated_writer_cannot_close_or_hijack_reserved_key() {
     printf 'blocked [key=%s]: pending-reply-missed: task=mate pending-reply-id=%s request=ship it\n' \
       "$key" "$corr"
     printf 'blocked [key=%s]: shipping is blocked on infra\n' "$key"
-    printf 'resolved [key=%s]: answered: operator thought this would close it\n' "$key"
-    printf 'resolved [key=%s]: all good now\n' "$key"
+    printf 'working: prose mentions resolved [key=%s]: but does not lead the line\n' "$key"
   } > "$home/state/mate.status"
 
   out=$(drain_out "$home")
   printf '%s' "$out" | grep -F "pending-reply-id=$corr" >/dev/null \
-    || fail "an unrelated answered: resolution cleared a reserved decision: $out"
+    || fail "unrelated text cleared a reserved decision: $out"
   if printf '%s' "$out" | grep -F 'shipping is blocked on infra' >/dev/null; then
     fail "an unrelated writer took over a reserved decision key: $out"
   fi
@@ -605,35 +599,37 @@ test_unrelated_writer_cannot_close_or_hijack_reserved_key() {
   if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
     fail "the reserved key stayed open after the operator close: $out"
   fi
-  pass "fm-send --resolve-key: an unrelated writer cannot close or hijack a reserved key, and the operator close still can"
+  pass "fm-send --resolve-key: foreign opens and prose cannot hijack a reserved key, while an explicit close can"
 }
 
-test_unclosable_reserved_key_refuses_before_send() {
-  local dir fb log home err rc out
-  dir="$TMP_ROOT/reserved-refuse"; mkdir -p "$dir"
-  fb=$(make_stubs "$dir"); log="$dir/send.log"; err="$dir/send.err"
-  home=$(setup_home reserved-refuse)
+test_custom_reserved_key_recognized_by_fold_closes_through_send() {
+  local dir fb log home rc out
+  dir="$TMP_ROOT/reserved-custom"; mkdir -p "$dir"
+  fb=$(make_stubs "$dir"); log="$dir/send.log"
+  home=$(setup_home reserved-custom)
   fm_write_meta "$home/state/t1.meta" "window=sess:fm-t1" "kind=ship"
   printf 'blocked [key=secret-abc]: secret-held: keep this\n' > "$home/state/t1.status"
+
+  out=$(FM_CLASSIFY_RESERVED_KEY_PREFIXES='pending-reply- secret-' drain_out "$home")
+  printf '%s' "$out" | grep -F '[key=secret-abc]' >/dev/null \
+    || fail "precondition: the custom reserved blocker was not recognized by the fold: $out"
 
   : > "$log"
   env PATH="$fb:$PATH" \
     FM_ROOT_OVERRIDE="$home" FM_HOME="$home" FM_SEND_LOG="$log" FM_SEND_SETTLE=0 \
     FM_CLASSIFY_RESERVED_KEY_PREFIXES='pending-reply- secret-' \
-    "$SEND" t1 --resolve-key secret-abc "this must not silently no-op" >/dev/null 2>"$err"; rc=$?
-  [ "$rc" -ne 0 ] || fail "a reserved key this send cannot close should refuse"
-  assert_contains "$(cat "$err")" "--resolve-key 'secret-abc'" "the refusal should name the reserved key"
-  assert_contains "$(cat "$err")" "cannot take effect" "the refusal should say the close cannot take effect"
-  assert_contains "$(cat "$err")" "nothing was sent" "the refusal should state nothing was sent"
-  [ ! -s "$log" ] || fail "a refused reserved-key close still typed text: $(cat "$log")"
-  [ ! -d "$home/state/t1.inbox" ] || fail "a refused reserved-key close still enqueued an inbox record"
-  if grep -F 'resolved' "$home/state/t1.status" >/dev/null; then
-    fail "a refused reserved-key close still wrote a resolved line: $(cat "$home/state/t1.status")"
+    "$SEND" t1 --resolve-key secret-abc "resolve through the public interface" >/dev/null 2>&1; rc=$?
+  expect_code 0 "$rc" "a reserved key recognized by the fold should be resolvable by fm-send"
+  grep -F 'resolved [key=secret-abc]: secret-resolved: answered: resolve through the public interface' \
+    "$home/state/t1.status" >/dev/null \
+    || fail "fm-send did not append the universal close: $(cat "$home/state/t1.status")"
+  grep -F 'resolve through the public interface' "$home/state/t1.inbox/001.msg" >/dev/null \
+    || fail "the accepted reserved-key answer was not delivered"
+  out=$(FM_CLASSIFY_RESERVED_KEY_PREFIXES='pending-reply- secret-' drain_out "$home")
+  if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
+    fail "the custom reserved key stayed open after the public close: $out"
   fi
-  out=$(drain_out "$home")
-  printf '%s' "$out" | grep -F '[key=secret-abc]' >/dev/null \
-    || fail "the reserved decision disappeared after a refused close: $out"
-  pass "fm-send --resolve-key: a reserved key this send cannot close refuses loudly before anything is sent"
+  pass "fm-send --resolve-key: every reserved key recognized by the fold uses the same public close"
 }
 
 test_long_decision_key_refuses_before_send() {
@@ -709,9 +705,9 @@ test_remote_reserved_pending_reply_key_closes_locally() {
     FM_SSH_BIN="$fb/fake-ssh" FM_SSH_LOG="$ssh_log" FM_FAKE_SSH_RC=0 \
     "$SEND" rsm --resolve-key "$key" "ack the missed-reply hold" >/dev/null 2>&1; rc=$?
   expect_code 0 "$rc" "a remote reserved-key --resolve-key should succeed"
-  grep -F "pending-reply-resolved: task=rsm pending-reply-id=$corr via=operator-resolve-key" \
+  grep -F "resolved [key=$key]: pending-reply-resolved: answered: ack the missed-reply hold" \
     "$home/state/rsm.status" >/dev/null \
-    || fail "the remote operator close did not write the owning library's close note: $(cat "$home/state/rsm.status")"
+    || fail "the remote operator close did not write the universal resolved protocol: $(cat "$home/state/rsm.status")"
   out=$(drain_out "$home")
   if printf '%s' "$out" | grep -F 'OPEN DECISIONS' >/dev/null; then
     fail "the remote reserved pending-reply decision still lists as open: $out"
@@ -734,8 +730,8 @@ test_remote_reply_corr_tag_does_not_block_resolve_key
 test_remote_transport_failure_does_not_close
 test_flag_misuse_refuses
 test_reserved_pending_reply_key_closes_through_resolve_key
-test_unrelated_writer_cannot_close_or_hijack_reserved_key
-test_unclosable_reserved_key_refuses_before_send
+test_unrelated_writer_cannot_hijack_or_prose_close_reserved_key
+test_custom_reserved_key_recognized_by_fold_closes_through_send
 test_long_decision_key_refuses_before_send
 test_failed_close_recovery_command_is_shell_safe
 test_remote_reserved_pending_reply_key_closes_locally

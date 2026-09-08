@@ -69,12 +69,9 @@
 # request in every later OPEN DECISIONS fold.
 # That per-request key lives in a namespace the fold reserves to this library, so
 # no other writer into the same status stream - a local mate appending directly,
-# or a remote mate's mirrored line - can take the key over or clear it; see the
-# reserved-key rule in bin/fm-classify-lib.sh.
-# The operator-facing close of that same keyed decision is still
-# fm-send --resolve-key (bin/fm-send.sh header): it must speak the close note
-# owned below (fm_pending_reply_resolved_note), because a bare answered: note is
-# not a reserved-key transition and would leave the decision open.
+# or a remote mate's mirrored line - can take the key over; see the reserved-key
+# rule in bin/fm-classify-lib.sh. The universal explicit `resolved [key=...]`
+# protocol remains the public manual close through fm-send --resolve-key.
 #
 # Sourced by bin/fm-send.sh, bin/fm-watch.sh, bin/fm-secondmate-report.sh, and
 # tests. No side effects on source. set -u / set -e safe.
@@ -1022,29 +1019,14 @@ fm_pending_reply_escalation_key() {  # <corr_id>
   printf 'pending-reply-%s' "$1"
 }
 
-# Close-note body the reserved-key fold accepts as this library's resolution.
-# The fold's guard (bin/fm-classify-lib.sh _fm_decision_key_transition_allowed)
-# requires the note to begin with this namespace's vocabulary token; this is
-# that token plus the stable task/id/via fields both the record close and the
-# operator --resolve-key path write. Optional <extra> is appended after a space.
+# Close-note body this library writes when its own pending-reply record resolves.
+# The stable task/id/via fields distinguish an owner close from the universal
+# public manual-close protocol. Optional <extra> is appended after a space.
 fm_pending_reply_resolved_note() {  # <task-id> <corr_id> <via> [extra]
   printf 'pending-reply-resolved: task=%s pending-reply-id=%s via=%s' "$1" "$2" "$3"
   if [ -n "${4:-}" ]; then
     printf ' %s' "$4"
   fi
-}
-
-# 0 and prints the close note when <key> is in this library's reserved
-# namespace (pending-reply-<corr>). fm-send --resolve-key uses this so an
-# operator close speaks the same vocabulary as fm_pending_reply_close_escalation
-# instead of writing a silent no-op answered: note.
-fm_pending_reply_close_note_for_key() {  # <key> <task-id> <via> [extra]
-  case "$1" in
-    pending-reply-*)
-      fm_pending_reply_resolved_note "$2" "${1#pending-reply-}" "$3" "${4:-}"
-      ;;
-    *) return 1 ;;
-  esac
 }
 
 fm_pending_reply_escalation_payload() {  # <record-path> <kind>
