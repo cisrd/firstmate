@@ -1,0 +1,270 @@
+# Lifecycle CLI evidence
+
+Commands ran against disposable git repositories and isolated Firstmate homes. Session-provider fixtures were used except for real-herdr-occupancy.txt. Process-reaping and shared-copy tests used real sleep processes; lsof-present tests used protocol fixtures because lsof is not installed. Watcher warnings in fixture output are expected: these temporary homes intentionally have no supervisor.
+
+# fm-teardown-endpoint-safety
+
+## fm-teardown: a pool slot named by a second task record is never returned, killed, or reset
+
+
+## fm-teardown: a shared ordinary worktree is refused before any process is signalled
+
+
+## fm-teardown: a pool slot held by another firstmate home is never returned
+
+
+## fm-teardown: a task that solely holds its slot still returns it
+
+
+## fm-teardown: an exact recorded endpoint still tears down after changing cwd outside its worktree
+
+
+## fm-teardown: a pool slot named by a second task record is never returned, killed, or reset
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: task stale-task's recorded worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-reuse-home/pool/1/project is also task live-task's recorded worktree.
+Returning that copy would kill live-task's processes and reset its work, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh stale-task; bin/fm-crew-state.sh live-task), then re-run teardown.
+
+## fm-teardown: a shared ordinary worktree is refused before any process is signalled
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: task stale-task's recorded worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/non-pool-shared/worktree is also task live-task's recorded worktree.
+Returning that copy would kill live-task's processes and reset its work, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh stale-task; bin/fm-crew-state.sh live-task), then re-run teardown.
+
+## fm-teardown: a pool slot held by another firstmate home is never returned
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: task stale-task's recorded worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-reuse-cross-home/pool/1/project is also task secondmate-task's recorded worktree.
+Returning that copy would kill secondmate-task's processes and reset its work, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh stale-task; bin/fm-crew-state.sh secondmate-task), then re-run teardown.
+
+## fm-teardown: a task that solely holds its slot still returns it
+
+teardown sole-task complete (window firstmate:fm-sole-task, worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-sole/worktree)
+Backlog: sole-task just finished (this home keeps no backlog at /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-sole/home/data/backlog.md). Update /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-sole/home/data/backlog.md - move sole-task to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  2 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## fm-teardown: an exact recorded endpoint still tears down after changing cwd outside its worktree
+
+teardown moved-task complete (window firstmate:fm-moved-task, worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-endpoint-moved/worktree)
+Backlog: moved-task just finished (this home keeps no backlog at /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-endpoint-moved/home/data/backlog.md). Update /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-endpoint-safety.xH7BnY/slot-endpoint-moved/home/data/backlog.md - move moved-task to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+# fm-secondmate-safety
+
+## force teardown refuses a child copy a second live record still claims
+
+
+## force teardown refuses an Orca child copy a second live record still claims
+
+
+## force teardown refuses a child copy a second live record still claims
+
+REFUSED: task child's recorded worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-secondmate-safety.nUpVLf/shared-child-worktree is also task neighbour's recorded worktree.
+Returning that copy would kill neighbour's processes and reset its work, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh child; bin/fm-crew-state.sh neighbour), then re-run teardown.
+
+## force teardown refuses an Orca child copy a second live record still claims
+
+REFUSED: task child's recorded worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-secondmate-safety.nUpVLf/shared-orca-worktree is also task neighbour's recorded worktree.
+Returning that copy would kill neighbour's processes and reset its work, so nothing was changed - not even with --force.
+Reconcile whichever record is wrong (bin/fm-crew-state.sh child; bin/fm-crew-state.sh neighbour), then re-run teardown.
+
+# fm-teardown
+
+## missing lsof still reaps leaked cwd processes on the first teardown via /proc
+
+/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-proc-cwd-reap/project: already current
+teardown task-x1 complete (window firstmate:fm-task-x1, worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-proc-cwd-reap/wt)
+Backlog: task-x1 just finished (this home keeps no backlog at /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-proc-cwd-reap/data/backlog.md). Update /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-proc-cwd-reap/data/backlog.md - move task-x1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 1s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown: reaping leaked worktree process(es) for task-x1: 51001
+
+## missing lsof refuses rather than reporting a copy its own invoker still occupies as free
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 1s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: teardown was invoked from inside /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/no-lsof-invoker-inside/wt (process 65780 still has it as its working directory); leave that copy and re-run.
+REFUSED: cannot determine leaked processes under /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/no-lsof-invoker-inside/wt for task-x1 (the cwd scan could not establish a safe result); preserving the worktree/tasktmp for manual inspection or retry.
+
+## an lsof scan refuses a copy its own invoker still occupies instead of killing that shell
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 1s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: teardown was invoked from inside /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-invoker-inside/wt (process 69863 still has it as its working directory); leave that copy and re-run.
+REFUSED: cannot determine leaked processes under /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-invoker-inside/wt for task-x1 (the cwd scan could not establish a safe result); preserving the worktree/tasktmp for manual inspection or retry.
+
+## missing lsof and /proc falls back to reaping the tmux pane process group
+
+/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-process-group-reap/project: already current
+teardown task-x1 complete (window firstmate:fm-task-x1, worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-process-group-reap/wt)
+Backlog: task-x1 just finished (this home keeps no backlog at /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-process-group-reap/data/backlog.md). Update /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-absent-process-group-reap/data/backlog.md - move task-x1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown: reaping leaked worktree process group for task-x1: 70875
+
+## an erroring lsof scan refuses teardown and preserves the task
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFUSED: cannot determine leaked processes under /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-teardown-tests.4487e0/lsof-error-refusal/wt for task-x1 (the cwd scan could not establish a safe result); preserving the worktree/tasktmp for manual inspection or retry.
+
+## persistent leaked processes refuse teardown after bounded retries
+
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no live watcher process holds this home lock (last beat: 0s ago).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+teardown: reaping leaked worktree process(es) for task-x1: 99999999
+teardown: force-killing leaked worktree process(es) for task-x1: 99999999
+teardown: reaping leaked worktree process(es) for task-x1: 99999999
+teardown: force-killing leaked worktree process(es) for task-x1: 99999999
+teardown: reaping leaked worktree process(es) for task-x1: 99999999
+teardown: force-killing leaked worktree process(es) for task-x1: 99999999
+REFUSED: leaked worktree processes for task-x1 remain after 3 reap attempts; preserving the worktree/tasktmp for manual inspection or retry.
+
+# fm-control-relaunch
+
+## fm-control relaunch: a live shell outside the recorded copy is refused before stop
+error: task rl43's live shell is in /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/occ-mismatch-20427/proj, not its recorded worktree /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/occ-mismatch-20427/wt; refusing to stop the agent
+
+## fm-control relaunch: an unverifiable live cwd preserves the agent
+error: task rl44's live working directory cannot be verified; refusing to stop the agent without proof it occupies /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/occ-empty-9306/wt
+
+## fm-control relaunch: an endpoint outside the recorded copy refuses instead of re-entering it
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/idle-cwd-5624/home/data/rl45/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+error: task rl45's endpoint is in '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/idle-cwd-5624/proj', not its recorded worktree '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/idle-cwd-5624/wt'; refusing to relaunch an agent outside the copy holding its work
+error: the replacement agent for rl45 could not be launched on claude
+error: rl45's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/idle-cwd-5624/wt
+
+## fm-control relaunch: a launch failure after the stop keeps the prior record and reports the real state
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/rollback-6110/home/data/rl13/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+error: task rl13's endpoint is in '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/rollback-6110/proj', not its recorded worktree '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/rollback-6110/wt'; refusing to relaunch an agent outside the copy holding its work
+error: the replacement agent for rl13 could not be launched on codex
+error: rl13's agent was stopped but the replacement did not launch; no agent is running, and its work plus the recorded progress note are preserved at /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/rollback-6110/wt
+
+## fm-spawn --relaunch: refuses to start a replacement outside the copy holding the work
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/wrongcwd-3405/home/data/rl18/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+error: task rl18's endpoint is in '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/wrongcwd-3405/proj', not its recorded worktree '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.O7fpk2/wrongcwd-3405/wt'; refusing to relaunch an agent outside the copy holding its work
+
+## fm-control relaunch: a same-harness relaunch replaces the agent in the same endpoint and worktree
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.uMOqPv/same-11588/home/data/rl1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched rl1 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl1 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.uMOqPv/same-11588/wt
+
+## fm-control relaunch: switching harness is one ordinary relaunch, and the old wiring goes with the old agent
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.uMOqPv/switch-27141/home/data/rl4/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched rl4 harness=codex from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl4 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.uMOqPv/switch-27141/wt
+
+## fm-control relaunch: the progress note lands in the instructions the replacement reads
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.uMOqPv/note-12188/home/data/rl2/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+relaunched rl2 harness=claude from=claude model=default effort=default backend=tmux endpoint=fmses:fm-rl2 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-control-relaunch.uMOqPv/note-12188/wt
+
+# fm-tangle-guard
+
+## fm_git_primary_workdir: a linked worktree resolves to the primary checkout
+
+
+## fm_primary_tangle_branch: feature branch alarms; default/detached/non-git stay silent
+
+
+## fm-guard: bordered tangle banner fires only for a feature branch and suppresses repair commands in read-only mode
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WORKTREE TANGLE - PRIMARY CHECKOUT IS ON A FEATURE BRANCH
+●  /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/guard-repo is on 'fm/tangle-aa1', not its default branch 'main'.
+●  A crewmate likely branched/committed in the primary instead of its own worktree.
+●  The work is SAFE on the 'fm/tangle-aa1' ref.
+●  This read-only session must leave restore work to a session with verified fleet-lock ownership.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+## fm-bootstrap: TANGLE problem line fires only for a feature branch and suppresses repair commands in detect-only mode
+TANGLE: primary checkout on feature branch 'fm/tangle-bb2' (expected 'main'); the work is safe on that ref - read-only session must leave restore work to the session holding the fleet lock
+
+## fm-brief: ship brief asserts worktree isolation before the branch step
+
+
+## fm-brief: a project of '.' labels the repository and leaves every path to the launch contract
+
+
+## fm-spawn: aborts unless the resolved worktree is a genuine, isolated worktree
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-home/data/ok-isolated-ff6/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned ok-isolated-ff6 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-ok-isolated-ff6 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-wt
+
+## fm-spawn: project '.' from a linked worktree keeps that copy as the project and accepts a genuine isolated worktree
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-dot-home/data/spawn-dot-ii9/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned spawn-dot-ii9 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-spawn-dot-ii9 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-dot-other
+
+## fm-spawn: project '.' still refuses the repository primary checkout
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-dot-primary-home/data/spawn-dot-jj0/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+error: treehouse get did not enter an isolated worktree within 60s (last seen '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-dot-primary-proj': it is the repository's primary checkout (its git dir is the spawning project's common git dir); spawning project '/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-dot-primary-linked'); inspect window firstmate:fm-spawn-dot-jj0
+
+## fm-spawn: the launch brief carries the exact worktree and primary paths, not a repo label
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-label-home/data/spawn-label-kk1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned spawn-label-kk1 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-spawn-label-kk1 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-label-wt
+
+## fm-spawn: a dot-scaffolded brief carries only the launching project's primary path
+spawned dot-scaffold-mm3 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-dot-scaffold-mm3 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/dot-scaffold-wt
+
+## fm-spawn: appends windows by session-colon, pins the name, and targets the window id
+warning: /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-rec-home/data/rec-win-gg7/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned rec-win-gg7 harness=codex kind=ship mode=no-mistakes yolo=off window=firstmate:fm-rec-win-gg7 worktree=/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M20Y4MQY0P971881N5Y09JGN/.local-test/tmp/fm-tangle-guard.i1YrIS/spawn-rec-wt

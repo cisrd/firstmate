@@ -1,0 +1,17 @@
+Target: 2222e33589947c204cd054ecdc91200e71388d8f
+Baseline: git status --short; git diff --stat d42016a 2222e33; inspected changed implementation and executable tests.
+
+Existing test selectors executed using temporary copies in tests/.local-*.sh with original definitions and assertions unchanged. Bottom-level test invocations were limited to these selectors; pass reporters additionally preserved CLI output before automatic fixture cleanup:
+fm-teardown: test_lsof_absent_reaps_via_proc_cwd, test_no_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy, test_lsof_reap_refuses_when_its_own_invoker_occupies_the_copy, test_lsof_absent_reaps_tmux_process_group, test_lsof_error_refuses_before_removal, test_persistent_scan_refuses_after_bounded_retries
+fm-control-relaunch: test_occupied_directory_mismatch_refuses_before_stop, test_unreadable_occupied_directory_preserves_the_agent, test_idle_shell_outside_the_copy_is_never_walked_back_into_it, test_launch_failure_keeps_the_prior_record_and_reports_it, test_spawn_relaunch_refuses_a_pane_outside_the_worktree
+fm-secondmate-safety: test_secondmate_force_teardown_refuses_shared_child_worktree, test_secondmate_force_teardown_refuses_shared_orca_child_worktree
+fm-teardown-endpoint-safety: test_reused_pool_slot_refuses_before_touching_the_other_task, test_non_pool_shared_worktree_refuses_before_reap, test_cross_home_pool_slot_collision_refuses, test_sole_slot_record_still_tears_down, test_recorded_endpoint_that_changed_directory_still_tears_down
+fm-backend: test_running_current_path_never_uses_active_shell_probes, test_spawn_symlinked_project_prefix_avoids_false_refusal
+fm-tangle-guard: all cases
+Additional fm-control-relaunch selectors: test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint, test_harness_switch_moves_the_record_and_clears_prior_wiring, test_relaunch_appends_the_progress_note_to_the_instructions
+
+Runner command: TMPDIR="$PWD/.local-test/tmp" bash tests/.local-<name>.sh
+
+Real Herdr: isolated HOME, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, XDG_CACHE_HOME inside this worktree. Initial server startup failed because socket pathname exceeded sun_path; shortened XDG_CONFIG_HOME to "$PWD/.h" and retried successfully. Started a private headless server, created a shell pane, registered fixture agent, moved shell outside its recorded worktree, invoked fm-control relaunch, checked rejection, live agent state, byte-identical metadata, and intact worktree. No model was launched. See herdr-check.sh for exact commands. The installed Herdr reports both cwd and foreground_cwd updated; this run proves passive occupied-directory checking, not reproduction of an older frozen cwd field.
+
+No linters, formatters, static analysis, full suite, or pipeline-control commands ran. No UI changes; evidence is CLI output and the generated worker launch brief.
