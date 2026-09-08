@@ -7,14 +7,18 @@
 # for this project", never "how does this task ship". A task's delivery mode and
 # yolo are resolved by firstmate at intake and passed explicitly to
 # bin/fm-brief.sh, bin/fm-spawn.sh, and bin/fm-promote.sh (AGENTS.md section 7).
-# The consumers are bin/fm-fleet-sync.sh (skip local-only clones),
-# bin/fm-home-seed.sh (refuse local-only seeding, run no-mistakes init), and
-# bin/fm-spawn.sh's advisory registry-deviation notice.
+# The consumers are bin/fm-fleet-sync.sh (skip local-only clones and resolve their
+# registered integration branch), bin/fm-home-seed.sh (refuse local-only seeding,
+# run no-mistakes init), and bin/fm-spawn.sh's advisory registry-deviation notice.
 #
 # Registry line format (data/projects.md):
-#   - <name> - <desc> (added <date>)                  -> no-mistakes off  (legacy default)
-#   - <name> [<mode>] - <desc> (added <date>)          -> <mode> off
-#   - <name> [<mode> +yolo] - <desc> (added <date>)    -> <mode> on
+#   - <name> - <desc> (added <date>)                              -> no-mistakes off  (legacy default)
+#   - <name> [<mode>] - <desc> (added <date>)                     -> <mode> off
+#   - <name> [<mode> +yolo integration-branch=<branch>] - <desc> -> <mode> on
+#
+# `integration-branch=<branch>` is a structured annotation. It is intentionally
+# not read from the free-form description. Omitted integration branches are
+# reported as empty by --integration-branch so callers retain their old fallback.
 #
 # Registered modes:
 #   no-mistakes            full pipeline -> PR -> configured merge authority (default)
@@ -34,7 +38,10 @@
 #
 # An unknown/missing project or unknown mode falls back to "no-mistakes off" and warns
 # to stderr, so a typo never silently drops the gate.
-# Usage: fm-project-mode.sh [--raw] <project-name>
+# --raw prints the registered mode annotation unmapped.
+# --integration-branch prints the structured integration branch, or nothing when
+# the registry uses the legacy format without one.
+# Usage: fm-project-mode.sh [--raw|--integration-branch] <project-name>
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,42 +50,66 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 REG="$DATA/projects.md"
 RAW=0
-if [ "${1:-}" = "--raw" ]; then
-  RAW=1
-  shift
-fi
-NAME=${1:?usage: fm-project-mode.sh [--raw] <project-name>}
+QUERY=mode
+case "${1:-}" in
+  --raw) RAW=1; shift ;;
+  --integration-branch) QUERY=integration-branch; shift ;;
+  '') ;;
+  -*) echo "usage: fm-project-mode.sh [--raw|--integration-branch] <project-name>" >&2; exit 1 ;;
+  *) ;;
+esac
+NAME=${1:?usage: fm-project-mode.sh [--raw|--integration-branch] <project-name>}
 
 if [ ! -f "$REG" ]; then
+  if [ "$QUERY" = integration-branch ]; then
+    exit 0
+  fi
   echo "warn: no registry at $REG; defaulting $NAME to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0
 fi
 
-# awk emits "<mode> <yolo>" (one line) or nothing if the project is absent.
+# awk emits "<mode> <yolo> <integration-branch>" (one line) or nothing if
+# the project is absent. The third field is only consumed by the branch query.
 parsed=$(awk -v n="$NAME" '
   $1=="-" && $2==n {
-    mode="no-mistakes"; yolo="off";
+    mode="no-mistakes"; yolo="off"; integration="";
     if ($3 ~ /^\[/) {
       s="";
       for (i=3; i<=NF; i++) { s = s (s==""?"":" ") $i; if ($i ~ /\]$/) break }
       gsub(/^\[|\]$/, "", s);           # strip the surrounding brackets
       k = split(s, a, " ");
-      if (a[1] != "" && a[1] != "+yolo") mode = a[1];
-      for (j=1; j<=k; j++) if (a[j]=="+yolo") yolo="on";
+      if (a[1] != "" && a[1] != "+yolo" && a[1] !~ /^integration-branch=/) mode = a[1];
+      for (j=1; j<=k; j++) {
+        if (a[j]=="+yolo") yolo="on";
+        if (a[j] ~ /^integration-branch=/) integration=substr(a[j], 20);
+      }
     }
-    print mode, yolo; exit
+    print mode, yolo, integration; exit
   }
 ' "$REG")
 
 if [ -z "$parsed" ]; then
+  if [ "$QUERY" = integration-branch ]; then
+    exit 0
+  fi
   echo "warn: project \"$NAME\" not in registry; defaulting to no-mistakes off" >&2
   echo "no-mistakes off"
   exit 0
 fi
 
 mode=${parsed%% *}
-yolo=${parsed##* }
+yolo=${parsed#* }
+yolo=${yolo%% *}
+integration_branch=${parsed##* }
+if [ "$QUERY" = integration-branch ]; then
+  if [ -n "$integration_branch" ] && ! git check-ref-format --branch "$integration_branch" >/dev/null 2>&1; then
+    echo "warn: invalid integration branch \"$integration_branch\" for $NAME; using the remote default branch" >&2
+    exit 0
+  fi
+  [ "$integration_branch" = "-" ] || printf '%s\n' "$integration_branch"
+  exit 0
+fi
 case "$mode" in
   no-mistakes|direct-PR|local-only|no-mistakes-prod-only) ;;
   *) echo "warn: unknown mode \"$mode\" for $NAME; defaulting to no-mistakes off" >&2; mode=no-mistakes; yolo=off ;;

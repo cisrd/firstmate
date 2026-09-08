@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Refresh project clones: fast-forward the checked-out local default branch to
-# origin/<default> when safe, and prune local branches whose upstream tracking
+# Refresh project clones: fast-forward the checked-out registered integration
+# branch, or the remote default branch for legacy registry entries, to its
+# origin/<branch> when safe, and prune local branches whose upstream tracking
 # branch is gone (the remote branch was deleted, i.e. its PR merged) and that no
 # worktree still needs.
 # Self-heals the one unambiguously safe drift: a clean, detached HEAD that holds
-# no unique commits (it is an ancestor of origin/<default>) and whose <default>
+# no unique commits (it is an ancestor of origin/<branch>) and whose integration
 # branch is free to check out is re-attached and then fast-forwarded ("recovered:").
 # Every other off-default state - a non-default named branch, a detached HEAD with
 # unique commits, a dirty tree, or a diverged default - may hold real work, so it
@@ -156,9 +157,10 @@ packed_refs_lock_path() {
   esac
 }
 
-# Run `git -C "$PROJ" fetch origin --prune --quiet`, tolerating an orphaned
-# packed-refs.lock left by a killed ref rewrite. Sets FETCH_OUTPUT to the git
-# command's combined output and returns its exit status. On the packed-refs.lock
+# Run the selected branch fetch, or the legacy all-branch fetch when no
+# integration branch is declared, tolerating an orphaned packed-refs.lock left
+# by a killed ref rewrite. Sets FETCH_OUTPUT to the git command's combined output
+# and returns its exit status. On the packed-refs.lock
 # signature ONLY: retry up to FLEET_SYNC_PACKED_REFS_LOCK_RETRIES times (a
 # transient lock self-clears as the owning process exits), then - only if the lock
 # is provably stale per fm-lock-lib.sh (still present, mtime age past the
@@ -167,9 +169,17 @@ packed_refs_lock_path() {
 # today's behavior. Every wait, retry, and removal prints to stderr, and a
 # successful recovery also prints one "$label: recovered: ..." summary to stdout so
 # a session-start refresh (which discards fleet-sync stderr) still surfaces it.
+fetch_origin() {
+  if [ "${INTEGRATION_DECLARED:-no}" = yes ]; then
+    git -C "$PROJ" fetch origin "$DEFAULT" --quiet
+  else
+    git -C "$PROJ" fetch origin --prune --quiet
+  fi
+}
+
 fetch_with_packed_refs_lock_guard() {
   local rc attempt=0 lock lock_desc
-  FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+  FETCH_OUTPUT=$(fetch_origin 2>&1); rc=$?
   [ "$rc" -eq 0 ] && return 0
   is_packed_refs_lock_error "$FETCH_OUTPUT" || return "$rc"
 
@@ -179,7 +189,7 @@ fetch_with_packed_refs_lock_guard() {
     attempt=$(( attempt + 1 ))
     echo "$label: fetch blocked by packed-refs lock ($lock_desc); waiting ${FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${FLEET_SYNC_PACKED_REFS_LOCK_RETRIES}) (owning process may be exiting)" >&2
     sleep "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS"
-    FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+    FETCH_OUTPUT=$(fetch_origin 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       echo "$label: fetch succeeded on retry; packed-refs lock cleared on its own" >&2
       # One stdout summary so a session-start refresh (which discards fleet-sync
@@ -203,7 +213,7 @@ fetch_with_packed_refs_lock_guard() {
         return "$rc"
       fi
       echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2
-      FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
+      FETCH_OUTPUT=$(fetch_origin 2>&1); rc=$?
       if [ "$rc" -eq 0 ]; then
         echo "$label: fetch succeeded after stale packed-refs lock cleanup" >&2
         echo "$label: recovered: removed a stale packed-refs lock (no live holder)"
@@ -289,8 +299,8 @@ stuck_state() {
 }
 
 # Loud, quantified report for a clone we deliberately leave untouched. Includes
-# how far behind origin/<default> it is, so a chronically-stuck clone is visibly
-# distinct from a benign one-off skip.
+# how far behind the selected origin/<branch> it is, so a chronically-stuck clone
+# is visibly distinct from a benign one-off skip.
 report_stuck() {
   local state=$1 behind
   behind=$(git -C "$PROJ" rev-list --count "HEAD..$BASE" 2>/dev/null) || behind="?"
@@ -335,8 +345,23 @@ sync_project() {
     return 0
   fi
 
+  # The registry's structured integration branch is authoritative when present.
+  # Legacy entries deliberately retain the previous remote-default resolution.
+  integration_branch=$("$FM_ROOT/bin/fm-project-mode.sh" --integration-branch "$label" 2>/dev/null || true)
+  if [ -n "$integration_branch" ]; then
+    DEFAULT=$integration_branch
+    INTEGRATION_DECLARED=yes
+  else
+    INTEGRATION_DECLARED=no
+    DEFAULT=$(default_branch) || {
+      echo "$label: skipped: cannot determine default branch"
+      return 0
+    }
+  fi
+  BASE="origin/$DEFAULT"
+
   if ! fetch_with_packed_refs_lock_guard; then
-    reason="fetch failed"
+    reason="fetch failed for $BASE"
     if [ -n "$FETCH_OUTPUT" ]; then
       reason="$reason: $(first_line "$FETCH_OUTPUT")"
     fi
@@ -344,13 +369,15 @@ sync_project() {
     return 0
   fi
 
+  if [ "${INTEGRATION_DECLARED:-no}" = yes ]; then
+    if ! prune_output=$(git -C "$PROJ" remote prune origin 2>&1); then
+      reason="remote ref pruning failed for $BASE"
+      [ -n "$prune_output" ] && reason="$reason: $(first_line "$prune_output")"
+      echo "$label: skipped: $reason"
+      return 0
+    fi
+  fi
   prune_gone_branches || true
-
-  DEFAULT=$(default_branch) || {
-    echo "$label: skipped: cannot determine default branch"
-    return 0
-  }
-  BASE="origin/$DEFAULT"
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
     echo "$label: skipped: $BASE does not exist"
     return 0
@@ -405,9 +432,9 @@ sync_project() {
   }
   if [ "$local_rev" = "$remote_rev" ]; then
     if [ "$recovered" = yes ]; then
-      echo "$label: recovered: re-attached $DEFAULT (already current)"
+      echo "$label: recovered: re-attached $DEFAULT (already current at $BASE)"
     else
-      echo "$label: already current"
+      echo "$label: already current on $DEFAULT ($BASE)"
     fi
     return 0
   fi
@@ -433,9 +460,9 @@ sync_project() {
     return 0
   }
   if [ "$recovered" = yes ]; then
-    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after"
+    echo "$label: recovered: re-attached $DEFAULT, synced $before..$after to $BASE"
   else
-    echo "$label: synced $before..$after"
+    echo "$label: synced $before..$after to $BASE"
   fi
   return 0
 }
