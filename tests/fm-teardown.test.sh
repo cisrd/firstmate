@@ -271,7 +271,7 @@ SH
 case "\${1:-} \${2:-}" in
   "pr view")
     case " \$* " in
-      *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' 'MERGED' '$head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
+      *"state,headRefOid,url"*) printf '%s\t%s\t%s\n' '$upper' '$head' 'https://github.com/example/repo/pull/7' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
     esac
     ;;
@@ -280,6 +280,10 @@ echo "error: pull request not found" >&2
 exit 1
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+add_gh_pr_merged_for_head() {
+  add_gh_pr_state_for_head "$1" merged "$2"
 }
 
 # Squash-merged history whose pipeline rebased the branch onto a newer main that
@@ -368,6 +372,8 @@ assert_refusal_retained_task_state() {
     || fail "$label: refusal moved the task branch off the unlanded commit"
   [ -e "$case_dir/state/task-x1.meta" ] \
     || fail "$label: refusal erased the durable task record"
+}
+
 # Override GitHub lookups to report PR 7 as still open with the supplied head.
 # A merge-queue enqueue leaves the pull request OPEN until it actually lands.
 add_gh_pr_open_for_head() {
