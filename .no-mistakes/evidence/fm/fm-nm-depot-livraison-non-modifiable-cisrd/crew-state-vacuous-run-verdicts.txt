@@ -1,0 +1,99 @@
+############################################################
+# fm-crew-state verdicts: BEFORE the fix (base d42016ac)
+# Every shape below - including the incident run that skipped
+# review/test/document/lint/push/pr/ci - was reported to the captain as done.
+############################################################
+=== 1. INCIDENT SHAPE: run 'completed' but the branch diff vanished into the rebase base
+    (no-mistakes: 'empty diff after rebase, skipping remaining steps')
+--- axi status (what no-mistakes reports) ---
+    run:
+      id: "01M1Z1PC8EPBCW0P4W4FTYG2AG"
+      branch: fm/fm-nm-depot-livraison
+      status: completed
+      head: "a6cc3f3ca021ccca38cd531ed6c27659a35d7b42"
+      findings: none
+    steps[9]{step,status,findings,duration_ms}:
+      intent,skipped,0,5
+      rebase,completed,0,95
+      review,skipped,0,0
+      test,skipped,0,0
+      document,skipped,0,0
+      lint,skipped,0,0
+      push,skipped,0,0
+      pr,skipped,0,0
+      ci,skipped,0,0
+--- fm-crew-state verdict ---
+    state: done · source: run-step · run completed
+
+=== 2. Same shape reported through an explicit terminal 'outcome: passed' line
+--- fm-crew-state verdict ---
+    state: done · source: run-step · run passed: PR merged/closed
+
+=== 3. CONTROL: a run that really executed every phase and opened its PR
+--- fm-crew-state verdict ---
+    state: done · source: run-step · checks green: PR ready for review
+
+=== 4. COARSE LEDGER FALLBACK (a second crew owns bare 'axi status'):
+    crew A's newest ledger row is 'completed' at A's head and carries NO PR
+--- no-mistakes runs --limit N (the ledger) ---
+    running    fm/other-crew aaaaaaa  2026-09-08 22:10
+    completed  fm/feat-coarse-bare 27f4561  2026-09-08 22:05
+--- fm-crew-state verdict ---
+    state: done · source: run-step · run completed
+
+=== 5. COARSE LEDGER FALLBACK: crew A's 'completed' row carries a PR URL
+    (positive proof push+pr ran) - the delivery outcome must still reach the captain
+--- no-mistakes runs --limit N (the ledger) ---
+    running    fm/other-crew aaaaaaa  2026-09-08 22:10
+    completed  fm/feat-coarse-pr 27f4561  2026-09-08 22:05  https://github.com/cisrd/firstmate/pull/311
+--- fm-crew-state verdict ---
+    state: done · source: run-step · run completed
+
+############################################################
+# fm-crew-state verdicts: AFTER the fix (93129d6)
+############################################################
+=== 1. INCIDENT SHAPE: run 'completed' but the branch diff vanished into the rebase base
+    (no-mistakes: 'empty diff after rebase, skipping remaining steps')
+--- axi status (what no-mistakes reports) ---
+    run:
+      id: "01M1Z1PC8EPBCW0P4W4FTYG2AG"
+      branch: fm/fm-nm-depot-livraison
+      status: completed
+      head: "27f45612ae595cbf361c01369aa2c61b54e516f2"
+      findings: none
+    steps[9]{step,status,findings,duration_ms}:
+      intent,skipped,0,5
+      rebase,completed,0,95
+      review,skipped,0,0
+      test,skipped,0,0
+      document,skipped,0,0
+      lint,skipped,0,0
+      push,skipped,0,0
+      pr,skipped,0,0
+      ci,skipped,0,0
+--- fm-crew-state verdict ---
+    state: failed · source: run-step · not validated: run kept no change - review, test, document, lint, push, pr and ci were all skipped
+
+=== 2. Same shape reported through an explicit terminal 'outcome: passed' line
+--- fm-crew-state verdict ---
+    state: failed · source: run-step · not validated: run kept no change - review, test, document, lint, push, pr and ci were all skipped
+
+=== 3. CONTROL: a run that really executed every phase and opened its PR
+--- fm-crew-state verdict ---
+    state: done · source: run-step · checks green: PR ready for review
+
+=== 4. COARSE LEDGER FALLBACK (a second crew owns bare 'axi status'):
+    crew A's newest ledger row is 'completed' at A's head and carries NO PR
+--- no-mistakes runs --limit N (the ledger) ---
+    running    fm/other-crew aaaaaaa  2026-09-08 22:10
+    completed  fm/feat-coarse-bare 27f4561  2026-09-08 22:05
+--- fm-crew-state verdict ---
+    state: unknown · source: run-step · last ledger record completed with no PR; nothing proves a delivery phase ran - unverified
+
+=== 5. COARSE LEDGER FALLBACK: crew A's 'completed' row carries a PR URL
+    (positive proof push+pr ran) - the delivery outcome must still reach the captain
+--- no-mistakes runs --limit N (the ledger) ---
+    running    fm/other-crew aaaaaaa  2026-09-08 22:10
+    completed  fm/feat-coarse-pr 27f4561  2026-09-08 22:05  https://github.com/cisrd/firstmate/pull/311
+--- fm-crew-state verdict ---
+    state: done · source: run-step · run completed: https://github.com/cisrd/firstmate/pull/311

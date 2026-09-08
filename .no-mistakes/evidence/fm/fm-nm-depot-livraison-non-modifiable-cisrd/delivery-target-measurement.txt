@@ -1,0 +1,32 @@
+Delivery-target measurement (read-only; nothing was re-registered, restarted or edited by this test step)
+captured 2026-09-08 from the primary firstmate home
+
+$ no-mistakes status
+    repo:  /home/awilliam/firstmate
+  remote:  https://github.com/cisrd/firstmate.git      <- was kunchenguid/firstmate in the incident
+    fork:  https://github.com/cisrd/firstmate.git
+    gate:  /home/awilliam/.no-mistakes/repos/a03e7f5d4084.git
+  daemon:  * running
+  Active run  id: 01M1ZM2MSMJS6AX9FX9VBMMP6Q  branch: fm/fm-nm-depot-livraison-non-modifiable-cisrd
+
+$ ps -o pid=,lstart=,etime= -p 4160322   # the daemon serving that status
+  4160322 Tue Sep  8 01:19:08 2026    05:54:48
+  -> the registration reads cisrd under a daemon process started long before this run,
+     i.e. it was not restored to kunchenguid by that daemon start.
+
+$ git ls-remote https://github.com/cisrd/firstmate.git refs/heads/main
+d42016acf4ceb7d670a11c11bd7b721bea1c5bff	refs/heads/main
+$ git log -1 --format="%H %cI %s" <this gate run base>
+d42016acf4ceb7d670a11c11bd7b721bea1c5bff 2026-09-08T00:29:01+02:00 fix(bin): make every counted wake queue row presentable or retired (#6)
+  -> the gate mirror rebased this run onto live cisrd main (d42016ac), not the stale 72bfdd00
+     kunchenguid base that made run 01M1Z1PC8EPBCW0P4W4FTYG2AG collapse its commits.
+
+$ gh-axi pr list   # PRs 7 and 3 preserved, unmerged, by this lot
+count: 3
+pull_requests[3]{number,title,state,author,draft,review}:
+  7,"test(calm): harden the export-DOM render step and record Pi 0.85.1 evidence",open,cisrd,no,none
+  3,"fix(bin): keep Grok's busy footers out of the harness-less delivery union",open,cisrd,no,none
+  2,"fix(bin): make every counted wake queue row presentable or retired",open,cisrd,no,none
+help[2]:
+  Run `gh-axi pr view <number>` to view details
+  Run `gh-axi pr create --title "..." --body-file <path>` to create
