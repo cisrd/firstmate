@@ -2396,8 +2396,8 @@ spawn_worktree_has_origin_config() {  # <worktree>
   return 1
 }
 
-freshen_spawn_worktree_base() {  # <worktree>
-  local worktree=$1 default target expected actual status
+freshen_spawn_worktree_base() {  # <worktree> <project-name>
+  local worktree=$1 project=$2 default target expected actual status
   status=$(git -C "$worktree" -c core.quotePath=false status --porcelain) || {
     echo "error: could not inspect pooled worktree '$worktree' before refreshing its base" >&2
     return 1
@@ -2421,8 +2421,11 @@ freshen_spawn_worktree_base() {  # <worktree>
     echo "error: could not resolve origin's current default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   fi
-  default=$(default_branch "$worktree") || {
-    echo "error: could not determine origin's default branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
+  # A registered integration branch is the base new task copies must be cut from,
+  # so a project that integrates on develop never starts work from origin/main.
+  # An unannotated project keeps origin's default branch (fm-integration-branch-lib.sh).
+  default=$(integration_branch "$worktree" "$project") || {
+    echo "error: could not determine the integration branch for pooled worktree '$worktree'; refusing to launch from a potentially stale base" >&2
     return 1
   }
   target="origin/$default"
@@ -3072,7 +3075,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   validate_spawn_worktree "treehouse get" "$T"
 fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ]; then
-  freshen_spawn_worktree_base "$WT" || exit 1
+  freshen_spawn_worktree_base "$WT" "$(basename "$PROJ_ABS")" || exit 1
 fi
 
 # Pre-register Claude's workspace trust for the worktree, at the first point the

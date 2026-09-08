@@ -409,6 +409,60 @@ test_direct_pr_and_scout_refresh_before_launch() {
   pass "direct-PR ships and scouts both refresh stale pooled worktrees before launch"
 }
 
+# A project that integrates on a branch other than origin/HEAD must have its task
+# copies cut from that declared branch, or fleet sync reports the clone current on
+# develop while live work is based on main.
+test_declared_integration_branch_bases_the_task_copy() {
+  local rec id out status publisher declared_tip
+  id='pool-integration-branch-r1'
+  rec=$(make_case integration-branch "$id")
+  read_case_record "$rec"
+  printf -- '- project [no-mistakes integration-branch=develop] - fixture (added 2026-09-01)\n' \
+    > "$HOME_DIR/data/projects.md"
+  publisher="$CASE_DIR/publisher"
+  git -C "$publisher" checkout --quiet -b develop
+  printf 'only on the declared integration branch\n' > "$publisher/develop-only.txt"
+  git -C "$publisher" add develop-only.txt
+  git -C "$publisher" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm advance-develop
+  git -C "$publisher" push --quiet origin develop
+  declared_tip=$(git -C "$publisher" rev-parse HEAD)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  expect_code 0 "$status" "spawn should base a declared-integration project on its declared branch"$'\n'"$out"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$declared_tip" ] \
+    || fail "spawn did not base the task copy on origin/develop"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" != "$(git -C "$POOL_DIR" rev-parse origin/main)" ] \
+    || fail "fixture did not keep origin/develop distinct from origin/main"
+  assert_grep 'only on the declared integration branch' "$POOL_DIR/develop-only.txt" \
+    "the task copy omitted content that exists only on the declared branch"
+  [ "$(git --git-dir="$CASE_DIR/origin.git" symbolic-ref --short HEAD)" = main ] \
+    || fail "fixture origin default branch is no longer main"
+  pass "a declared integration branch, not origin/HEAD, is the base of a new task copy"
+}
+
+# The declaration is a promise about the base; a branch the origin does not
+# publish must stop the launch rather than silently fall back to origin/HEAD.
+test_unpublished_declared_integration_branch_refuses_pool() {
+  local rec id out status before
+  id='pool-missing-integration-branch-r1'
+  rec=$(make_case missing-integration-branch "$id")
+  read_case_record "$rec"
+  printf -- '- project [no-mistakes integration-branch=develop] - fixture (added 2026-09-01)\n' \
+    > "$HOME_DIR/data/projects.md"
+  before=$(git -C "$POOL_DIR" rev-parse HEAD)
+
+  out=$(run_spawn "$id" --mode no-mistakes --yolo off)
+  status=$?
+  [ "$status" -ne 0 ] || fail "spawn accepted a declared integration branch the origin does not publish"
+  assert_contains "$out" "could not fetch 'origin/develop'" \
+    "spawn did not name the unresolved declared branch in its refusal"
+  [ "$(git -C "$POOL_DIR" rev-parse HEAD)" = "$before" ] \
+    || fail "spawn moved HEAD after failing to resolve the declared integration branch"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
+  pass "an unpublished declared integration branch refuses the pooled worktree"
+}
+
 test_dirty_pool_refuses_without_discarding_work() {
   local rec id out status before
   id='pool-dirty-refusal-r4'
@@ -680,6 +734,8 @@ test_remote_seeded_home_spawns_from_treehouse_pool
 test_linked_spawning_home_rejects_primary_before_refresh
 test_stale_pool_base_refreshes_before_branching
 test_non_main_default_branch_refreshes_before_branching
+test_declared_integration_branch_bases_the_task_copy
+test_unpublished_declared_integration_branch_refuses_pool
 test_direct_pr_and_scout_refresh_before_launch
 test_dirty_pool_refuses_without_discarding_work
 test_unresolved_remote_default_refuses_pool

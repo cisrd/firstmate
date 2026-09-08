@@ -49,6 +49,9 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-charter-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# The integration-branch resolver every base-picking path shares.
+# shellcheck source=bin/fm-integration-branch-lib.sh
+. "$SCRIPT_DIR/fm-integration-branch-lib.sh"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
@@ -456,6 +459,27 @@ EOF
   return 1
 }
 
+# A fresh clone checks out origin/HEAD. When the registry declares an integration
+# branch, put the new clone on it here: that declaration is what fleet sync
+# refreshes and what a spawn bases task copies on, so a clone left on the remote
+# default would be reported STUCK on every later sync and never refreshed. Only
+# newly created clones are moved; an already-seeded clone may hold work, so it is
+# never switched. A declared branch the origin does not publish is refused loudly
+# rather than silently seeded onto the wrong base.
+checkout_declared_integration_branch() {  # <project> <clone>
+  local project=$1 dst=$2 branch
+  branch=$(FM_HOME="$FM_HOME" FM_DATA_OVERRIDE="$DATA" declared_integration_branch "$project")
+  [ -n "$branch" ] || return 0
+  if ! git -C "$dst" rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}" >/dev/null; then
+    echo "error: project $project declares integration branch $branch but its origin publishes no such branch" >&2
+    return 1
+  fi
+  git -C "$dst" checkout --quiet -B "$branch" --track "origin/$branch" >/dev/null 2>&1 || {
+    echo "error: could not check out declared integration branch $branch for project $project" >&2
+    return 1
+  }
+}
+
 clone_project() {
   local project=$1 home=$2 src dst url dst_url mode
   src="$PROJECTS/$project"
@@ -481,7 +505,8 @@ EOF
     return 0
   fi
   url=$(source_origin_url "$project" "$mode" "$src") || return 1
-  git clone --quiet "$url" "$dst"
+  git clone --quiet "$url" "$dst" || return 1
+  checkout_declared_integration_branch "$project" "$dst"
 }
 
 validate_seed_project() {

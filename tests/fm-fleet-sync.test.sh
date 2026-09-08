@@ -281,11 +281,10 @@ run_sync_guarded() {
 # --- tests ------------------------------------------------------------------
 
 test_declared_integration_branch_overrides_remote_default() {
-  local home clone out main_remote_before
+  local home clone out
   home=$(new_home)
   clone=$(build_integration_pair "$home" integration)
   declare_integration_branch "$home" integration
-  main_remote_before=$(git -C "$clone" rev-parse origin/main)
   # Advance both refs so a sync that incorrectly follows origin/HEAD=main is
   # observably wrong even if it happens to fetch the remote.
   git -C "$home/work-integration" checkout --quiet main
@@ -302,8 +301,6 @@ test_declared_integration_branch_overrides_remote_default() {
     || fail "declared integration branch did not advance to origin/develop"
   [ "$(git -C "$clone" rev-parse HEAD)" != "$(git -C "$clone" rev-parse origin/main)" ] \
     || fail "fixture did not keep integration and remote-default refs distinct"
-  [ "$(git -C "$clone" rev-parse origin/main)" = "$main_remote_before" ] \
-    || fail "declared integration fetch unexpectedly updated origin/main"
   [ "$(git -C "$clone" symbolic-ref --short refs/remotes/origin/HEAD)" = "origin/main" ] \
     || fail "fixture origin/HEAD no longer points to main"
   pass "declared integration branch governs fetch, comparison, and fast-forward despite origin/HEAD=main"

@@ -41,6 +41,9 @@ FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 # shellcheck source=bin/fm-lock-lib.sh
 . "$SCRIPT_DIR/fm-lock-lib.sh"
+# default_branch and the integration-branch resolver every base-picking path shares.
+# shellcheck source=bin/fm-integration-branch-lib.sh
+. "$SCRIPT_DIR/fm-integration-branch-lib.sh"
 # Inert unless FM_TIMING_LOG names a file; only the deferred network stage sets it.
 # shellcheck source=bin/fm-timing-lib.sh
 . "$SCRIPT_DIR/fm-timing-lib.sh"
@@ -116,22 +119,6 @@ resolve_project_arg() {
   printf '%s\n' "$arg"
 }
 
-default_branch() {
-  local ref branch
-  ref=$(git -C "$PROJ" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-  if [ -n "$ref" ]; then
-    echo "${ref#origin/}"
-    return 0
-  fi
-  for branch in main master; do
-    if git -C "$PROJ" show-ref --verify --quiet "refs/heads/$branch"; then
-      echo "$branch"
-      return 0
-    fi
-  done
-  return 1
-}
-
 first_line() {
   printf '%s\n' "$1" | sed -n '1s/[[:space:]]\{1,\}/ /g;1p'
 }
@@ -157,10 +144,9 @@ packed_refs_lock_path() {
   esac
 }
 
-# Run the selected branch fetch, or the legacy all-branch fetch when no
-# integration branch is declared, tolerating an orphaned packed-refs.lock left
-# by a killed ref rewrite. Sets FETCH_OUTPUT to the git command's combined output
-# and returns its exit status. On the packed-refs.lock
+# Run `git -C "$PROJ" fetch origin --prune --quiet`, tolerating an orphaned
+# packed-refs.lock left by a killed ref rewrite. Sets FETCH_OUTPUT to the git
+# command's combined output and returns its exit status. On the packed-refs.lock
 # signature ONLY: retry up to FLEET_SYNC_PACKED_REFS_LOCK_RETRIES times (a
 # transient lock self-clears as the owning process exits), then - only if the lock
 # is provably stale per fm-lock-lib.sh (still present, mtime age past the
@@ -169,17 +155,9 @@ packed_refs_lock_path() {
 # today's behavior. Every wait, retry, and removal prints to stderr, and a
 # successful recovery also prints one "$label: recovered: ..." summary to stdout so
 # a session-start refresh (which discards fleet-sync stderr) still surfaces it.
-fetch_origin() {
-  if [ "${INTEGRATION_DECLARED:-no}" = yes ]; then
-    git -C "$PROJ" fetch origin "$DEFAULT" --quiet
-  else
-    git -C "$PROJ" fetch origin --prune --quiet
-  fi
-}
-
 fetch_with_packed_refs_lock_guard() {
   local rc attempt=0 lock lock_desc
-  FETCH_OUTPUT=$(fetch_origin 2>&1); rc=$?
+  FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
   [ "$rc" -eq 0 ] && return 0
   is_packed_refs_lock_error "$FETCH_OUTPUT" || return "$rc"
 
@@ -189,7 +167,7 @@ fetch_with_packed_refs_lock_guard() {
     attempt=$(( attempt + 1 ))
     echo "$label: fetch blocked by packed-refs lock ($lock_desc); waiting ${FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${FLEET_SYNC_PACKED_REFS_LOCK_RETRIES}) (owning process may be exiting)" >&2
     sleep "$FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS"
-    FETCH_OUTPUT=$(fetch_origin 2>&1); rc=$?
+    FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
     if [ "$rc" -eq 0 ]; then
       echo "$label: fetch succeeded on retry; packed-refs lock cleared on its own" >&2
       # One stdout summary so a session-start refresh (which discards fleet-sync
@@ -213,7 +191,7 @@ fetch_with_packed_refs_lock_guard() {
         return "$rc"
       fi
       echo "$label: removed provably-stale packed-refs lock $lock (age >= ${FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS}s, no live holder) and retrying fetch" >&2
-      FETCH_OUTPUT=$(fetch_origin 2>&1); rc=$?
+      FETCH_OUTPUT=$(git -C "$PROJ" fetch origin --prune --quiet 2>&1); rc=$?
       if [ "$rc" -eq 0 ]; then
         echo "$label: fetch succeeded after stale packed-refs lock cleanup" >&2
         echo "$label: recovered: removed a stale packed-refs lock (no live holder)"
@@ -345,19 +323,12 @@ sync_project() {
     return 0
   fi
 
-  # The registry's structured integration branch is authoritative when present.
-  # Legacy entries deliberately retain the previous remote-default resolution.
-  integration_branch=$("$FM_ROOT/bin/fm-project-mode.sh" --integration-branch "$label" 2>/dev/null || true)
-  if [ -n "$integration_branch" ]; then
-    DEFAULT=$integration_branch
-    INTEGRATION_DECLARED=yes
-  else
-    INTEGRATION_DECLARED=no
-    DEFAULT=$(default_branch) || {
-      echo "$label: skipped: cannot determine default branch"
-      return 0
-    }
-  fi
+  # The registry's structured integration branch is authoritative when present;
+  # a legacy entry falls back to the remote default branch (fm-integration-branch-lib.sh).
+  DEFAULT=$(integration_branch "$PROJ" "$label") || {
+    echo "$label: skipped: cannot determine default branch"
+    return 0
+  }
   BASE="origin/$DEFAULT"
 
   if ! fetch_with_packed_refs_lock_guard; then
@@ -369,14 +340,6 @@ sync_project() {
     return 0
   fi
 
-  if [ "${INTEGRATION_DECLARED:-no}" = yes ]; then
-    if ! prune_output=$(git -C "$PROJ" remote prune origin 2>&1); then
-      reason="remote ref pruning failed for $BASE"
-      [ -n "$prune_output" ] && reason="$reason: $(first_line "$prune_output")"
-      echo "$label: skipped: $reason"
-      return 0
-    fi
-  fi
   prune_gone_branches || true
   if ! git -C "$PROJ" rev-parse --verify --quiet "$BASE^{commit}" >/dev/null; then
     echo "$label: skipped: $BASE does not exist"

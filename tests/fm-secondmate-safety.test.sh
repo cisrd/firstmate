@@ -135,6 +135,64 @@ EOF
   pass "seed allows overlapping project clone lists and drops the owns/owner routing"
 }
 
+# A seeded clone starts on origin/HEAD, so a project that integrates elsewhere
+# would be reported STUCK by every later fleet sync and have its task copies cut
+# from the wrong base. The declared branch is checked out at seed time instead.
+test_seed_checks_out_the_declared_integration_branch() {
+  local home sub clone beta_default
+  home="$TMP_ROOT/integration-main"
+  sub="$TMP_ROOT/integration-sub"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$home/projects/alpha"
+  git -C "$home/projects/alpha" branch develop
+  fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/seed-integration-alpha.git"
+  fm_git_init_commit "$home/projects/beta"
+  fm_git_add_origin "$home/projects/beta" "$TMP_ROOT/remotes/seed-integration-beta.git"
+  beta_default=$(git -C "$home/projects/beta" symbolic-ref --short HEAD)
+  cat > "$home/data/projects.md" <<EOF
+- alpha [direct-PR integration-branch=develop] - alpha project (added 2026-09-01)
+- beta [direct-PR] - beta project (added 2026-09-01)
+EOF
+
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='integration branch fixture' \
+    FM_SECONDMATE_SCOPE='integration branch fixture' \
+    "$ROOT/bin/fm-home-seed.sh" mate "$sub" alpha beta >/dev/null \
+    || fail "seed failed for a project declaring an integration branch"
+  clone="$sub/projects/alpha"
+  [ "$(git -C "$clone" symbolic-ref --short HEAD)" = develop ] \
+    || fail "seeded clone was not born on its declared integration branch"
+  [ "$(git -C "$clone" rev-parse HEAD)" = "$(git -C "$clone" rev-parse origin/develop)" ] \
+    || fail "seeded clone's declared branch does not sit at origin/develop"
+  [ "$(git -C "$sub/projects/beta" symbolic-ref --short HEAD)" = "$beta_default" ] \
+    || fail "an undeclared project's clone left its remote default branch"
+  pass "a seeded clone is born on its declared integration branch"
+}
+
+# The declaration is a promise about the base. A branch the origin does not
+# publish must refuse the seed loudly rather than leave a clone on the wrong base.
+test_seed_refuses_an_unpublished_declared_integration_branch() {
+  local home sub err
+  home="$TMP_ROOT/integration-missing-main"
+  sub="$TMP_ROOT/integration-missing-sub"
+  err="$TMP_ROOT/integration-missing.err"
+  mkdir -p "$home/projects" "$home/data" "$home/state"
+  fm_git_init_commit "$home/projects/alpha"
+  fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/seed-integration-missing.git"
+  printf -- '- alpha [direct-PR integration-branch=develop] - alpha project (added 2026-09-01)\n' \
+    > "$home/data/projects.md"
+
+  if FM_HOME="$home" FM_SECONDMATE_CHARTER='missing branch fixture' \
+    FM_SECONDMATE_SCOPE='missing branch fixture' \
+    "$ROOT/bin/fm-home-seed.sh" mate "$sub" alpha >/dev/null 2>"$err"; then
+    fail "seed accepted a declared integration branch the origin does not publish"
+  fi
+  assert_grep 'declares integration branch develop' "$err" \
+    "seed did not name the unresolved declared branch in its refusal"
+  [ ! -d "$sub/projects/alpha" ] || fail "refused seed left the clone behind"
+  [ ! -e "$home/data/secondmates.md" ] || fail "refused seed registered the secondmate"
+  pass "a declared integration branch the origin lacks refuses the seed"
+}
+
 test_home_seed_validate_rejects_unparseable_registry_entry() {
   local home err
   home="$TMP_ROOT/unparseable-registry-home"
@@ -2957,6 +3015,8 @@ EOF
 test_fm_home_parameterization
 test_lock_status_is_per_home
 test_seed_allows_overlapping_clones_and_drops_owner
+test_seed_checks_out_the_declared_integration_branch
+test_seed_refuses_an_unpublished_declared_integration_branch
 test_home_seed_validate_rejects_unparseable_registry_entry
 test_home_seed_refuses_broken_registry_symlink
 test_home_seed_refuses_unreadable_registry

@@ -26,6 +26,9 @@ MAX_MANIFEST_BYTES=1048576
 
 # shellcheck source=bin/fm-project-origin-lib.sh
 . "$SCRIPT_DIR/fm-project-origin-lib.sh"
+# The integration-branch resolver every base-picking path shares.
+# shellcheck source=bin/fm-integration-branch-lib.sh
+. "$SCRIPT_DIR/fm-integration-branch-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
@@ -221,6 +224,9 @@ EOF
   fm_project_origin_safe "$ORIGIN" || die "project $NAME origin is not an accepted clone URL: $ORIGIN"
   case "$MODE" in no-mistakes|direct-PR) ;; *) die "project $NAME has unsupported remote mode: $MODE" ;; esac
   case "$REGISTRY_LINE" in "- $NAME "*) ;; *) die "project $NAME registry line is malformed" ;; esac
+  # Published before the clone so the declared integration branch resolves out of
+  # the registry this provisioning run is assembling.
+  printf '%s\n' "$REGISTRY_LINE" >> "$PROJECT_REG"
   DEST="$FM_HOME/projects/$NAME"
   if [ -e "$DEST" ] || [ -L "$DEST" ]; then
     [ -d "$DEST" ] && [ ! -L "$DEST" ] && [ -d "$DEST/.git" ] \
@@ -230,13 +236,23 @@ EOF
   else
     printf '%s\n' "$NAME" >> "$CREATED_PROJECTS"
     git clone --quiet -- "$ORIGIN" "$DEST" || die "could not clone project $NAME on the remote host"
+    # A new clone is born on the branch the registry declares, for the same reason
+    # bin/fm-home-seed.sh does it: fleet sync refreshes and spawn bases work on
+    # that branch, so a clone left on the remote default is permanently STUCK.
+    # Already-provisioned clones may hold work and are never switched.
+    INTEGRATION_BRANCH=$(FM_DATA_OVERRIDE="$TMP" declared_integration_branch "$NAME")
+    if [ -n "$INTEGRATION_BRANCH" ]; then
+      git -C "$DEST" rev-parse --verify --quiet "refs/remotes/origin/$INTEGRATION_BRANCH^{commit}" >/dev/null \
+        || die "project $NAME declares integration branch $INTEGRATION_BRANCH but its origin publishes no such branch"
+      git -C "$DEST" checkout --quiet -B "$INTEGRATION_BRANCH" --track "origin/$INTEGRATION_BRANCH" >/dev/null 2>&1 \
+        || die "could not check out declared integration branch $INTEGRATION_BRANCH for project $NAME"
+    fi
     if [ "$MODE" = no-mistakes ]; then
       command -v no-mistakes >/dev/null 2>&1 || die "no-mistakes is unavailable for project $NAME"
       (cd "$DEST" && no-mistakes init >/dev/null && no-mistakes doctor >/dev/null) \
         || die "no-mistakes initialization failed for project $NAME"
     fi
   fi
-  printf '%s\n' "$REGISTRY_LINE" >> "$PROJECT_REG"
 done < <(grep '^project=' "$TMP/manifest")
 
 cp "$TMP/charter" "$FM_HOME/data/charter.md.tmp.$$"
