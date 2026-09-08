@@ -3102,9 +3102,11 @@ append_worktree_isolation_contract() {
   primary=$(fm_git_primary_workdir "$PROJ_ABS" 2>/dev/null) || primary=
   {
     printf '\n# Worktree isolation\n'
+    # shellcheck disable=SC2016 # Backticks are literal Markdown, not command substitutions.
     printf 'Your task worktree is `%s`.\n' "$wt_real"
     [ -z "$primary" ] \
       || printf "The project's primary checkout is \`%s\`; it is never yours to work in.\n" "$primary"
+    # shellcheck disable=SC2016 # Backticks are literal worker instructions.
     printf 'Before anything else run `pwd -P`. If it is not exactly `%s`, STOP - do not branch or commit here - append `blocked: launched in primary checkout, not an isolated worktree` to the status file and stop.\n' "$wt_real"
   } >> "$BRIEF"
 }

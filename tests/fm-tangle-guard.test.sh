@@ -151,6 +151,7 @@ test_brief_assertion_precedes_branch() {
   if grep -E 'git rev-parse [^`]*git-dir' "$brief" >/dev/null; then
     fail "brief must not test isolation by comparing git directories: an ordinary clone and an Orca copy pass that test too"
   fi
+  # shellcheck disable=SC2016 # Match literal Markdown backticks in the generated brief.
   assert_grep '`# Worktree isolation` section' "$brief" \
     "brief must send the worker to the exact path fm-spawn appends at launch"
   iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
