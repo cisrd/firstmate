@@ -1,0 +1,9 @@
+
+--- /tmp/fm-watch-triage-tests.XuhAum/busy-run-activity/drain.out ---
+1788885676	1	stale	test:fm-validating	stale: test:fm-validating (idle 505s, possible wedge, escalation 1)
+
+--- /tmp/fm-watch-triage-tests.XuhAum/busy-run-activity/watch.out ---
+stale: test:fm-validating (idle 505s, possible wedge, escalation 1)
+
+--- /tmp/fm-watch-triage-tests.XuhAum/busy-run-activity/state/.watch-triage.log ---
+[2026-09-08T18:41:12+0200] absorbed busy (no completed turn) (this crew's own no-mistakes run reports recent activity, idle 501s): test:fm-validating
