@@ -8,6 +8,7 @@
 # every path that has to pick a base branch - bin/fm-fleet-sync.sh's refresh
 # target, the branch bin/fm-home-seed.sh and bin/fm-remote-home-provision.sh
 # check out in a new clone, the base bin/fm-spawn.sh resets a pooled worktree to,
+# using origin/<branch> with a remote or the verified local branch without one,
 # the base bin/fm-review-diff.sh diffs a task against, and the branch
 # bin/fm-teardown.sh tests landed content and unmerged local-only work against
 # and bin/fm-merge-local.sh fast-forwards - so a project cannot be synced,
@@ -15,7 +16,7 @@
 #
 # A project that declares nothing keeps the legacy resolution, origin's default
 # branch, so unannotated homes behave exactly as before. A declaration that is
-# not a valid branch name is never silently downgraded to that fallback: the
+# empty or not a valid branch name is never downgraded to that fallback: the
 # query fails, its diagnostic reaches the caller's stderr, and every consumer
 # refuses rather than working from a base the registry did not ask for.
 # Callers pass the registry home through the same FM_HOME/FM_DATA_OVERRIDE

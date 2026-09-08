@@ -389,9 +389,9 @@ Invoked in a primary home, `/stow` then cascades the same sweep to every registe
 
 The locked session-start deferred network stage, PR-based teardown, and merged-PR wake handling refresh remote-backed project clones when the clone is safe to move.
 Wake-time refreshes can target a single clone by project name, so the primary home also catches up when a secondmate reports a merge from its own home.
-A registry entry with `integration-branch=<branch>` makes that declared branch the base every path picks: fleet sync compares and fast-forwards it, a newly seeded local or remote clone is checked out on it, a spawn resets its pooled worktree to `origin/<branch>` so task copies are cut from it, the review diff is taken against it, and the landed-content, unmerged-work and local-only landing checks all test against it.
-`bin/fm-integration-branch-lib.sh` is the one resolver: a declaration that is not a valid branch name fails the query with a diagnostic instead of falling back, a declared branch the origin does not publish refuses the seed or the spawn, and fleet sync reports both as `STUCK:` rather than a benign skip.
-A legacy entry without the declaration retains remote-default resolution and its existing behavior, and an already-seeded clone is never switched.
+[`fm-integration-branch-lib.sh`](../bin/fm-integration-branch-lib.sh) owns project base resolution across refresh, seeding, spawn, review, cleanup, and local landing; [`fm-project-mode.sh`](../bin/fm-project-mode.sh) owns the structured registry declaration format.
+Fleet sync reports invalid declarations and declared branches missing from origin as `STUCK:` rather than silently selecting another base.
+Seeding checks out the selected branch only in newly created clones; it never switches an already-seeded clone.
 Clean target-branch clones fast-forward to `origin/<branch>`, and a clean detached HEAD that holds no unique commits is re-attached to the target branch before the same fast-forward path runs.
 Dirty clones, non-target branches, detached HEADs with unique commits, diverged targets, and target branches checked out in another worktree are reported as `STUCK:` with their behind count and left untouched.
 Fetches blocked by an orphaned `.git/packed-refs.lock` use bounded retries and remove the lock only when the shared staleness proof can prove it abandoned; [configuration.md](configuration.md#toolchain) owns the recovery details and tuning knobs.

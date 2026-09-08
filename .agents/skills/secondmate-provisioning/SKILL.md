@@ -169,7 +169,7 @@ Both of those cases require record intake before the new mate acts on any inheri
 
 For an existing or inherited domain, the creating agent must:
 
-1. Reconcile every inherited plan against the domain's authoritative shipped state, which is `origin/main` for each relevant project plus the live deployment.
+1. Reconcile every inherited plan against the domain's authoritative shipped state, using each relevant project's integration base from `bin/fm-integration-branch-lib.sh` plus the live deployment.
    A fetched clone of each relevant project is a precondition of that reconciliation, so wire the home to its projects before reconciling rather than on first task.
    The imported backlog, the predecessor's own notes, instruction-surface prose, and an absent or unfetched local view are all inadmissible as shipped-state evidence.
 2. Seed the new home with only genuinely open work plus the domain's durable knowledge, meaning the learnings, decisions, and delivery posture that are still live.
