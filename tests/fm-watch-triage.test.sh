@@ -1602,6 +1602,24 @@ test_rejected_captain_held_transfer_still_marked_for_branch_exclusion() {
   pass "a rejected captain-held transfer keeps its main-only routing marker"
 }
 
+# The same routing rule for the fold's OTHER closing verb: a `resolved` line
+# whose note does not speak a reserved key's vocabulary leaves that decision
+# open, so its reconciliation row is about a still-open captain decision and
+# must reach the captain rather than the Pi supervision branch.
+test_rejected_reserved_resolution_still_marked_for_branch_exclusion() {
+  local dir state fakebin out status_file pid
+  dir=$(make_case rejected-resolution-payload); state="$dir/state"; fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  status_file="$state/task.status"
+  printf 'resolved [key=pending-reply-abcdef0123456789]: all good now\n' > "$status_file"
+  watch_bg "$state" "$fakebin" "$out"
+  pid=$!
+  wait_for_exit "$pid" 100 || fail "watcher did not exit for a rejected reserved resolution"
+  grep -F "$(printf 'signal\ttask.status\tneeds-decision:')" "$state/.wake-queue" >/dev/null \
+    || fail "a rejected reserved resolution was not payload-marked for branch exclusion: $(cat "$state/.wake-queue")"
+  pass "a rejected reserved-key resolution keeps its main-only routing marker"
+}
+
 test_pending_reply_escalation_signal_payload_marked_for_branch_exclusion() {
   local dir state fakebin out status_file pid corr
   dir=$(make_case pending-reply-escalation-payload); state="$dir/state"; fakebin="$dir/fakebin"
@@ -4435,6 +4453,7 @@ test_needs_decision_signal_payload_marked_for_branch_exclusion
 test_needs_decision_reconciliation_required_still_marked
 test_captain_held_signal_payload_marked_for_branch_exclusion
 test_rejected_captain_held_transfer_still_marked_for_branch_exclusion
+test_rejected_reserved_resolution_still_marked_for_branch_exclusion
 test_pending_reply_escalation_signal_payload_marked_for_branch_exclusion
 test_ordinary_blocked_signal_payload_remains_branch_eligible
 test_routine_signal_payload_not_marked_needs_decision

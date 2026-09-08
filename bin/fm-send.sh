@@ -599,7 +599,7 @@ if [ -n "$RESOLVE_KEYS" ]; then
   # close, or when its structural key cannot fit in one status line.
   resolve_excerpt=$(printf '%s' "$*" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_STATUS_KEYS; do
-    probe=$(status_decision_close_note "$k" "answered: $resolve_excerpt")
+    probe=$(status_decision_close_note resolved "$k" "answered: $resolve_excerpt")
     if ! _fm_decision_key_transition_allowed "$k" "$probe"; then
       echo "error: --resolve-key '$k' cannot take effect: the shared decision grammar cannot produce an accepted close note; nothing was sent." >&2
       exit 1
@@ -626,7 +626,7 @@ fm_send_close_resolved_keys() {  # <answer-text>
   local note=$1 k line close_note append_rc still manual_close_cmd
   note=$(printf '%s' "$note" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177')
   for k in $RESOLVE_STATUS_KEYS; do
-    close_note=$(status_decision_close_note "$k" "answered: $note")
+    close_note=$(status_decision_close_note resolved "$k" "answered: $note")
     line="resolved [key=$k]: $close_note"
     fm_cap_line_var "$line"
     printf -v manual_close_cmd "printf '%%s\\n' %q >> %q" "$FM_LINE_CAP_LINE" "$RESOLVE_STATUS_FILE"

@@ -139,7 +139,7 @@ test_reserved_key_public_resolution_is_effective_and_rejections_surface() {
   status_line_is_unread_surface "resolved [key=$key]: manually dismissed without owner vocabulary" \
     || fail "a rejected reserved resolution was absent from the unread-status surface"
 
-  close_note=$(status_decision_close_note "$key" "answered: dismissed after inspection")
+  close_note=$(status_decision_close_note resolved "$key" "answered: dismissed after inspection")
   printf 'resolved [key=%s]: %s\n' "$key" "$close_note" >> "$f"
   assert_fold "$f" "" "shared reserved close note"
   pass "reserved closes use one public grammar and rejected manual notes surface actionably"
@@ -159,14 +159,21 @@ test_reserved_key_transfer_closes_through_the_shared_grammar() {
   assert_fold "$f" "$expected" "reserved owner open"
 
   offset=$(LC_ALL=C wc -c < "$f" | tr -d '[:space:]')
-  close_note=$(status_decision_close_note "$key" "tracked by sample-route-call")
+  close_note=$(status_decision_close_note captain-held "$key" "tracked by sample-route-call")
   printf 'captain-held [key=%s]: %s\n' "$key" "$close_note" >> "$f"
   assert_fold "$f" "" "authoritative transfer closes the reserved key"
+
+  case "$close_note" in
+    *resolved*) fail "a transfer note claimed resolution vocabulary: $close_note" ;;
+  esac
 
   rc=0
   actionable=$(status_span_first_actionable "$f" "$offset") || rc=$?
   [ "$rc" -eq 1 ] \
     || fail "an accepted transfer must stay non-actionable: rc=$rc events='$actionable'"
+  if status_line_is_unread_surface "captain-held [key=$key]: $close_note"; then
+    fail "an accepted transfer was repeated on the unread-status surface: $close_note"
+  fi
 
   printf 'blocked [key=%s]: pending-reply-missed: escalated again\n' "$key" >> "$f"
   printf 'captain-held [key=%s]: tracked by sample-route-call\n' "$key" >> "$f"

@@ -600,7 +600,7 @@ test_completion_transfers_a_reserved_decision_key() {
   open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
     "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
   [ -z "$open" ] || fail "the reserved key stayed open beside its captain-held task: $open"
-  [ "$(grep -cF "captain-held [key=$key]: pending-reply-resolved: tracked by sample-reserved-call" \
+  [ "$(grep -cF "captain-held [key=$key]: pending-reply-captain-held: tracked by sample-reserved-call" \
     "$home/state/$id.status")" = 1 ] \
     || fail "the reserved transfer was not written once through the shared close grammar: $(cat "$home/state/$id.status")"
   run_captain "$home" verify "$id" >/dev/null \

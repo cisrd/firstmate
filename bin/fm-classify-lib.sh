@@ -418,15 +418,23 @@ _fm_decision_key_transition_allowed() {  # <key> <note>
   return 1
 }
 
-# Print a close note that the fold accepts for <key>. This public helper is the
-# ONE writer-side owner of reserved-close grammar: ordinary notes pass through,
-# while a reserved key receives its namespace's explicit resolved vocabulary.
-# fm-send uses it for every --resolve-key close rather than knowing any owner.
-status_decision_close_note() {  # <key> <note>
-  local key=$1 note=$2 prefix
+# Print a close note the fold accepts for <key> under the closing <verb>. This
+# public helper is the ONE writer-side owner of reserved-close grammar:
+# ordinary notes pass through, while a reserved key receives its namespace's
+# vocabulary for the transition actually being written. The verb itself is that
+# vocabulary token, so a captain-held transfer states the hold rather than
+# claiming the resolution vocabulary of an answer that nobody gave. Fails on an
+# invalid key or on a verb that is not one of the fold's two closing verbs.
+status_decision_close_note() {  # <verb> <key> <note>
+  local verb=$1 key=$2 note=$3 prefix
   status_decision_key_valid "$key" || return 1
+  case "$verb" in
+    "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}") ;;
+    "${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}") ;;
+    *) return 1 ;;
+  esac
   prefix=$(_fm_decision_reserved_prefix "$key") || { printf '%s' "$note"; return 0; }
-  printf '%sresolved: %s' "$prefix" "$note"
+  printf '%s%s: %s' "$prefix" "$verb" "$note"
 }
 
 _fm_is_pending_reply_escalation() {  # <key> <note>
@@ -1437,10 +1445,13 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
   return "$rc"
 }
 
-# 0 when a status line is an informational `note:` or a reserved-key
-# resolution attempt. Accepted closes leave the open set and rejected attempts
-# leave the key there, so the drain presents either attempt once rather
-# than silently burying its outcome under a later append.
+# 0 when a status line is an informational `note:`, a reserved-key resolution,
+# or a rejected close attempt on a reserved key. Those lines never stay in the
+# OPEN DECISIONS fold as themselves, so the drain is the only place their
+# outcome is presented rather than being buried under a later append. An
+# ACCEPTED captain-held transfer is excluded: it hands the decision to the
+# durable captain-held ledger, which presents it, so surfacing it here would
+# repeat one still-tracked item on a second captain-facing surface.
 status_line_is_unread_surface() {  # <status-line>
   local line=$1 verb key resolve held
   [ -n "$line" ] || return 1
@@ -1453,7 +1464,9 @@ status_line_is_unread_surface() {  # <status-line>
     *) return 1 ;;
   esac
   key=$(_fm_decision_key "$line") || return 1
-  _fm_decision_reserved_prefix "$key" >/dev/null
+  _fm_decision_reserved_prefix "$key" >/dev/null || return 1
+  [ "$verb" = "$held" ] || return 0
+  ! _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")"
 }
 
 # Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
@@ -1669,13 +1682,16 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
     # The fold guards BOTH closing verbs on a reserved key, so both are checked
     # here before either is treated as a close: a rejected close leaves its key
     # open, and that outcome has to be visible rather than a silent no-op.
+    # Either way the row reports on a decision that is STILL OPEN, so it carries
+    # the same main-only marker an open decision does - a reconciliation error
+    # about a captain's own decision must never route to the supervision branch.
     case "$verb" in
       "$resolve"|"$held")
         key=$(_fm_decision_key "$line") || key=''
         if [ -n "$key" ] && ! _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")"; then
           [ -n "$events" ] && events="${events} ; "
           events="${events}reconciliation-required: ${line}"
-          [ "$verb" = "$held" ] && _fm_span_needs_decision=1
+          _fm_span_needs_decision=1
           rc=0
           continue
         fi
