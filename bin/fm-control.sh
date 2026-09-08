@@ -696,7 +696,7 @@ resolve_relaunch_profile() {
 # unreadable after those attempts preserves the agent. Path identity uses the
 # physical directory.
 require_relaunch_occupied_worktree() {
-  local seen seen_real wt_real seen_ino wt_ino attempt
+  local seen seen_real wt_real attempt
   wt_real=$(CDPATH='' cd -- "$WT" 2>/dev/null && pwd -P) \
     || die "task $ID's recorded worktree $WT cannot be resolved"
   seen=
@@ -711,16 +711,6 @@ require_relaunch_occupied_worktree() {
   fi
   seen_real=$(CDPATH='' cd -- "$seen" 2>/dev/null && pwd -P) || seen_real=
   if [ -n "$seen_real" ] && [ "$seen_real" = "$wt_real" ]; then
-    return 0
-  fi
-  if [ "$(uname -s)" = Darwin ]; then
-    seen_ino=$(stat -f '%d:%i' "$seen" 2>/dev/null || true)
-    wt_ino=$(stat -f '%d:%i' "$wt_real" 2>/dev/null || true)
-  else
-    seen_ino=$(stat -c '%d:%i' "$seen" 2>/dev/null || true)
-    wt_ino=$(stat -c '%d:%i' "$wt_real" 2>/dev/null || true)
-  fi
-  if [ -n "$seen_ino" ] && [ "$seen_ino" = "$wt_ino" ]; then
     return 0
   fi
   die "task $ID's live shell is in ${seen_real:-$seen}, not its recorded worktree $WT; refusing to stop the agent"

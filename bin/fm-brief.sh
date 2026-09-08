@@ -48,13 +48,14 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# The project path is resolved to its repository's primary working tree
-# (fm-tangle-lib.sh) before that assertion is written, so a project given as
-# `.` from a linked firstmate worktree names the real primary rather than
-# itself, and a treehouse copy is not told to stop. Ship and scout briefs both
-# label the worktree with that resolved name. The assertion uses a Git
-# discriminant (git-dir vs git-common-dir); equality of pwd and git-toplevel
-# does not prove isolation.
+# A project given as exactly `.` - and nothing else, since every other spelling
+# is a repo LABEL rather than a path - is resolved to its repository's primary
+# working tree (fm-tangle-lib.sh) before that assertion is written, so `.` from
+# a linked firstmate worktree names the real primary rather than itself, and a
+# treehouse copy is not told to stop. Ship and scout briefs label the worktree
+# with that resolved name; any other label is rendered verbatim. The assertion
+# uses a Git discriminant (git-dir vs git-common-dir); equality of pwd and
+# git-toplevel does not prove isolation.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -321,11 +322,9 @@ fi
 REPO=${POS[1]}
 REPO_PRIMARY=
 REPO_LABEL=$REPO
-if [ -d "$REPO" ]; then
-  if REPO_ABS=$(CDPATH='' cd -- "$REPO" 2>/dev/null && pwd -P); then
-    REPO_PRIMARY=$(fm_git_primary_workdir "$REPO_ABS" 2>/dev/null) || REPO_PRIMARY=$REPO_ABS
-    REPO_LABEL=$(basename "$REPO_PRIMARY")
-  fi
+if [ "$REPO" = . ] && REPO_ABS=$(pwd -P 2>/dev/null); then
+  REPO_PRIMARY=$(fm_git_primary_workdir "$REPO_ABS" 2>/dev/null) || REPO_PRIMARY=$REPO_ABS
+  REPO_LABEL=$(basename "$REPO_PRIMARY")
 fi
 PRIMARY_CLAUSE=
 if [ -n "$REPO_PRIMARY" ]; then
