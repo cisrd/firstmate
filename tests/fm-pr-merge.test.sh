@@ -13,8 +13,7 @@
 #   (e) PR URL is parsed to number + --repo for gh-axi (defaults to --squash)
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
-#   (g2) --queue skips default --squash
-#        and forward no strategy flag, so a merge-queue branch can choose
+#   (g2) --queue invokes enqueuePullRequest without an explicit strategy
 #   (g3) that path uses the same live outcome read as every other GitHub merge,
 #        so an enqueued still-open PR is named queued rather than merged
 #   (g4) those forge-decides tokens are refused on GitLab before any state is
@@ -1716,10 +1715,8 @@ test_forge_decides_conflicting_strategy_refuses_before_forge() {
   pass "fm-pr-merge refuses a forge-decides method combined with an explicit GitHub strategy"
 }
 
-# On a merge-queue branch the merge call enqueues the pull request and leaves it
-# open, while the forge CLI still reports that as a merge. The same live outcome
-# read used for every GitHub merge must name which of the two actually happened,
-# and the forge-decides tokens must still omit a strategy.
+# Enqueueing leaves the pull request open rather than landed. The shared live
+# outcome read must distinguish queue membership from a confirmed merge.
 test_forge_decides_reports_queued_and_merged_outcomes() {
   local case_dir rc
   case_dir=$(make_case forge-decides-queued)

@@ -309,7 +309,7 @@ PR-based task merges go through `bin/fm-pr-merge.sh`, which records `pr=` and an
 The helper requires a full canonical URL and rejects malformed URLs or repo override flags before recording merge state.
 When task metadata carries `yolo=on`, `bin/fm-pr-check.sh` derives the GitHub repository from that canonical URL and requires live push permission before accepting the PR as ready, so a read-only upstream cannot look like an autonomously landable delivery; `yolo=off` contribution workflows remain unchanged.
 A normal `https://github.com/<owner>/<repo>/pull/<n>` URL invokes `gh-axi pr merge <n> --repo <owner>/<repo>` with the merge-method rules owned by that helper's header.
-The canonical `--queue` argument and its retained legacy aliases instead invoke GitHub's GraphQL `enqueuePullRequest` operation, after live repository permission, PR identity, head, red-check, and branch-rule checks.
+Queue requests instead use GitHub's GraphQL `enqueuePullRequest` operation under the argument and preflight contract in `bin/fm-pr-merge.sh`'s header.
 The mutation is bound to the verified head through `expectedHeadOid`, and its returned queue entry is followed by an independent live queue-membership read.
 A GitHub merge-queue enqueue leaves the pull request open until it lands, so landing stays confirmed by the merge poll and teardown, which wait for a merged state, with empirical queue-state evidence in [`docs/verification/github-merge-queue.md`](verification/github-merge-queue.md).
 A `https://<host>/<path>/-/merge_requests/<n>` URL (see [docs/gitlab-merge-watch.md](gitlab-merge-watch.md)) invokes `glab mr merge <n> -R https://<host>/<path>`, so the instance comes from the URL, and adds no merge-method flag because the project's own merge method applies.
@@ -317,8 +317,7 @@ That path merges only after one live read of the merge request confirms it is op
 After either forge command returns, the script confirms the PR or MR actually landed, and only a confirmed landing records a landed outcome; a queued or unconfirmed request records none and leaves its poll armed.
 On GitLab an auto-merge-queued or unconfirmed request is reported without failing the run.
 On GitHub an outcome that is neither merged nor queued is refused loudly and non-zero, naming the observed state, and a base branch that requires the merge queue is refused with the concrete `--queue` retry rather than a merge strategy the queue rejects.
-One parser owns the canonical queue token, retained legacy aliases, caller method and auto-merge interpretation, repeated-token refusal, and unsupported enqueue arguments.
-When the caller already supplied any accepted queue token, the refusal says no different retry exists, names the blocking cause reported above it, and points at the queue state to re-check instead of echoing the operation under another spelling.
+The helper's parser owns caller-argument interpretation and retry behavior; its header documents the supported queue syntax.
 An auto-merge request is held to the same standard: `--auto` that leaves the pull request neither merged nor queued is refused rather than reported as success.
 Every GitHub refusal states what it could not observe as plainly as what it did, so an unreadable branch-rule response, an unrecognised queue method, and a merge queue no available read can see are each named rather than left to look like a base branch with no queue at all.
 A confirmed merge leaves a durable role-routed outcome instead of living only in the merging agent's memory, and [`bin/fm-merge-outcome-lib.sh`](../bin/fm-merge-outcome-lib.sh)'s header owns its destination, shape, identity, normal-case deduplication, and at-least-once recovery.

@@ -1,7 +1,5 @@
 # GitHub merge-queue verification
 
-Audience: maintainer verification.
-
 This record supports the current guarantee that `bin/fm-pr-merge.sh` uses GitHub's GraphQL `enqueuePullRequest` operation for a queue request and never treats queue membership as a landing.
 The helper's header owns queue-token grammar, caller-argument interpretation, preconditions, and retry behavior.
 `bin/fm-pr-poll.sh` and `bin/fm-teardown.sh` continue to accept only a merged pull request as landed.
@@ -96,7 +94,7 @@ bin/fm-test-run.sh tests/fm-pr-check-security.test.sh
 bin/fm-test-run.sh tests/fm-teardown.test.sh
 ```
 
-The merge tests execute the public wrapper and prove that the canonical `--queue` token and all retained aliases call `enqueuePullRequest`, bind `expectedHeadOid`, require an effective queue rule, reject a red status rollup and read-only repository, and independently confirm queue membership.
+The merge tests execute the public wrapper and prove that `--queue` calls `enqueuePullRequest`, binds `expectedHeadOid`, requires an effective queue rule, rejects a red status rollup and read-only repository, and independently confirms queue membership.
 They also prove that direct-merge refusals emit a runnable canonical retry, never repeat a queue operation the caller already requested, reject repeated queue tokens, and reject arguments the mutation cannot honor.
 The PR-check tests prove that autonomous delivery accepts a writable URL-derived target and refuses read-only or unverifiable targets before recording readiness.
 The teardown tests prove that an open pull request, including one waiting in a merge queue, is not landed work.

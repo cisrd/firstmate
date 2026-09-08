@@ -7,9 +7,9 @@
 # host and path, so any instance works and no host is hardcoded.
 #
 # GitHub direct merges default to --squash when the caller names no method.
-# `--queue` is the canonical merge-queue request and invokes GitHub's supported
+# `--queue` is the only merge-queue request syntax and invokes GitHub's supported
 # GraphQL enqueuePullRequest mutation rather than the gh-axi merge parser.
-# One parser owns every queue spelling and all caller-argument interpretation.
+# One parser owns queue syntax and all caller-argument interpretation.
 # It refuses repeated queue tokens, a queue token mixed with an explicit merge
 # strategy, and any extra argument the enqueue mutation cannot honour.
 # Before enqueue, one live GraphQL read proves the URL-derived repository is
@@ -725,9 +725,8 @@ github_queue_retry_command() {
   printf '%s %s %s -- --queue' "$0" "$ID" "$URL"
 }
 
-# A caller who supplied any accepted queue spelling already requested the one
-# operation the retry would perform. Never hand that same operation back under
-# either the canonical spelling or a legacy alias.
+# A caller who supplied --queue already requested the operation the retry
+# would perform. Report the blocking cause instead of repeating that request.
 github_caller_already_ran_queue_retry() {
   [ "$FM_PR_CALLER_QUEUE" = true ]
 }

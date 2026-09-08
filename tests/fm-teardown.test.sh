@@ -374,7 +374,6 @@ assert_refusal_retained_task_state() {
     || fail "$label: refusal erased the durable task record"
 }
 
-# Override GitHub lookups to report PR 7 as still open with the supplied head.
 append_pr_meta_for_current_head() {
   local case_dir=$1 head
   head=$(git -C "$case_dir/wt" rev-parse HEAD)
