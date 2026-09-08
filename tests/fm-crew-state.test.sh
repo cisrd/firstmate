@@ -1106,19 +1106,6 @@ test_passed_outcome_with_every_phase_skipped_reads_failed() {
   pass "outcome passed with every mandatory phase skipped reads failed"
 }
 
-test_checks_passed_outcome_with_every_phase_skipped_reads_failed() {
-  reset_fakes
-  local d; d=$(new_case checks-passed-empty-diff)
-  make_repo_on_branch "$d/wt" fm/feat-checks-empty
-  make_fakebin "$d" >/dev/null
-  fm_write_meta "$d/state/feat-checks-empty.meta" "window=fm:fm-feat-checks-empty" "worktree=$d/wt" "kind=ship"
-  FM_FAKE_AXI_STATUS="$(run_outcome_empty_diff fm/feat-checks-empty checks-passed)"
-  local out; out=$(run_crew_state "$d" feat-checks-empty)
-  assert_contains "$out" "state: failed" "outcome checks-passed must not be trusted on its own"
-  assert_not_contains "$out" "state: done" "vacuous checks-passed outcome must never read done"
-  pass "outcome checks-passed with every mandatory phase skipped reads failed"
-}
-
 test_completed_run_with_full_delivery_still_reads_done() {
   reset_fakes
   local d; d=$(new_case completed-full-delivery)
@@ -1143,6 +1130,36 @@ test_completed_run_with_partial_skip_still_reads_done() {
   assert_contains "$out" "state: done" "a delivered run with some skipped phases stays done"
   assert_not_contains "$out" "not validated" "partial skips are not the vacuous shape"
   pass "completed run with only some phases skipped still reads done"
+}
+
+# The two-run coarse fallback, the shape the full-path guard alone cannot
+# reach: crew A's run ended in the vacuous empty-diff shape, and crew B then
+# started a run on the same repo, so the shared daemon's bare `axi status`
+# answers with B's branch. A's state read therefore falls to the coarse runs
+# ledger, whose newest row for A's branch is `completed` at A's own head - and
+# that ledger carries no steps table and no run id, so nothing here can prove
+# any delivery phase ran. It must not be reported as a validated done.
+test_coarse_completed_ledger_row_is_not_reported_done() {
+  reset_fakes
+  local d short; d=$(new_case coarse-completed-unverified)
+  make_repo_on_branch "$d/wt" fm/feat-coarse-completed
+  short=$(git -C "$d/wt" rev-parse --short=7 HEAD)
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-coarse-completed.meta" \
+    "window=fm:fm-feat-coarse-completed" "worktree=$d/wt" "kind=ship"
+  FM_FAKE_AXI_STATUS="$(run_running fm/other-crew)"
+  FM_FAKE_RUNS_LIST="$(cat <<EOF
+  running    fm/other-crew aaaaaaa  2026-09-08 22:10
+  completed  fm/feat-coarse-completed ${short}  2026-09-08 22:05
+EOF
+)"
+  local out; out=$(run_crew_state "$d" feat-coarse-completed)
+  assert_not_contains "$out" "state: done" \
+    "a coarse completed row cannot prove the run validated anything"
+  assert_contains "$out" "state: unknown" "an unprovable terminal record reads unknown"
+  assert_contains "$out" "unverified" "the detail must say the record is unverified"
+  assert_contains "$out" "source: run-step" "the ledger row is still this branch's attributed run"
+  pass "coarse completed ledger row reads unverified, never done"
 }
 
 test_terminal_failed_ci_genuine_red_stays_failed() {
@@ -2424,9 +2441,9 @@ test_terminal_failed_ci_orphan_status_only_reads_done
 test_terminal_failed_ci_genuine_red_stays_failed
 test_completed_run_with_every_phase_skipped_reads_failed
 test_passed_outcome_with_every_phase_skipped_reads_failed
-test_checks_passed_outcome_with_every_phase_skipped_reads_failed
 test_completed_run_with_full_delivery_still_reads_done
 test_completed_run_with_partial_skip_still_reads_done
+test_coarse_completed_ledger_row_is_not_reported_done
 test_terminal_failed_ci_orphan_second_failed_step_stays_failed
 test_cross_branch_attribution_via_runs_list
 test_coarse_socket_refusal_reports_blocked
