@@ -67,7 +67,9 @@
 #      reviewed, tested, pushed, or opened as a PR, and validity must not be
 #      inferred from that word alone (nm_run_skipped_every_mandatory_step;
 #      2026-09-08 fm-nm-depot-livraison-non-modifiable incident). The coarse
-#      fallback carries no steps table, so it cannot recognize that shape.
+#      fallback carries no steps table and the runs ledger names no run id to
+#      fetch one with, so it can neither prove nor exclude that shape: there a
+#      terminal COMPLETED record reads unknown-unverified, never done.
 #   3. Reconcile the status log: if its last line says needs-decision/blocked but
 #      the run-step shows the run moved on, the log is deterministically stale and
 #      is flagged superseded. A genuinely parked run plus a needs-decision log
@@ -656,7 +658,19 @@ if [ "$HAVE_RUN" = 1 ]; then
     # distinction, so a real gate is never silently missed.
     case "$COARSE_STATUS" in
       running)   RUN_STATE=working; RUN_DETAIL="validating (background run)" ;;
-      completed) RUN_STATE="done";  RUN_DETAIL="run completed" ;;
+      completed)
+        # Symmetric to the failed row below: a terminal ledger word is not a
+        # verdict here. The vacuous-pass shape the full path refuses
+        # (nm_run_skipped_every_mandatory_step) is recorded `completed` too,
+        # and this path has no steps table to tell the two apart - the runs
+        # ledger carries no run id, so no per-run lookup can supply one
+        # either. Reporting done would accept as validated exactly the run
+        # that validated nothing, so the record is reported unverified and
+        # the crew's own done/failed status-log line stays the only thing
+        # that can conclude it.
+        RUN_STATE=unknown
+        RUN_DETAIL="last ledger record completed; no steps table to prove any delivery phase ran - unverified"
+        ;;
       failed)
         # The ledger row is terminal but the coarse path has no steps table
         # and no ci log, so the orphaned-monitor shape cannot be recognized
@@ -686,10 +700,7 @@ if [ "$HAVE_RUN" = 1 ]; then
           if nm_reclassify_vacuous_success_as_failed; then :; else
             RUN_STATE="done"; RUN_DETAIL="run passed: PR merged/closed"
           fi ;;
-        checks-passed)
-          if nm_reclassify_vacuous_success_as_failed; then :; else
-            RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review"
-          fi ;;
+        checks-passed) RUN_STATE="done"; RUN_DETAIL="checks green: PR ready for review" ;;
         failed)
           if nm_reclassify_failed_run_as_held_green; then :; else
             RUN_STATE=failed; RUN_DETAIL="run failed"
