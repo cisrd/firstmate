@@ -104,7 +104,8 @@ Switching harness is therefore one ordinary relaunch rather than a separate mech
   Only a positively classified state acts.
 - Relaunch verifies the live occupied directory against the recorded worktree **before** stopping the running agent.
   tmux and Herdr expose that foreground-process cwd passively; Herdr's pane-creation cwd is not that proof, and an empty, mismatched, or active-probe-only result preserves the agent.
-  After stop, `fm-spawn --relaunch` enters the recorded worktree if the idle shell has returned to the launch directory, and still refuses unless the recorded endpoint is positively agent-free and the replacement would start in that copy.
+  After stop, `fm-spawn --relaunch` re-reads that directory itself and refuses unless the endpoint - now positively agent-free - is still sitting in the recorded worktree.
+  It never types a `cd` to walk an idle shell back in: a ship or scout copy no live process is holding is one the pool may already have handed to another task, so the relaunch fails closed and leaves the copy alone rather than starting a second worker in it.
 
 ## Capability matrix
 
