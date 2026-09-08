@@ -573,6 +573,41 @@ EOF
   pass "report-only unresolved captain call is reproduced and completion refuses before loss"
 }
 
+# A reserved decision key (a `pending-reply-*` escalation) is transferred by the
+# same completion gate. The status fold refuses a close note that does not speak
+# the namespace's vocabulary, so the transfer has to be written through the
+# shared close grammar or the decision would stay open in the status stream
+# while a captain-held task already tracks it.
+test_completion_transfers_a_reserved_decision_key() {
+  local home id key open
+  home=$(make_home reserved-transfer)
+  id=sample-reserved-review
+  key=pending-reply-abcdef0123456789
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Investigate reserved escalations" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create investigation backlog fixture"
+  write_origin_meta "$home" "$id"
+  printf 'blocked [key=%s]: pending-reply-missed: task=%s request=ship it\n' "$key" "$id" \
+    > "$home/state/$id.status"
+
+  run_captain "$home" hold sample-reserved-call \
+    --title "Answer the missed reply" --reason "the escalated reply is unanswered" \
+    --repo sample --origin "$id" >/dev/null \
+    || fail "could not register the captain-held task for a reserved key"
+  run_captain "$home" complete "$id" sample-reserved-call >/dev/null \
+    || fail "completion failed for an origin holding a reserved decision key"
+
+  open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+    "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
+  [ -z "$open" ] || fail "the reserved key stayed open beside its captain-held task: $open"
+  [ "$(grep -cF "captain-held [key=$key]: pending-reply-resolved: tracked by sample-reserved-call" \
+    "$home/state/$id.status")" = 1 ] \
+    || fail "the reserved transfer was not written once through the shared close grammar: $(cat "$home/state/$id.status")"
+  run_captain "$home" verify "$id" >/dev/null \
+    || fail "verify did not accept the transferred reserved decision key"
+  pass "a reserved decision key transfers to its captain-held task and closes in the status fold"
+}
+
 # The completion gate on the collapsed primitive: an origin with open keyed
 # status decisions refuses --none, refuses an inventory naming absent tasks,
 # attests a verified inventory of captain-held task ids, and transfers every
@@ -2604,6 +2639,7 @@ SH
 
 test_uninventoried_report_decision_refuses_completion
 test_completion_gate_attests_and_transfers
+test_completion_transfers_a_reserved_decision_key
 test_answer_records_and_closes
 test_release_frees_held_work
 test_hold_stamp_precedes_hold_visibility

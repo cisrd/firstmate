@@ -1442,7 +1442,7 @@ status_new_lines_since_cursor() {  # <status-file> [<captured-end-offset>]
 # leave the key there, so the drain presents either attempt once rather
 # than silently burying its outcome under a later append.
 status_line_is_unread_surface() {  # <status-line>
-  local line=$1 verb key note resolve held
+  local line=$1 verb key resolve held
   [ -n "$line" ] || return 1
   verb=$(status_line_verb "$line")
   [ "$verb" = note ] && return 0
@@ -1453,10 +1453,7 @@ status_line_is_unread_surface() {  # <status-line>
     *) return 1 ;;
   esac
   key=$(_fm_decision_key "$line") || return 1
-  _fm_decision_reserved_prefix "$key" >/dev/null || return 1
-  [ "$verb" = "$resolve" ] && return 0
-  note=$(status_line_note "$line")
-  _fm_decision_key_transition_allowed "$key" "$note"
+  _fm_decision_reserved_prefix "$key" >/dev/null
 }
 
 # Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
@@ -1665,22 +1662,27 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
   while IFS= read -r line || [ -n "$line" ]; do
     line_number=$((line_number + 1))
     case "$line" in *[![:space:]]*) ;; *) continue ;; esac
+    verb=$(status_line_verb "$line")
+    # The fold guards BOTH closing verbs on a reserved key, so both are checked
+    # here before either is treated as a close: a rejected close leaves its key
+    # open, and that outcome has to be visible rather than a silent no-op.
+    case "$verb" in
+      "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}"|"${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}")
+        key=$(_fm_decision_key "$line") || key=''
+        if [ -n "$key" ] && ! _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")"; then
+          [ -n "$events" ] && events="${events} ; "
+          events="${events}reconciliation-required: ${line}"
+          rc=0
+          continue
+        fi
+        ;;
+    esac
     if status_is_captain_held "$line"; then
       # A transfer closes the status-log decision and remains non-actionable to
       # stale classification. The side-band marker lets signal routing surface
       # the captain-owned hold without changing that established stale verdict.
       _fm_span_needs_decision=1
       continue
-    fi
-    verb=$(status_line_verb "$line")
-    if [ "$verb" = "${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}" ]; then
-      key=$(_fm_decision_key "$line") || key=''
-      if [ -n "$key" ] && ! _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")"; then
-        [ -n "$events" ] && events="${events} ; "
-        events="${events}reconciliation-required: ${line}"
-        rc=0
-        continue
-      fi
     fi
     status_is_captain_relevant "$line" || continue
     case "$verb" in

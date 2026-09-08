@@ -1524,7 +1524,7 @@ reconcile_note() {
 }
 
 command_complete() {
-  local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open raw_open has_meta=0 transfer_rc resolved
+  local origin=${1:-} meta previous='' supplied='' keys='' entry key status_file open raw_open has_meta=0 transfer_rc transfer_note resolved
   local resolved_how attested_by_prefix=''
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
@@ -1590,13 +1590,18 @@ EOF
     # Call item. The transfer line is this home's own bookkeeping close,
     # written by the turn that just reviewed the inventory, so it uses the
     # guarded self-announced append (bin/fm-wake-lib.sh) and does not wake this
-    # same session; an append failure still fails this command loudly.
+    # same session; an append failure still fails this command loudly. The note
+    # is built through the shared close grammar so a reserved key (a
+    # `pending-reply-*` escalation, say) is really closed by this authoritative
+    # transfer instead of staying open in the fold beside its own hold.
     if [ -n "$keys" ]; then
       while IFS=$'\t' read -r key _verb _summary; do
         [ -n "$key" ] || continue
         transfer_rc=0
+        transfer_note=$(status_decision_close_note "$key" "tracked by $keys") \
+          || fail "cannot express the captain-held transfer for $origin/$key in the shared decision grammar"
         fm_wake_status_append_self_announced "$STATE" "$status_file" \
-          "captain-held [key=$key]: tracked by $keys" || transfer_rc=$?
+          "captain-held [key=$key]: $transfer_note" || transfer_rc=$?
         [ "$transfer_rc" -ne 2 ] || fail "cannot append the captain-held transfer for $origin/$key"
       done <<EOF
 $raw_open
