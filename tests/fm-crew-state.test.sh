@@ -109,15 +109,27 @@ set -u
 # trimmed PATH) or errors non-definitively - so even the inventory fails, with
 # a message that is NOT one of the definitive no-session/no-server/no-socket
 # responses that fm_backend_tmux_agent_state owns as death.
+# FM_FAKE_TMUX_SHELL_ONLY: the window is alive and listed, but its foreground
+# process group is nothing but a shell, which is exactly the input
+# fm_backend_tmux_agent_state resolves to `dead` (pane there, agent gone). The
+# fake `ps` beside this file serves the process group for the fake pane tty.
 [ "${FM_FAKE_TMUX_UNREADABLE:-0}" = 1 ] && { printf 'no current client\n' >&2; exit 1; }
 case "${1:-}" in
   list-windows)
     # A successful but empty inventory: it omits the crew's window, so absence
     # is proved by the answer rather than by an addressed call failing. Only
-    # reached once display-message has already failed.
+    # reached once display-message has already failed. Under SHELL_ONLY the
+    # inventory names the crew's own window, so the pane is provably present.
+    [ "${FM_FAKE_TMUX_SHELL_ONLY:-0}" = 1 ] && printf '%s\n' "${FM_FAKE_TMUX_WINDOWS:-}"
     ;;
   display-message)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
+    if [ "${FM_FAKE_TMUX_SHELL_ONLY:-0}" = 1 ]; then
+      case "${!#}" in
+        '#{pane_tty}') printf 'fmfake0\n'; exit 0 ;;
+        '#{pane_current_command}') printf 'bash\n'; exit 0 ;;
+      esac
+    fi
     printf '%%1\n' ;;
   capture-pane)
     [ "${FM_FAKE_TMUX_MISSING:-0}" = 1 ] && exit 1
@@ -126,6 +138,22 @@ case "${1:-}" in
 esac
 exit 0
 SH
+  local real_ps
+  real_ps=$(command -v ps) || fail "missing tool for the dead-shell classifier: ps"
+  cat > "$fb/ps" <<SH
+#!/usr/bin/env bash
+set -u
+# Only the fake pane tty of FM_FAKE_TMUX_SHELL_ONLY is served here; every other
+# query goes to the real ps, so the rest of the suite is untouched.
+if [ "\${FM_FAKE_TMUX_SHELL_ONLY:-0}" = 1 ]; then
+  case "\$*" in
+    *"-t fmfake0"*) printf '424242 424242 424242 bash\n'; exit 0 ;;
+    *"-p 424242"*) printf -- '-bash\n'; exit 0 ;;
+  esac
+fi
+exec $real_ps "\$@"
+SH
+  chmod +x "$fb/ps"
   cat > "$fb/herdr" <<'SH'
 #!/usr/bin/env bash
 set -u
@@ -216,6 +244,8 @@ reset_fakes() {
   FM_FAKE_BUSY_TEXT=
   FM_FAKE_TMUX_MISSING=0
   FM_FAKE_TMUX_UNREADABLE=0
+  FM_FAKE_TMUX_SHELL_ONLY=0
+  FM_FAKE_TMUX_WINDOWS=""
   FM_FAKE_HERDR_BUSY=0
   FM_FAKE_HERDR_MISSING=0
   FM_FAKE_HERDR_READ_FAIL=0
@@ -224,6 +254,7 @@ reset_fakes() {
   FM_FAKE_CI_LOGS=""
   FM_FAKE_DAEMON_DOWN=0
   export FM_FAKE_AXI_STATUS FM_FAKE_AXI_STATUS_RUN FM_FAKE_RUNS_LIST FM_FAKE_BUSY FM_FAKE_BUSY_TEXT FM_FAKE_TMUX_MISSING FM_FAKE_TMUX_UNREADABLE
+  export FM_FAKE_TMUX_SHELL_ONLY FM_FAKE_TMUX_WINDOWS
   export FM_FAKE_HERDR_BUSY FM_FAKE_HERDR_MISSING FM_FAKE_HERDR_READ_FAIL FM_FAKE_HERDR_HUSK FM_FAKE_HERDR_AGENT_STATUS FM_FAKE_CI_LOGS
   export FM_FAKE_DAEMON_DOWN
 }
@@ -1408,6 +1439,54 @@ test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle() {
 }
 
 # (g) no run + idle pane -> the status-log verb, as-is
+# (g'') no run + a LIVE pane whose agent is gone (the real dead-shell verdict of
+# fm_backend_tmux_agent_state, driven by a foreground group that is nothing but a
+# shell). A crew that finished and whose agent then exited outside fm-control -
+# so nothing retired its busy record - must still surface the terminal word of
+# its status log, because that log is the last authoritative account of the task
+# and the captain's terminal-in-flight list is built from it.
+test_no_run_live_pane_agent_gone_keeps_terminal_log() {
+  reset_fakes
+  local d; d=$(new_case husk-done)
+  make_repo_on_branch "$d/wt" fm/feat-husk-done
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-husk-done.meta" "window=fm:fm-feat-husk-done" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'done: PR https://example.invalid/pr/1 opened\n' > "$d/state/feat-husk-done.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_TMUX_SHELL_ONLY=1
+  FM_FAKE_TMUX_WINDOWS='fm-feat-husk-done'
+  # The busy record was never retired, so it still reads idle claude-hook.
+  arm_idle_record "$d/state" feat-husk-done
+  local out; out=$(run_crew_state "$d" feat-husk-done)
+  assert_contains "$out" "state: done" "terminal log survives the gone agent"
+  assert_contains "$out" "source: status-log" "the terminal reading is attributed to the log"
+  assert_contains "$out" "agent gone, pane shell remains" "the detail names why the pane could not answer"
+  pass "live pane with no agent still reports its terminal status-log state"
+}
+
+# The other half of the same decision: a NONTERMINAL log describes an in-flight
+# intention that the departed agent can no longer own, so it must not be
+# reported as the current state.
+test_no_run_live_pane_agent_gone_nonterminal_log_is_unknown() {
+  reset_fakes
+  local d; d=$(new_case husk-working)
+  make_repo_on_branch "$d/wt" fm/feat-husk-working
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/feat-husk-working.meta" "window=fm:fm-feat-husk-working" "worktree=$d/wt" "kind=ship" "harness=claude"
+  printf 'working: refactoring the parser\n' > "$d/state/feat-husk-working.status"
+  FM_FAKE_AXI_STATUS=""
+  FM_FAKE_TMUX_SHELL_ONLY=1
+  FM_FAKE_TMUX_WINDOWS='fm-feat-husk-working'
+  arm_idle_record "$d/state" feat-husk-working
+  local out; out=$(run_crew_state "$d" feat-husk-working)
+  assert_contains "$out" "state: unknown" "a nonterminal log cannot outlive its agent"
+  assert_contains "$out" "shell-no-agent" "the unknown verdict names the structural cause"
+  case "$out" in
+    *"state: working"*) fail "a gone agent must not keep reporting working" ;;
+  esac
+  pass "live pane with no agent reports unknown for a nonterminal status log"
+}
+
 test_no_run_idle_pane_uses_log() {
   reset_fakes
   local d; d=$(new_case idle)
@@ -2326,6 +2405,8 @@ test_no_run_herdr_alive_with_failed_read_stays_live
 test_no_run_herdr_husk_dead_still_reads_gone
 test_no_run_herdr_idle_agent_status_outranked_by_record
 test_no_run_herdr_idle_agent_status_and_idle_record_stays_idle
+test_no_run_live_pane_agent_gone_keeps_terminal_log
+test_no_run_live_pane_agent_gone_nonterminal_log_is_unknown
 test_no_run_idle_pane_uses_log
 test_no_run_idle_pane_uses_keyed_log
 test_no_run_idle_pane_paused

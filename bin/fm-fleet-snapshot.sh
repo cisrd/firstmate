@@ -330,7 +330,6 @@ crew_state_json() {  # <id> [<captured-meta>] [<captured-status>]
     return 0
   fi
   raw=$(
-    unset FM_CREW_STATE_META_OVERRIDE FM_CREW_STATE_STATUS_OVERRIDE
     fm_run_timed "$FM_SNAPSHOT_CREW_STATE_TIMEOUT" \
       env "${crew_env[@]}" \
       "$SCRIPT_DIR/fm-crew-state.sh" "$id" 2>/dev/null || true

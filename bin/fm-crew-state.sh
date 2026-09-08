@@ -842,8 +842,24 @@ fi
 # Only an exact busy verdict reports working here, and only an exact idle
 # verdict permits the status-log fallback below. Missing, malformed, stale, or
 # unverified semantic state remains unknown.
+#
+# A live pane whose agent is gone (`dead shell-no-agent`) is not merely an
+# unreadable busy state: the crew can have finished and had its agent exit
+# outside fm-control, leaving a `done`/`failed` status log that is the last
+# authoritative word on the task. Only those two terminal verbs survive the
+# missing agent - a `working`, `blocked`, `needs-decision`, or `paused` log
+# describes an in-flight intention that the gone agent can no longer own, so
+# it stays unknown.
 if [ "$KIND" != secondmate ]; then
   BUSY_VERDICT=$(crew_busy_verdict "$BACKEND_TARGET")
+  if [ "$BUSY_VERDICT" = 'dead shell-no-agent' ]; then
+    case "$(map_log_state "$LOG_LINE")" in
+      done|failed)
+        emit "$(map_log_state "$LOG_LINE")" status-log \
+          "$(status_line_note "$LOG_LINE")${SEP}agent gone, pane shell remains"
+        ;;
+    esac
+  fi
   case "${BUSY_VERDICT%% *}" in
     busy) emit working pane "harness busy (${BUSY_VERDICT#* })" ;;
     idle) ;;
