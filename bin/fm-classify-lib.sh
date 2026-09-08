@@ -1339,9 +1339,9 @@ EOF
 # aborts presentation without advancing any offset. A trusted cursor at EOF
 # prints nothing, so already-presented bytes are not replayed as new. Teardown
 # retires a task's manifest row with its status file, so reusing a task ID starts
-# the replacement log unread at byte 0. Informational `note:` lines and
-# reserved-key pending-reply resolutions are the fleet-wide unread surface;
-# they are not open decisions and are not persisted in the folded open-set.
+# the replacement log unread at byte 0. status_line_is_unread_surface below
+# owns which lines are that fleet-wide unread surface; none of them are open
+# decisions and none are persisted in the folded open-set.
 
 # Read the legacy per-task open-decisions cursor used to seed the presentation
 # offset before the fleet manifest exists. A fold-version mismatch, identity
@@ -1470,7 +1470,8 @@ status_line_is_unread_surface() {  # <status-line>
 }
 
 # Fleet-wide unread informational lines: one "<task>\t<status-line>" row per
-# still-unread `note:` or pending-reply resolution, in glob (task id) order.
+# still-unread line status_line_is_unread_surface accepts, in glob (task id)
+# order.
 # Prints nothing when none are unread. Directory scan rejects status symlinks
 # the same way scan_open_decisions does.
 scan_unread_surface_lines() {  # <state>
