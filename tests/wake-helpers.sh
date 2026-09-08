@@ -101,7 +101,6 @@ exit 1
 SH
   chmod +x "$fakebin/tmux"
   make_fake_crew_state "$fakebin" >/dev/null
-  make_fake_no_mistakes "$fakebin" >/dev/null
   printf '%s\n' "$dir"
 }
 
@@ -128,29 +127,6 @@ exit 0
 SH
   chmod +x "$fakebin/fm-crew-state.sh"
   printf '%s\n' "$fakebin/fm-crew-state.sh"
-}
-
-# Install a hermetic fake `no-mistakes` into <fakebin> and echo its path, so no
-# test ever probes the machine's real shared daemon. Only `daemon status` is
-# exercised (the liveness probe behind the wedge deferral for a live validation);
-# FM_FAKE_NM_DAEMON=up makes the probe prove the daemon up, and anything else -
-# including the default - leaves it unproven, the fail-closed answer a test that
-# forgets to set one should get.
-make_fake_no_mistakes() {  # <fakebin>
-  local fakebin=$1
-  cat > "$fakebin/no-mistakes" <<'SH'
-#!/usr/bin/env bash
-set -u
-if [ "${1:-}" = daemon ] && [ "${2:-}" = status ]; then
-  case "${FM_FAKE_NM_DAEMON:-down}" in
-    up) echo "daemon: running"; exit 0 ;;
-    *)  echo "daemon: not running" >&2; exit 1 ;;
-  esac
-fi
-exit 1
-SH
-  chmod +x "$fakebin/no-mistakes"
-  printf '%s\n' "$fakebin/no-mistakes"
 }
 
 # Prime <file>'s .seen-* marker to its CURRENT signature through the production

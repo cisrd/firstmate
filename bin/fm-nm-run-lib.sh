@@ -38,15 +38,6 @@ fm_nm_run() {  # <dir> <timeout_secs> <args...>
   fm_nm_run_checked "$@" || true
 }
 
-# 0 only when a bounded `no-mistakes daemon status` PROVES the shared daemon up.
-# The canonical liveness probe (the same one fm-brief.sh hands crews before a
-# blocked append), stated positively: any failure - refused socket, timeout,
-# missing binary, non-zero answer - means the daemon is not provably up, so every
-# caller that needs daemon liveness fails closed on the same one fact.
-fm_nm_daemon_is_alive() {  # <dir> <timeout_secs>
-  fm_nm_run_checked "$1" "$2" daemon status >/dev/null
-}
-
 fm_nm_trim() {
   local s=${1:-}
   s="${s#"${s%%[![:space:]]*}"}"

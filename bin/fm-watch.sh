@@ -214,10 +214,10 @@ STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provabl
 # non-busy stale - so it escalates via the existing stale reason, escalation
 # counter, and demand-deep-inspection marker for human inspection only, never an
 # automatic interrupt, signal, or restart - unless the crew declared the wait
-# itself, which takes the long pause cadence instead, or a no-mistakes validation
-# is proven live at the escalation threshold, which is deferred onto that same
-# bounded cadence for as long as the proof keeps holding. A completed turn touches
-# turn-ended and resets the age. Set generously above any legitimate interval
+# itself, which takes the long pause cadence instead, or the crew's own
+# no-mistakes run reports recent activity at the escalation threshold, which
+# defers that one escalation and must prove itself again for the next.
+# A completed turn touches turn-ended and resets the age. Set generously above any legitimate interval
 # between completed turns, including long tool calls, builds, or test runs.
 BUSY_TURN_MAX_SECS=${FM_BUSY_TURN_MAX_SECS:-3600}
 # A local secondmate's foreign queue is checked on every poll, but only after this
@@ -323,11 +323,11 @@ window_label() {
 # The ONE derivation of a window's per-window marker key: `:`, `/` and `.` become
 # `_` so a window name is usable as a filename suffix. Every per-window file the
 # watcher keeps is named by it (.hash-, .count-, .stale-, .stale-since-,
-# .wedge-escalations-, .paused-*, .writing-*, .nmrun-*), and live homes hold those
-# markers on disk under the current format, so the format lives here alone: a
-# second copy is how a future change to it silently orphans a window's markers
-# instead of clearing them. The helpers below take the derived key rather than
-# re-deriving it, so one poll of one window derives it once.
+# .wedge-escalations-, .paused-*, .writing-*), and live homes hold those markers on
+# disk under the current format, so the format lives here alone: a second copy is
+# how a future change to it silently orphans a window's markers instead of clearing
+# them. The helpers below take the derived key rather than re-deriving it, so one
+# poll of one window derives it once.
 window_key() {  # <window>
   local key=${1//:/_}
   key=${key//\//_}
@@ -795,9 +795,8 @@ FM_WEDGE_DEMAND_INSPECT_COUNT=${FM_WEDGE_DEMAND_INSPECT_COUNT:-3}
 # once past PAUSE_RESURFACE_SECS the pane wakes once per window rather than every
 # poll. An optional <scope> binds that cadence to its current declaration; callers
 # without a scoped declaration keep the timestamp body. Shared by the
-# declared-pause absorb and both wedge deferrals (worktree-write and live
-# no-mistakes run) so their cadences cannot drift apart; each caller owns its own
-# marker and reason.
+# declared-pause absorb and the worktree-write deferral so the two cadences cannot
+# drift apart; each caller owns its own marker and reason.
 # Returns without waking while either the absorb or the throttle is inside the
 # window; wake() itself exits the cycle, exactly as it does inline.
 resurface_absorbed() {  # <window> <throttle-marker> <age> <reason> [scope]
@@ -838,39 +837,12 @@ wedge_defer_writing() {  # <window> <since-file> <triage-label> <idle-age>
   triage_log "absorbed $label (worktree written since the idle window opened, idle ${age}s): $win"
 }
 
-# Defer ONE wedge escalation for a pane whose no-mistakes validation is provably
-# live (crew_nm_run_is_provably_live: an attributed working run-step AND a daemon
-# proven up). This is the busy-turn bound's second real wait: the crew has not
-# completed a turn because the generated Definition of done forbids ending the
-# turn while its validation is active, so the pipeline - not the pane - is the
-# evidence. Deliberately the same DEFERRAL shape as the worktree-write one, never
-# a cancellation: the idle timer restarts so the next window re-proves both facts
-# from scratch, and a .nmrun-since-<key> chain ages the whole deferral so the pane
-# still re-surfaces once every PAUSE_RESURFACE_SECS through resurface_absorbed. A
-# run that stops advancing therefore cannot stay invisible, and the moment the
-# record goes terminal, loses attribution, or the daemon dies, the next threshold
-# falls straight through to the unchanged escalation ladder. The escalation
-# counter is left alone for the same reason wedge_defer_writing leaves it.
-wedge_defer_live_run() {  # <window> <since-file> <triage-label> <idle-age>
-  local win=$1 since_file=$2 label=$3 age=$4 key rsf rage
-  key=$(window_key "$win")
-  rsf="$STATE/.nmrun-since-$key"
-  [ -e "$rsf" ] || date +%s > "$rsf"
-  rage=$(age_of "$rsf")
-  date +%s > "$since_file"
-  resurface_absorbed "$win" "$STATE/.nmrun-resurfaced-$key" "$rage" \
-    "stale: $win (idle ${age}s, no-mistakes validation proven live for ${rage}s, rechecked on a long cadence not a wedge; confirm the run is still advancing)"
-  triage_log "absorbed $label (attributed no-mistakes run proven live, idle ${age}s): $win"
-}
-
-# Drop a window's deferral chains - worktree-write and live-run alike - wherever
-# its stale bookkeeping resets, so the bounded re-surface cadence is measured from
-# the CURRENT quiet stretch and a long-finished chain cannot make the next
-# deferral resurface immediately.
-clear_defer_tracking() {  # <window-key>
+# Drop a window's write-deferral chain wherever its stale bookkeeping resets, so
+# the bounded re-surface cadence is measured from the CURRENT quiet stretch and a
+# long-finished one cannot make the next deferral resurface immediately.
+clear_write_tracking() {  # <window-key>
   local key=$1
-  rm -f "$STATE/.writing-since-$key" "$STATE/.writing-resurfaced-$key" \
-    "$STATE/.nmrun-since-$key" "$STATE/.nmrun-resurfaced-$key"
+  rm -f "$STATE/.writing-since-$key" "$STATE/.writing-resurfaced-$key"
 }
 
 # Repeat-poll wedge-timer bookkeeping for an already-classified stale hash
@@ -883,7 +855,14 @@ clear_defer_tracking() {  # <window-key>
 # line that an active run/busy pane outranked).
 # The worktree write probe runs ONLY here, inside the at-threshold branch that is
 # about to escalate: at most one bounded walk per window per STALE_ESCALATE_SECS,
-# never per poll.
+# never per poll. `defer-live-run` adds the one other evidence a pane can offer
+# there, on the same terms and for the same reason: this crew's OWN no-mistakes
+# run reporting recent activity defers the escalation once, restarting the idle
+# timer so the next window must prove it again. The moment that run stops
+# reporting recent activity - a hung step, a record left behind after the daemon
+# exited, a run that is no longer this crew's - the threshold falls straight
+# through to the unchanged escalation ladder and its demand-deep-inspection
+# marker, so no deferral can repeat without fresh proof of work.
 wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-file> <task> [defer-live-run]
   local win=$1 since_file=$2 label=$3 escalation_file=$4 task=$5 live_run=${6-} since age n reason
   since=$(cat "$since_file" 2>/dev/null || true)
@@ -891,7 +870,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
     ''|*[!0-9]*)
       # Publish the repaired timer only after its old write-deferral chain is
       # gone, so observers cannot mistake a new idle window for the old chain.
-      clear_defer_tracking "$(window_key "$win")"
+      clear_write_tracking "$(window_key "$win")"
       date +%s > "$since_file"
       triage_log "absorbed $label timer reset: $win"
       ;;
@@ -902,8 +881,9 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
           wedge_defer_writing "$win" "$since_file" "$label" "$age"
           return 0
         fi
-        if [ -n "$live_run" ] && crew_nm_run_is_provably_live "$task" "$STATE"; then
-          wedge_defer_live_run "$win" "$since_file" "$label" "$age"
+        if [ -n "$live_run" ] && crew_nm_run_activity_is_recent "$task"; then
+          date +%s > "$since_file"
+          triage_log "absorbed $label (this crew's own no-mistakes run reports recent activity, idle ${age}s): $win"
           return 0
         fi
         n=$(( $(cat "$escalation_file" 2>/dev/null || echo 0) + 1 ))
@@ -914,7 +894,7 @@ wedge_timer_check() {  # <window> <since-file> <triage-label> <escalation-count-
         fi
         fm_wake_append stale "$win" "$reason" || exit 1
         rm -f "$since_file"
-        clear_defer_tracking "$(window_key "$win")"
+        clear_write_tracking "$(window_key "$win")"
         wake "$reason"
       fi
       ;;
@@ -956,7 +936,7 @@ handle_paused_stale() {  # <window> <task> <hash>
   printf '%s' "$h" > "$STATE/.stale-$key"
   : > "$STATE/.paused-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
-  clear_defer_tracking "$key"
+  clear_write_tracking "$key"
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
@@ -981,16 +961,16 @@ handle_paused_stale() {  # <window> <task> <hash>
 # A busy pane past BUSY_TURN_MAX_SECS is normally a wedge suspect because a hung
 # foreground call can hide behind a busy signature. A `paused:` declaration or
 # verified captain-held transfer instead identifies that live foreground call as
-# the expected external wait. A live no-mistakes validation is the other real
-# wait - a validating worker holds ONE turn open for the whole run by contract,
-# so its completed-turn age is expected to cross the bound - but that evidence is
-# NOT read here: it is handed to wedge_timer_check as `defer-live-run`, which
-# consults it only in the branch that is about to escalate. That keeps the two
-# bounded no-mistakes subprocesses to at most one pair per window per
-# STALE_ESCALATE_SECS instead of one pair per poll, and keeps the outcome a
-# bounded deferral rather than an unbounded silence. The caller has already confirmed liveness through
-# the busy verdict, so this exception does not suppress undeclared wedges or
-# alter the separate non-busy classification. handle_paused_stale keeps the
+# the expected external wait. An advancing no-mistakes validation is the other
+# real wait - a validating worker holds ONE turn open for the whole run by
+# contract, so its completed-turn age is expected to cross the bound - but that
+# evidence is NOT read here: it is handed to wedge_timer_check as
+# `defer-live-run`, which consults it only in the branch that is about to
+# escalate. That keeps the crew-state read to at most one per window per
+# STALE_ESCALATE_SECS instead of one per poll, and keeps the outcome a single
+# deferral that must be re-earned rather than a standing exemption. The caller
+# has already confirmed liveness through the busy verdict, so this exception does
+# not suppress undeclared wedges or alter the separate non-busy classification. handle_paused_stale keeps the
 # exception bounded by re-surfacing it once per PAUSE_RESURFACE_SECS. Away mode
 # remains daemon-owned and receives the undecorated wake identity for its own
 # classification, which is why the declaration is read before the afk branch
@@ -1021,7 +1001,7 @@ busy_turn_bound_check() {  # <window> <task> <hash> <since-file> <escalation-fil
       # leaves it, because the daemon owns that bookkeeping.
       key=$(window_key "$win")
       rm -f "$since_file" "$escalation_file"
-      clear_defer_tracking "$key"
+      clear_write_tracking "$key"
       declared="declared:$(fm_wake_signal_sig "$statusf" || true)"
       if [ "$(cat "$STATE/.stale-$key" 2>/dev/null || true)" != "$declared" ]; then
         fm_wake_append stale "$win" "stale: $win" || exit 1
@@ -1048,7 +1028,7 @@ clear_pause_state() {  # <window-key>
 # recheck, and re-surface throttle - can still reset the per-hash half alone.
 clear_stale_hash_tracking() {  # <window-key>
   local key=$1
-  clear_defer_tracking "$key"
+  clear_write_tracking "$key"
   rm -f "$STATE/.stale-$key" "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
 }
 
@@ -1253,7 +1233,7 @@ surface_nonterminal_stale() {  # <window> <hash>
   fi
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key"
-  clear_defer_tracking "$key"
+  clear_write_tracking "$key"
   if [ "$declared" -eq 0 ]; then
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
@@ -2148,7 +2128,7 @@ EOF
             if crew_is_provably_working "$(window_to_task "$w" "$STATE")"; then
               printf '%s' "$h" > "$sf"
               date +%s > "$ssf"
-              clear_defer_tracking "$key"
+              clear_write_tracking "$key"
               triage_log "absorbed stale (provably working, overriding a stale captain-relevant status): $w"
             elif captain_call_stale_bound "$key" "$task"; then
               # The line is captain-relevant and stays so, but the backlog says
@@ -2160,14 +2140,14 @@ EOF
               # here as it already was after a first terminal alarm.
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
-              clear_defer_tracking "$key"
+              clear_write_tracking "$key"
               triage_log "absorbed stale (open captain call already surfaced for this status): $w"
             else
               fm_wake_append stale "$w" "stale: $w" || exit 1
               stale_wait_record "$key"
               printf '%s' "$h" > "$sf"
               rm -f "$ssf"
-              clear_defer_tracking "$key"
+              clear_write_tracking "$key"
               stale_status="$STATE/$(window_to_task "$w" "$STATE").status"
               stale_record=$(status_span_first_actionable_record "$stale_status" 0)
               case $? in
@@ -2244,7 +2224,7 @@ EOF
           busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" && paused_bound=0
         else
           rm -f "$ssf" "$ewf"
-          clear_defer_tracking "$key"
+          clear_write_tracking "$key"
         fi
         # A busy pane normally means real work resumed, so stale pause bookkeeping
         # is cleared - but not in the same poll the declared-pause cadence just
@@ -2262,7 +2242,7 @@ EOF
         busy_turn_bound_check "$w" "$task" "$h" "$ssf" "$ewf" && paused_bound=0
       else
         rm -f "$ssf" "$ewf"
-        clear_defer_tracking "$key"
+        clear_write_tracking "$key"
       fi
       task=$(window_to_task "$w" "$STATE")
       if ! afk_present && status_is_paused_or_captain_held "$(last_status_line "$STATE/$task.status")" && [ "$busy_now" -ne 0 ]; then

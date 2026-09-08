@@ -61,9 +61,6 @@ case $- in *u*) _fm_classify_nounset=on ;; *) _fm_classify_nounset=off ;; esac
 # shellcheck source=bin/fm-timeout-lib.sh
 # shellcheck disable=SC1091
 . "$_FM_CLASSIFY_LIB_DIR/fm-timeout-lib.sh"
-# shellcheck source=bin/fm-nm-run-lib.sh
-# shellcheck disable=SC1091
-. "$_FM_CLASSIFY_LIB_DIR/fm-nm-run-lib.sh"
 [ "$_fm_classify_nounset" = on ] || set +u
 unset _fm_classify_nounset
 
@@ -1747,22 +1744,6 @@ status_span_has_actionable() {  # <status-file> <start-offset>
   status_span_first_actionable_record "$1" "${2:-0}" > /dev/null
 }
 
-# Read bin/fm-crew-state.sh's one authoritative current-state line
-# ("state: <s> · source: <src> · <detail>") and print it as "<state> <source>",
-# the two fields every absorb decision is made from. Fails (prints nothing) when
-# no id is given or the read is missing/unparseable, so a caller cannot mistake an
-# unreadable crew for a classified one. Not a pure read: see crew_absorb_class.
-# FM_CREW_STATE_BIN lets tests stub the verdict.
-crew_state_verdict() {  # <id>
-  local id=$1 line state src=
-  [ -n "$id" ] || return 1
-  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
-  case "$line" in state:*) ;; *) return 1 ;; esac
-  state=${line#state: }; state=${state%% *}
-  case "$line" in *"source: "*) src=${line#*source: }; src=${src%% *} ;; esac
-  printf '%s %s' "$state" "$src"
-}
-
 # Classify WHY an idle/stale crew MIGHT be safely absorbed instead of surfaced,
 # from bin/fm-crew-state.sh's one authoritative current-state line
 # ("state: <s> · source: <src> · <detail>"). Prints exactly one token:
@@ -1780,11 +1761,14 @@ crew_state_verdict() {  # <id>
 # run it only on no-verb signal and first-sighting stale paths, never every wake.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id>
-  local verdict state src
-  verdict=$(crew_state_verdict "$1") || { printf 'none'; return; }
-  state=${verdict%% *}; src=${verdict##* }
+  local id=$1 line state src
+  [ -n "$id" ] || { printf 'none'; return; }
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in state:*) ;; *) printf 'none'; return ;; esac
+  state=${line#state: }; state=${state%% *}
   if [ "$state" = paused ]; then printf 'paused'; return; fi
   if [ "$state" = working ]; then
+    src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac
   fi
   printf 'none'
@@ -1811,28 +1795,33 @@ crew_is_paused() {  # <id>
   [ "$(crew_absorb_class "$1")" = paused ]
 }
 
-# 0 only on POSITIVE proof that crew <id>'s no-mistakes validation is running
-# right now, from two facts that must BOTH hold:
-#   - fm-crew-state.sh attributes a working run-step to this crew (branch AND code
-#     identity, or pipeline-owned custody), which rules out a terminal run and a
-#     record that no longer belongs to this worktree;
-#   - fm_nm_daemon_is_alive proves the shared daemon is up.
-# The second is not redundant: a run record left at running/fixing is never
-# advanced after the daemon exits, so the record alone reports a live run for a
-# validation nothing is executing - the same stale-record hazard rule 7 of the
-# generated brief makes crews check before appending `blocked:`. Every failure is
-# a negative answer, so a missing worktree, an unreadable verdict, and a probe
-# that times out all read as NOT live.
+# The note bin/fm-crew-state.sh appends to an active run-step's detail when the
+# pipeline's own recency verdict says that step is still producing activity. One
+# definition, written by fm-crew-state.sh and matched by the predicate below, so
+# the emitted line and the classifier reading it cannot drift apart.
+FM_CREW_STATE_ACTIVITY_RECENT='run activity recent'
+
+# 0 only on POSITIVE proof that crew <id>'s OWN attributed no-mistakes run is
+# still doing work: fm-crew-state.sh reports a working run-step for THIS crew and
+# marks its active step's activity recent, which is the pipeline's own recency
+# verdict (`axi status` prefixes last_activity with `quiet` once nothing has
+# arrived), never a second threshold invented here and never the liveness of the
+# shared daemon, which any other crew's run keeps up. That distinction is the
+# whole point: a record left at running/fixing after a drive call was killed, or
+# after the daemon exited under it, reports a working run-step while nothing
+# executes it, and must NOT read as work in progress.
 # The busy-pane half of crew_absorb_class's `working` is deliberately excluded: a
 # caller that already holds a busy verdict cannot let that pane vouch for itself.
-# Two bounded subprocesses per call, so callers must run it at most once per
-# STALE_ESCALATE_SECS - never per poll (see crew_absorb_class).
-crew_nm_run_is_provably_live() {  # <id> <state>
-  local id=$1 state=$2 wt
-  [ "$(crew_state_verdict "$id")" = "working run-step" ] || return 1
-  wt=$(grep '^worktree=' "$state/$id.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true)
-  [ -n "$wt" ] && [ -d "$wt" ] || return 1
-  fm_nm_daemon_is_alive "$wt" "${FM_CREW_STATE_NM_TIMEOUT:-10}"
+# Not a pure read (see crew_absorb_class), so callers run it at most once per
+# STALE_ESCALATE_SECS - never per poll.
+crew_nm_run_activity_is_recent() {  # <id>
+  local id=$1 line
+  [ -n "$id" ] || return 1
+  line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
+  case "$line" in
+    "state: working"*"source: run-step"*"$FM_CREW_STATE_ACTIVITY_RECENT"*) return 0 ;;
+  esac
+  return 1
 }
 
 # Directories excluded from the worktree write probe below, and the depth it walks.

@@ -453,11 +453,15 @@ nm_reclassify_failed_run_as_held_green() {
   return 0
 }
 
-# 0 when an explicit probe proves the shared daemon down - the negation of
-# fm_nm_daemon_is_alive in bin/fm-nm-run-lib.sh, which owns that one probe for
-# every caller that needs daemon liveness.
+# 0 when an explicit probe proves the shared daemon down: `no-mistakes daemon
+# status` is the canonical down-probe (the same one fm-brief.sh hands crews
+# before a blocked append) and exits non-zero when the daemon is not running.
+# Bounded like every other CLI call; a probe that fails for any reason -
+# refused socket, timeout, non-zero answer - means the daemon is not provably
+# up, which is the only fact the coarse fallback needs.
 nm_daemon_probe_down() {
-  ! fm_nm_daemon_is_alive "$WT" "$NM_TIMEOUT"
+  fm_nm_run_checked "$WT" "$NM_TIMEOUT" daemon status >/dev/null || return 0
+  return 1
 }
 
 nm_ci_step_status() {
@@ -738,6 +742,14 @@ if [ "$HAVE_RUN" = 1 ]; then
       fi
       ;;
   esac
+
+  # Positive recency, for supervisors that must tell an advancing run from a
+  # record nothing is executing: the client's own `quiet` prefix is the verdict
+  # (nm_run_activity_is_recent), so the note appears only while an active step
+  # keeps reporting, and never for a coarse row with no steps table to read.
+  if [ "$RUN_STATE" = working ] && nm_run_activity_is_recent; then
+    RUN_DETAIL="$RUN_DETAIL${SEP}$FM_CREW_STATE_ACTIVITY_RECENT"
+  fi
 
   emit "$RUN_STATE" run-step "$RUN_DETAIL"
 fi
