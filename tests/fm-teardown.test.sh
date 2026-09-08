@@ -3490,8 +3490,8 @@ EOF
   run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 1 "$rc" "lsof-error-refusal: teardown should refuse"
-  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (lsof failed)" "$case_dir/stderr" \
-    "lsof-error-refusal: teardown did not explain the lsof refusal"
+  assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (the cwd scan could not establish a safe result)" "$case_dir/stderr" \
+    "lsof-error-refusal: teardown did not explain the failed cwd scan"
   assert_present "$case_dir/wt" "lsof-error-refusal: teardown removed the worktree"
   assert_present "$case_dir/state/task-x1.meta" "lsof-error-refusal: teardown removed task metadata"
   assert_absent "$case_dir/treehouse.log" "lsof-error-refusal: teardown returned the worktree"

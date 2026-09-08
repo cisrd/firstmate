@@ -148,8 +148,11 @@ test_brief_assertion_precedes_branch() {
     "brief is missing the isolation blocked-status contract"
   assert_grep "does not prove isolation" "$brief" \
     "brief must say pwd vs git-toplevel equality does not prove isolation"
-  assert_no_grep "absolute-git-dir" "$brief" \
-    "brief must not make git-dir equality a stop condition: an ordinary clone and an Orca copy satisfy it too"
+  if grep -E 'git rev-parse [^`]*git-dir' "$brief" >/dev/null; then
+    fail "brief must not test isolation by comparing git directories: an ordinary clone and an Orca copy pass that test too"
+  fi
+  assert_grep '`# Worktree isolation` section' "$brief" \
+    "brief must send the worker to the exact path fm-spawn appends at launch"
   iso=$(grep -n 'launched in primary checkout, not an isolated worktree' "$brief" | head -1 | cut -d: -f1)
   br=$(grep -n 'git checkout -b fm/' "$brief" | head -1 | cut -d: -f1)
   if [ -z "$iso" ] || [ -z "$br" ]; then

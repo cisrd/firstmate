@@ -1970,6 +1970,14 @@ task_pid_list_contains() {  # <pid-list> <pid>
   printf '%s\n' "$1" | grep -Fxq "$2"
 }
 
+# One wording for every way the cwd scan can fail to establish a safe result:
+# a broken lsof, a host with neither cwd source, or a copy this teardown's own
+# invoker occupies. The scan prints its own specific cause when it has one, so
+# naming a single tool here would send the operator after the wrong remedy.
+refuse_unresolved_pid_scan() {
+  echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (the cwd scan could not establish a safe result); preserving the worktree/tasktmp for manual inspection or retry." >&2
+}
+
 task_pids_under_roots() {  # <dir>...
   TASK_PIDS=
   TASK_PIDS_FAILED_DIR=
@@ -2058,7 +2066,7 @@ _reap_task_worktree_processes() {  # <label> <dir>...
   fi
   while [ "$pass" -le "$max_passes" ]; do
     if ! task_pids_under_roots "$@"; then
-      echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
+      refuse_unresolved_pid_scan
       return 1
     fi
     pids=$TASK_PIDS
@@ -2069,7 +2077,7 @@ _reap_task_worktree_processes() {  # <label> <dir>...
       [ -n "$pid" ] || continue
       if ! identity=$(task_process_identity "$pid"); then
         if ! task_pids_under_roots "$@"; then
-          echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
+          refuse_unresolved_pid_scan
           return 1
         fi
         if task_pid_list_contains "$TASK_PIDS" "$pid"; then
@@ -2088,7 +2096,7 @@ EOF
       continue
     fi
     if ! task_pids_under_roots "$@"; then
-      echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
+      refuse_unresolved_pid_scan
       return 1
     fi
     current_pids=$TASK_PIDS
@@ -2103,7 +2111,7 @@ EOF
     done
     sleep 1
     if ! task_pids_under_roots "$@"; then
-      echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
+      refuse_unresolved_pid_scan
       return 1
     fi
     current_pids=$TASK_PIDS
@@ -2121,7 +2129,7 @@ EOF
     if [ "${#remaining_pids[@]}" -gt 0 ]; then
       echo "teardown: force-killing leaked $label process(es) for $ID: ${remaining_pids[*]}" >&2
       if ! task_pids_under_roots "$@"; then
-        echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
+        refuse_unresolved_pid_scan
         return 1
       fi
       current_pids=$TASK_PIDS
@@ -2137,7 +2145,7 @@ EOF
     pass=$((pass + 1))
   done
   if ! task_pids_under_roots "$@"; then
-    echo "REFUSED: cannot determine leaked processes under ${TASK_PIDS_FAILED_DIR:-<missing>} for $ID (lsof failed); preserving the worktree/tasktmp for manual inspection or retry." >&2
+    refuse_unresolved_pid_scan
     return 1
   fi
   [ -z "$TASK_PIDS" ] && return 0
@@ -2170,16 +2178,6 @@ require_orca_worktree_path_match_if_present() {
   local worktree_id=$1 inspected=$2
   [ -n "$inspected" ] && [ -e "$inspected" ] || return 0
   require_orca_worktree_path_match "$worktree_id" "$inspected"
-}
-
-# The task's own live slot, canonicalized, or empty when this record has no slot
-# to release (a secondmate home, a record with no worktree=, or a path that is
-# already gone). Every slot-ownership check below is scoped to that value, so a
-# record with nothing live to return skips them rather than refusing.
-teardown_live_slot_path() {
-  [ "$KIND" != secondmate ] || return 1
-  is_treehouse_pool_slot "$PROJ" "$WT" || return 1
-  canonical_existing_dir "$WT"
 }
 
 collect_local_firstmate_states() {
