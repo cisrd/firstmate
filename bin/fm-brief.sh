@@ -48,11 +48,13 @@
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
-# Project paths are resolved before that assertion is written: `.` becomes the
-# repository's primary working tree (fm-tangle-lib.sh), so a linked firstmate
-# worktree is not described as the primary and a treehouse copy is not told to
-# stop. The assertion uses a Git discriminant (git-dir vs git-common-dir);
-# equality of pwd and git-toplevel does not prove isolation.
+# The project path is resolved to its repository's primary working tree
+# (fm-tangle-lib.sh) before that assertion is written, so a project given as
+# `.` from a linked firstmate worktree names the real primary rather than
+# itself, and a treehouse copy is not told to stop. Ship and scout briefs both
+# label the worktree with that resolved name. The assertion uses a Git
+# discriminant (git-dir vs git-common-dir); equality of pwd and git-toplevel
+# does not prove isolation.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
 # There is no --yolo flag here. The worker never owns merge decisions, so yolo is
@@ -319,7 +321,7 @@ fi
 REPO=${POS[1]}
 REPO_PRIMARY=
 REPO_LABEL=$REPO
-if [ -d "$REPO" ] || [ "$REPO" = . ] || [ "$REPO" = .. ]; then
+if [ -d "$REPO" ]; then
   if REPO_ABS=$(CDPATH='' cd -- "$REPO" 2>/dev/null && pwd -P); then
     REPO_PRIMARY=$(fm_git_primary_workdir "$REPO_ABS" 2>/dev/null) || REPO_PRIMARY=$REPO_ABS
     REPO_LABEL=$(basename "$REPO_PRIMARY")
@@ -381,7 +383,7 @@ $TASK_SECTION
 $HERDR_SECTION
 
 # Setup
-You are in a disposable git worktree of $REPO, at a detached HEAD on a clean default branch.
+You are in a disposable git worktree of $REPO_LABEL, at a detached HEAD on a clean default branch.
 This is a SCOUT task: the deliverable is a written report, not a PR.
 The worktree is your laboratory - install, run, edit, and make scratch commits freely; all of it is discarded at teardown.
 The report is the only thing that survives, so anything worth keeping must be in it.

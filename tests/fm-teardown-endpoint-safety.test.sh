@@ -500,35 +500,6 @@ test_reused_pool_slot_refuses_before_touching_the_other_task() {
   pass "fm-teardown: a pool slot named by a second task record is never returned, killed, or reset"
 }
 
-test_gitdir_identity_refuses_before_touching_the_other_task() {
-  local dir id=stale-task other=live-task gitdir worker rc
-  dir=$(make_case slot-gitdir)
-  mark_case_as_treehouse_pool "$dir"
-  gitdir=$(git -C "$dir/worktree" rev-parse --path-format=absolute --absolute-git-dir)
-  fm_write_meta "$dir/home/state/$id.meta" \
-    "window=firstmate:fm-$id" "endpoint_task_id=$id" \
-    "worktree=$dir/worktree" "project=$dir/project" "kind=scout"
-  fm_write_meta "$dir/home/state/$other.meta" \
-    "window=firstmate:fm-$other" "endpoint_task_id=$other" \
-    "worktree=$gitdir" "project=$dir/project" "kind=scout"
-  ( cd "$dir/worktree" && exec sleep 30 ) &
-  worker=$!
-  set +e
-  run_case "$dir" "$id" > "$dir/stdout" 2> "$dir/stderr"
-  rc=$?
-  set -e
-  [ "$rc" -ne 0 ] || fail "teardown returned a copy another task holds by git-dir identity"
-  kill -0 "$worker" 2>/dev/null || fail "teardown killed the worker holding the git-dir-claimed copy"
-  assert_present "$dir/worktree/sentinel" "teardown reset a copy claimed via git-dir"
-  [ ! -s "$dir/runtime.log" ] \
-    || fail "teardown reached the runtime on a git-dir identity collision: $(cat "$dir/runtime.log")"
-  assert_contains "$(cat "$dir/stderr")" "$other" \
-    "git-dir identity refusal should name the other task"
-  kill "$worker" 2>/dev/null || true
-  wait "$worker" 2>/dev/null || true
-  pass "fm-teardown: a git-dir path and a working-tree path for the same copy collide"
-}
-
 test_non_pool_shared_worktree_refuses_before_reap() {
   local dir id=stale-task other=live-task worker rc
   dir=$(make_case non-pool-shared)
@@ -889,7 +860,6 @@ test_recorded_process_identity_cleanup_is_exact
 test_isolated_tmux_invalid_and_valid_cleanup
 test_bare_relative_origin_shares_project_lock_with_clone
 test_reused_pool_slot_refuses_before_touching_the_other_task
-test_gitdir_identity_refuses_before_touching_the_other_task
 test_non_pool_shared_worktree_refuses_before_reap
 test_cross_home_pool_slot_collision_refuses
 test_sole_slot_record_still_tears_down

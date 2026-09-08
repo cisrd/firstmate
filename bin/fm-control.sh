@@ -690,14 +690,22 @@ resolve_relaunch_profile() {
 # require_relaunch_occupied_worktree: prove, before the running agent is
 # stopped, that the live shell occupies the recorded worktree. Herdr's
 # pane.cwd is the launch directory and does not update; the backend current-
-# path read is the foreground process. An empty or unreadable cwd preserves
-# the agent. Path identity uses the physical directory.
+# path read is the foreground process. A read that comes back empty is
+# retried a bounded number of times, as the launch owner does, so one hiccup
+# in the backend CLI does not abort a relaunch; a cwd that is still
+# unreadable after those attempts preserves the agent. Path identity uses the
+# physical directory.
 require_relaunch_occupied_worktree() {
-  local seen seen_real wt_real seen_ino wt_ino
+  local seen seen_real wt_real seen_ino wt_ino attempt
   wt_real=$(CDPATH='' cd -- "$WT" 2>/dev/null && pwd -P) \
     || die "task $ID's recorded worktree $WT cannot be resolved"
-  seen=$(fm_backend_current_path "$BACKEND" "$T" 2>/dev/null) || seen=
-  seen=$(printf '%s' "$seen" | tr -d '\r')
+  seen=
+  for attempt in $(seq 1 10); do
+    seen=$(fm_backend_current_path "$BACKEND" "$T" 2>/dev/null) || seen=
+    seen=$(printf '%s' "$seen" | tr -d '\r')
+    [ -z "$seen" ] || break
+    if [ "$attempt" -lt 10 ]; then sleep 0.5; fi
+  done
   if [ -z "$seen" ]; then
     die "task $ID's live working directory cannot be verified; refusing to stop the agent without proof it occupies $WT"
   fi

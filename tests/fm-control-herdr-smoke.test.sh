@@ -31,24 +31,17 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the her
 herdr_forget_inherited_pane
 
 LAB="$ROOT/bin/fm-herdr-lab.sh"
-SESSION=${FM_HERDR_LAB_SESSION:-fm-lab-control-smoke-$$}
-EXTERNAL_LAB=0
-[ -z "${FM_HERDR_LAB_SESSION:-}" ] || EXTERNAL_LAB=1
+SESSION="fm-lab-control-smoke-$$"
 export HERDR_SESSION="$SESSION"
 SCRATCH=
+PANE_ID=
 cleanup_all() {
+  [ -z "$PANE_ID" ] || fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true
   [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
-  [ "$EXTERNAL_LAB" -eq 1 ] || herdr_safe_stop_and_delete "$SESSION"
+  herdr_safe_stop_and_delete "$SESSION"
 }
 trap cleanup_all EXIT
-if [ "$EXTERNAL_LAB" -eq 0 ]; then
-  fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
-else
-  [ "$SESSION" != default ] || fail "external Herdr lab session must not be default"
-  "$LAB" run "$SESSION" session list --json 2>/dev/null \
-    | jq -e --arg name "$SESSION" '.sessions[]? | select(.name == $name and .running == true)' >/dev/null \
-    || fail "external Herdr lab session is not provisioned"
-fi
+fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/fm-control-herdr.XXXXXX")
 SCRATCH=$(cd "$SCRATCH" && pwd)
@@ -179,6 +172,3 @@ case "$OUT" in
 esac
 pass "real herdr: an agent that does not stop fails closed instead of being reported as stopped"
 
-if [ "$EXTERNAL_LAB" -eq 0 ]; then
-  fm_backend_herdr_kill "$SESSION:$PANE_ID" 2>/dev/null || true
-fi

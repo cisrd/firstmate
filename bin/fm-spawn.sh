@@ -179,10 +179,11 @@
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from both the spawning project and its repository's
 #   primary checkout, including when the spawning project is a linked worktree.
-#   A project path of `.` or `..` is resolved to that repository's primary
-#   working tree (fm-tangle-lib.sh) before isolation comparisons, so a linked
-#   firstmate worktree is not treated as the primary and a genuine treehouse
-#   copy is not refused.
+#   A project path of `.` resolves to the caller's own PHYSICAL directory, so
+#   the isolation comparisons cannot be defeated by a symlinked spelling and a
+#   genuine treehouse copy is not refused. It is never rebound to the
+#   repository primary: a secondmate spawning from its own leased home stays
+#   bound to that home.
 #   On the backends that discover that path by reading the task pane's own cwd,
 #   the same isolation test screens every read: a pane still showing the project
 #   or the repository primary while `treehouse get` prepares the slot is waited
@@ -431,8 +432,6 @@ fm_backlog_directory_present "$STATE" "state directory" || {
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-dod-lib.sh
 . "$SCRIPT_DIR/fm-dod-lib.sh"
-# shellcheck source=bin/fm-tangle-lib.sh
-. "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
@@ -1973,20 +1972,9 @@ resolved_existing_dir() {
 }
 
 resolve_project_dir_arg() {
-  local path=$1 abs primary
+  local path=$1
   case "$path" in
-    projects/*) printf '%s/%s\n' "$PROJECTS" "${path#projects/}"; return 0 ;;
-    .|..)
-      abs=$(CDPATH='' cd -- "$path" 2>/dev/null && pwd -P) || {
-        printf '%s\n' "$path"
-        return 0
-      }
-      if primary=$(fm_git_primary_workdir "$abs"); then
-        printf '%s\n' "$primary"
-        return 0
-      fi
-      printf '%s\n' "$abs"
-      ;;
+    projects/*) printf '%s/%s\n' "$PROJECTS" "${path#projects/}" ;;
     *) printf '%s\n' "$path" ;;
   esac
 }

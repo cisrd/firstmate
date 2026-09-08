@@ -185,7 +185,7 @@ test_brief_dot_project_resolves_primary_and_keeps_linked_worktree() {
 }
 
 test_spawn_dot_project_accepts_isolated_worktree() {
-  local home proj fakebin out status other
+  local home proj fakebin out status other linked linked_real
   home="$TMP_ROOT/spawn-dot-home"
   mkdir -p "$home/data"
   proj=$(make_repo "$TMP_ROOT/spawn-dot-proj")
@@ -194,18 +194,20 @@ test_spawn_dot_project_accepts_isolated_worktree() {
   git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-linked" >/dev/null 2>&1
   git -C "$proj" worktree add -q --detach "$TMP_ROOT/spawn-dot-other" >/dev/null 2>&1
   other="$TMP_ROOT/spawn-dot-other"
+  linked="$TMP_ROOT/spawn-dot-linked"
+  linked_real=$(cd "$linked" && pwd -P)
   out=$(
-    CDPATH='' cd -- "$TMP_ROOT/spawn-dot-linked" || exit 1
+    CDPATH='' cd -- "$linked" || exit 1
     fm_test_spawn_brief "$home" spawn-dot-ii9 brief
     fm_test_run_spawn "$home" "$other" "$fakebin" \
       spawn-dot-ii9 . codex --mode no-mistakes --yolo off
   ); status=$?
   expect_code 0 "$status" "spawn with project '.' into a linked worktree should succeed"$'\n'"$out"
   assert_contains "$out" "spawned spawn-dot-ii9" "dot-project spawn did not report success"
-  assert_grep "project=$proj" "$home/state/spawn-dot-ii9.meta" \
-    "dot-project spawn did not bind the task to the repository primary checkout"
+  assert_grep "project=$linked_real" "$home/state/spawn-dot-ii9.meta" \
+    "dot-project spawn did not bind the task to the caller's own physical project"
   assert_not_contains "$out" "isolated worktree" "dot-project spawn wrongly refused an isolated treehouse copy"
-  pass "fm-spawn: project '.' from a linked worktree still accepts a genuine isolated copy"
+  pass "fm-spawn: project '.' from a linked worktree keeps that copy as the project and accepts a genuine isolated worktree"
 }
 
 test_spawn_dot_project_still_refuses_the_primary() {

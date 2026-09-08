@@ -1525,8 +1525,8 @@ test_lsof_error_never_clears_index_lock() {
   set -e
 
   expect_code 1 "$rc" "lsof-error-index-lock: teardown should refuse when lsof errors"
-  assert_grep "not provably stale" "$case_dir/stderr" \
-    "lsof-error-index-lock: teardown did not report the failed holder proof"
+  assert_grep "REFUSED: cannot determine leaked processes" "$case_dir/stderr" \
+    "lsof-error-index-lock: teardown did not report the lsof failure"
   assert_not_contains "$(cat "$case_dir/stderr")" "removed provably-stale git lock" \
     "lsof-error-index-lock: teardown removed a lock after lsof failed"
   [ -e "$lock" ] || fail "lsof-error-index-lock: lock file was removed after lsof failed"
@@ -3441,11 +3441,9 @@ SH
 printf 'return\n' >> "$case_dir/treehouse.log"
 EOF
   chmod +x "$case_dir/fakebin/lsof" "$case_dir/fakebin/treehouse"
-  mkdir -p "$case_dir/no-proc"
 
   rc=0
-  FM_PROC_ROOT_OVERRIDE="$case_dir/no-proc" \
-    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
 
   expect_code 1 "$rc" "lsof-error-refusal: teardown should refuse"
   assert_grep "REFUSED: cannot determine leaked processes under $case_dir/wt for task-x1 (lsof failed)" "$case_dir/stderr" \
