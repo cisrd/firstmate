@@ -61,9 +61,6 @@ _FM_NTFY_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_NTFY_OUTBOX_SCHEMA=fm-ntfy-outbox-v1
 FM_NTFY_RECEIPT_SCHEMA=fm-ntfy-receipt-v1
 
-# Bounds. Each is a documented default an operator may override; every one of
-# them exists so a broken or throttled ntfy cannot turn into a retry storm, an
-# unbounded queue, or a check that overruns the watcher's per-check budget.
 FM_NTFY_TIMEOUT_DEFAULT=10
 FM_NTFY_RETRY_BASE_DEFAULT=30
 FM_NTFY_RETRY_CAP_DEFAULT=3600
@@ -104,10 +101,6 @@ _fm_ntfy_catalog_field() {  # <type> <1-based field>
 
 # --- configuration ----------------------------------------------------------
 #
-# Resolution order is the same one the mail plane and Relay use: a value already
-# present in the environment wins over the home's .env, and an explicitly empty
-# environment value wins as empty. That lets a direct invocation (and a test)
-# override one key without editing the operator's file.
 
 _fm_ntfy_env_file_value() {  # <env-file> <key>
   local file=$1 key=$2 line k v
@@ -137,12 +130,7 @@ _fm_ntfy_env_file_value() {  # <env-file> <key>
 }
 
 _fm_ntfy_setting() {  # <env-file> <key>
-  local file=$1 key=$2
-  if [ -n "${!key+set}" ]; then
-    printf '%s' "${!key}"
-    return 0
-  fi
-  _fm_ntfy_env_file_value "$file" "$key" || printf ''
+  _fm_ntfy_env_file_value "$1" "$2" || printf ''
 }
 
 # True when <text> contains only characters from <allowed>, using tr rather than
@@ -154,26 +142,13 @@ _fm_ntfy_charset_ok() {  # <text> <allowed>
   [ -z "$stripped" ]
 }
 
-# An https URL with no credentials, query, or fragment. Plain http is accepted
-# only for a loopback host, which is what makes a hermetic test and a documented
-# local self-hosted instance possible without ever allowing a cleartext bearer
-# token to leave the machine.
 _fm_ntfy_url_valid() {  # <url>
-  local url=$1 rest hostport host
+  local url=$1 rest hostport
   case "$url" in
     *[[:space:]]*|*'?'*|*'#'*|*\\*|*'"'*|*"'"*) return 1 ;;
   esac
   case "$url" in
     https://*) rest=${url#https://} ;;
-    http://*)
-      rest=${url#http://}
-      hostport=${rest%%/*}
-      host=${hostport%%:*}
-      case "$host" in
-        127.0.0.1|localhost|'[::1]') ;;
-        *) return 1 ;;
-      esac
-      ;;
     *) return 1 ;;
   esac
   [ -n "$rest" ] || return 1
@@ -252,7 +227,7 @@ fm_ntfy_config_load() {  # [home]
 
   url=${url%/}
   if ! _fm_ntfy_url_valid "$url"; then
-    FM_NTFY_CFG_ERROR='FM_NTFY_URL must be an https base URL with no credentials, query, or fragment (plain http only for a loopback host)'
+    FM_NTFY_CFG_ERROR='FM_NTFY_URL must be an https base URL with no credentials, query, or fragment'
     return 2
   fi
 
@@ -547,6 +522,8 @@ fm_ntfy_payload() {  # <type> <scope-id> <link> <sequence-id>
   tag=$(_fm_ntfy_catalog_field "$type" 3)
   message=$(fm_ntfy_message "$type" "$scope_id") || return 1
   [ -n "$priority" ] && [ -n "$tag" ] || return 1
+  [ "${FM_NTFY_CFG_PR_LINKS:-off}" = on ] || link=''
+  [ -z "$link" ] || _fm_ntfy_link_allowed "$link" || link=''
   if [ -n "$link" ]; then
     actions=$(printf ',"click":"%s","actions":[{"action":"view","label":"Open","url":"%s","clear":false}]' \
       "$(_fm_ntfy_json_escape "$link")" "$(_fm_ntfy_json_escape "$link")")
@@ -577,8 +554,7 @@ _fm_ntfy_publish() {  # <payload-file>
   token=''
   headers=$(mktemp "${TMPDIR:-/tmp}/fm-ntfy-head.XXXXXX") || { rm -f -- "$auth"; return 1; }
   body=$(mktemp "${TMPDIR:-/tmp}/fm-ntfy-body.XXXXXX") || { rm -f -- "$auth" "$headers"; return 1; }
-  timeout=${FM_NTFY_TIMEOUT:-$FM_NTFY_TIMEOUT_DEFAULT}
-  case "$timeout" in ''|*[!0-9]*|0) timeout=$FM_NTFY_TIMEOUT_DEFAULT ;; esac
+  timeout=${2:-$FM_NTFY_TIMEOUT_DEFAULT}
   # Neither the token nor the topic appears in argv: the token rides a 0600
   # header file and the topic rides the payload file.
   code=$(curl -sS -m "$timeout" -o "$body" -D "$headers" -w '%{http_code}' \
@@ -600,15 +576,21 @@ _fm_ntfy_publish() {  # <payload-file>
   return 0
 }
 
-# Retry-After in whole seconds, or empty. Header names are case-insensitive on
-# the wire, so the line is lowercased before matching rather than relying on an
-# awk that supports IGNORECASE. An HTTP-date form yields no number and is
-# treated as absent, which falls back to the ordinary bounded backoff.
 _fm_ntfy_retry_after() {  # <headers-file>
-  local headers=$1
-  [ -f "$headers" ] || { printf ''; return 0; }
-  LC_ALL=C tr '[:upper:]' '[:lower:]' < "$headers" 2>/dev/null \
-    | awk -F: '/^retry-after:/ { v = $2; gsub(/[^0-9]/, "", v); if (v != "") { print v; exit } }'
+  local headers=$1 value epoch now
+  [ -f "$headers" ] || return 0
+  value=$(awk 'tolower($0) ~ /^retry-after:/ { sub(/^[^:]*:[ \t]*/, ""); sub(/[\r \t]+$/, ""); print; exit }' "$headers")
+  case "$value" in
+    '') return 0 ;;
+    *[!0-9]*)
+      epoch=$(LC_ALL=C date -u -d "$value" +%s 2>/dev/null) \
+        || epoch=$(LC_ALL=C date -j -u -f '%a, %d %b %Y %H:%M:%S GMT' "$value" +%s 2>/dev/null) || return 0
+      now=$(_fm_ntfy_now)
+      [ "$epoch" -gt "$now" ] || return 0
+      printf '%s' "$((epoch - now))"
+      ;;
+    *) printf '%s' "$value" ;;
+  esac
 }
 
 # ntfy answers a successful publish with the stored event as JSON. Its id is
@@ -628,25 +610,21 @@ _fm_ntfy_response_id() {  # <body-file>
 
 _fm_ntfy_backoff() {  # <attempts> [retry-after]
   local attempts=$1 after=${2-} base cap delay jitter
-  base=${FM_NTFY_RETRY_BASE:-$FM_NTFY_RETRY_BASE_DEFAULT}
-  cap=${FM_NTFY_RETRY_CAP:-$FM_NTFY_RETRY_CAP_DEFAULT}
-  case "$base" in ''|*[!0-9]*|0) base=$FM_NTFY_RETRY_BASE_DEFAULT ;; esac
-  case "$cap" in ''|*[!0-9]*|0) cap=$FM_NTFY_RETRY_CAP_DEFAULT ;; esac
+  base=$FM_NTFY_RETRY_BASE_DEFAULT
+  cap=$FM_NTFY_RETRY_CAP_DEFAULT
   case "$after" in ''|*[!0-9]*) after='' ;; esac
-  if [ -n "$after" ]; then
-    delay=$after
-  else
-    delay=$base
-    while [ "$attempts" -gt 1 ] && [ "$delay" -lt "$cap" ]; do
-      delay=$((delay * 2))
-      attempts=$((attempts - 1))
-    done
-  fi
+  delay=$base
+  while [ "$attempts" -gt 1 ] && [ "$delay" -lt "$cap" ]; do
+    delay=$((delay * 2))
+    attempts=$((attempts - 1))
+  done
   [ "$delay" -le "$cap" ] || delay=$cap
   # Bounded jitter keeps several homes, or several parked events, from retrying
   # in lockstep after a shared outage.
   jitter=$((RANDOM % (delay / 4 + 1)))
-  printf '%s' "$((delay + jitter))"
+  delay=$((delay + jitter))
+  [ -z "$after" ] || [ "$after" -le "$delay" ] || delay=$after
+  printf '%s' "$delay"
 }
 
 _fm_ntfy_reschedule() {  # <record> <attempts> <delay> <now>
@@ -666,7 +644,7 @@ _fm_ntfy_receipt_write() {  # <root> <key> <identity> <type> <now> <message-id>
   local root=$1 key=$2 identity=$3 type=$4 now=$5 message=${6-}
   _fm_ntfy_write_private "$root/receipts/$key.rec" \
     "$(printf '%s\nidentity=%s\ntype=%s\npublished=%s\nmessage=%s' \
-      "$FM_NTFY_RECEIPT_SCHEMA" "$identity" "$type" "$now" "$message")" || true
+      "$FM_NTFY_RECEIPT_SCHEMA" "$identity" "$type" "$now" "$message")" || return 1
   return 0
 }
 
@@ -690,16 +668,17 @@ _fm_ntfy_report_emit() {  # <root> <line>
   return 0
 }
 
-# fm_ntfy_drain [max]
+# fm_ntfy_drain
 #
 # Publish pending intents, bounded per run. Prints at most one diagnostic line
 # describing a condition an operator must fix, and only the first time that
 # exact condition is seen; a healthy drain is silent. Always returns 0: a
 # notifier problem is reported, never propagated into the caller's own work.
-fm_ntfy_drain() {  # [max]
-  local max=${1:-${FM_NTFY_DRAIN_MAX:-$FM_NTFY_DRAIN_MAX_DEFAULT}}
+fm_ntfy_drain() {
+  local max=$FM_NTFY_DRAIN_MAX_DEFAULT
   local root rec key identity type link attempts next now payload report=''
   local max_attempts attempted=0 rc result code retry_after message_id
+  local deadline=$((SECONDS + 20)) remaining timeout recovered=0
 
   rc=0
   fm_ntfy_config_load || rc=$?
@@ -710,9 +689,7 @@ fm_ntfy_drain() {  # [max]
     [ "$rc" -eq 2 ] && _fm_ntfy_report_emit "$(fm_ntfy_root)" "ntfy: $FM_NTFY_CFG_ERROR"
     return 0
   fi
-  case "$max" in ''|*[!0-9]*|0) max=$FM_NTFY_DRAIN_MAX_DEFAULT ;; esac
-  max_attempts=${FM_NTFY_RETRY_MAX_ATTEMPTS:-$FM_NTFY_RETRY_MAX_ATTEMPTS_DEFAULT}
-  case "$max_attempts" in ''|*[!0-9]*|0) max_attempts=$FM_NTFY_RETRY_MAX_ATTEMPTS_DEFAULT ;; esac
+  max_attempts=$FM_NTFY_RETRY_MAX_ATTEMPTS_DEFAULT
 
   root=$(fm_ntfy_root)
   [ -d "$root/outbox" ] || return 0
@@ -720,6 +697,7 @@ fm_ntfy_drain() {  # [max]
 
   for rec in "$root"/outbox/*.rec; do
     [ -f "$rec" ] || continue
+    [ "$SECONDS" -lt "$deadline" ] || break
     [ "$attempted" -lt "$max" ] || break
     key=$(basename -- "$rec" .rec)
     if [ -f "$root/receipts/$key.rec" ]; then
@@ -753,7 +731,11 @@ fm_ntfy_drain() {  # [max]
       rm -f -- "$payload" "$rec"
       continue
     fi
-    result=$(_fm_ntfy_publish "$payload")
+    remaining=$((deadline - SECONDS))
+    if [ "$remaining" -le 0 ]; then rm -f -- "$payload"; break; fi
+    timeout=$FM_NTFY_TIMEOUT_DEFAULT
+    [ "$timeout" -le "$remaining" ] || timeout=$remaining
+    result=$(_fm_ntfy_publish "$payload" "$timeout")
     rc=$?
     rm -f -- "$payload"
 
@@ -785,8 +767,13 @@ fm_ntfy_drain() {  # [max]
 
     case "$code" in
       2*)
-        _fm_ntfy_receipt_write "$root" "$key" "$identity" "$type" "$now" "$message_id"
-        rm -f -- "$rec"
+        if _fm_ntfy_receipt_write "$root" "$key" "$identity" "$type" "$now" "$message_id" \
+          && [ -f "$root/receipts/$key.rec" ]; then
+          rm -f -- "$rec"
+          recovered=1
+        else
+          report='ntfy: publication accepted but its receipt could not be saved; the intent is retained'
+        fi
         ;;
       401|403)
         # Treat as revoked or misdirected rather than transient: back off hard
@@ -810,7 +797,9 @@ fm_ntfy_drain() {  # [max]
     esac
   done
 
-  _fm_ntfy_report_emit "$root" "$report"
+  if [ -n "$report" ] || [ "$recovered" -eq 1 ]; then
+    _fm_ntfy_report_emit "$root" "$report"
+  fi
   return 0
 }
 

@@ -594,7 +594,7 @@ A fail-closed poll that already queued a wake, and a timeout, always print so th
 The optional outbound notifier (`bin/fm-ntfy.sh`) publishes a small, fixed projection of the outcomes firstmate has already decided the captain must see to an [ntfy](https://ntfy.sh) topic, so a captain away from the machine learns that something wants them.
 It is a secondary, non-authoritative pager: nothing ntfy returns, and nothing done to a notification on a phone, changes any firstmate record, resolves a decision, or authorizes a merge.
 It is off unless the home's gitignored `.env` sets `FM_NTFY_URL`, and an unconfigured home creates no state and makes no network request.
-This section is the single owner of the configuration schema; for direct invocations, environment values override `.env`, matching the mail-plane and Relay contract.
+This section is the single owner of the configuration schema; settings are read only from the selected home's `.env`, never ambient environment overrides.
 [`ntfy-notifications.md`](ntfy-notifications.md) owns setup, what a notification does and does not reveal, and failure behavior, and `bin/fm-ntfy-lib.sh`'s header owns the delivery mechanics.
 
 Required, in the home's gitignored `.env`:
@@ -608,11 +608,12 @@ FM_NTFY_TOKEN_FILE= # absolute path to a mode-600 file holding only the bearer t
 Optional: `FM_NTFY_SCOPE` (`minimal`, the default, or `detail`) and `FM_NTFY_PR_LINKS` (`off`, the default, or `on`).
 `minimal` publishes a fixed generic sentence per event type and names nothing else; `detail` adds the firstmate task id and nothing more.
 `FM_NTFY_PR_LINKS=on` allows a canonical pull-request or merge-request URL that firstmate itself validated to become the notification's tap target; with it off no link is published or even stored.
-`FM_NTFY_TIMEOUT` (default 10 seconds), `FM_NTFY_RETRY_BASE` (default 30 seconds), `FM_NTFY_RETRY_CAP` (default 3600 seconds), `FM_NTFY_RETRY_MAX_ATTEMPTS` (default 12), and `FM_NTFY_DRAIN_MAX` (default 10 notifications per delivery run) bound the client.
+Internal limits bound each request to 10 seconds and each drain's delivery budget to 20 seconds, reserving time within the watcher's 30-second check limit to persist results.
+Retries use exponential backoff from 30 seconds to 3600 seconds plus jitter, respect `Retry-After` as a minimum, and park after 12 attempts.
 
 The token must live in the file `FM_NTFY_TOKEN_FILE` names and is read fresh on every publish, so rotating it needs no restart.
 A token written inline as `FM_NTFY_TOKEN`, or embedded in `FM_NTFY_URL`, is refused rather than used, and a token file readable by another account is refused too.
-A plain `http://` URL is accepted only for a loopback host, for a documented local self-hosted instance or a test; every other non-`https` URL is refused.
+Every non-`https` URL is refused; hermetic tests substitute the transport rather than enabling production HTTP.
 
 Configuration is strictly per home: `.env` is never inherited, so a secondmate home notifies only when it has its own configuration, its own topic, and its own token file.
 

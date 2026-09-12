@@ -56,6 +56,11 @@ if [ -n "${FAKE_CURL_LOG:-}" ]; then
     echo "payload=$(cat "$datafile" 2>/dev/null)"
   } >> "$FAKE_CURL_LOG"
 fi
+if [ -n "${CRASH_PID:-}" ]; then
+  kill -KILL "$CRASH_PID"
+  exit 7
+fi
+if [ -n "${FAKE_CURL_DELAY:-}" ]; then sleep "$FAKE_CURL_DELAY"; fi
 if [ -n "${FAKE_CURL_FAIL:-}" ]; then
   exit 7
 fi
@@ -144,9 +149,8 @@ assert_config_refused() {  # <label> <needle> <env assignment>...
   mkdir -p "$home/state"
   printf 'tok\n' > "$home/ntfy-token"
   chmod 600 "$home/ntfy-token"
-  : > "$home/.env"
-  out=$(env FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    FM_NTFY_TOKEN_FILE="$home/ntfy-token" "$@" "$NTFY" status 2>&1) || true
+  printf '%s\n' "FM_NTFY_TOKEN_FILE=$home/ntfy-token" "$@" > "$home/.env"
+  out=$(env FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$NTFY" status 2>&1) || true
   assert_contains "$out" "$needle" "$label must be refused"
 }
 
@@ -170,16 +174,10 @@ test_config_validation() {
   pass 'insecure, credential-bearing, and malformed configuration is refused'
 }
 
-test_loopback_http_is_accepted() {
-  local home out
-  home="$TMP_ROOT/cfg-loopback"; mkdir -p "$home/state"
-  printf 'tok\n' > "$home/ntfy-token"; chmod 600 "$home/ntfy-token"
-  : > "$home/.env"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    FM_NTFY_URL=http://127.0.0.1:8080 FM_NTFY_TOPIC=t \
-    FM_NTFY_TOKEN_FILE="$home/ntfy-token" "$NTFY" status)
-  assert_contains "$out" 'ntfy: on' 'a loopback http instance is accepted'
-  pass 'plain http is accepted only for a loopback host'
+test_loopback_http_is_refused() {
+  assert_config_refused loopback 'must be an https base URL' \
+    FM_NTFY_URL=http://127.0.0.1:8080 FM_NTFY_TOPIC=t
+  pass 'production loopback HTTP is refused'
 }
 
 test_token_file_permissions_are_enforced() {
@@ -187,15 +185,12 @@ test_token_file_permissions_are_enforced() {
   home="$TMP_ROOT/cfg-token-mode"; mkdir -p "$home/state"
   printf 'tok\n' > "$home/ntfy-token"
   chmod 644 "$home/ntfy-token"
-  : > "$home/.env"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    FM_NTFY_URL=https://ntfy.test FM_NTFY_TOPIC=t \
-    FM_NTFY_TOKEN_FILE="$home/ntfy-token" "$NTFY" status 2>&1) || true
+  printf 'FM_NTFY_URL=https://ntfy.test\nFM_NTFY_TOPIC=t\nFM_NTFY_TOKEN_FILE=%s/ntfy-token\n' "$home" > "$home/.env"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$NTFY" status 2>&1) || true
   assert_contains "$out" 'mode 600' 'a world-readable token file is refused'
   chmod 600 "$home/ntfy-token"
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    FM_NTFY_URL=https://ntfy.test FM_NTFY_TOPIC=t \
-    FM_NTFY_TOKEN_FILE=ntfy-token "$NTFY" status 2>&1) || true
+  printf 'FM_NTFY_URL=https://ntfy.test\nFM_NTFY_TOPIC=t\nFM_NTFY_TOKEN_FILE=ntfy-token\n' > "$home/.env"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$NTFY" status 2>&1) || true
   assert_contains "$out" 'absolute path' 'a relative token path is refused'
   pass 'the token file must be absolute and owner-only'
 }
@@ -399,7 +394,7 @@ test_receipt_suppresses_republication_across_restart() {
   pass 'an identity-bound receipt suppresses republication, including after restart'
 }
 
-test_crash_after_publish_before_receipt_does_not_republish() {
+test_crash_after_receipt_does_not_republish() {
   local home fakebin log rec key
   home=$(make_home crash-window)
   fakebin=$(make_fake_curl "$home")
@@ -459,6 +454,12 @@ test_auth_failure_keeps_the_event_and_reports_once() {
   rec=$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)
   next=$(grep '^next=' "$rec" | cut -d= -f2)
   [ "$next" -gt 2000 ] || fail "a 401 must back off hard, got next=$next"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FAKE_CODE=401 FM_NTFY_NOW=1001 "$NTFY" check 2>&1)
+  assert_equals '' "$out" 'a deferred attempt is silent'
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FAKE_CODE=401 FM_NTFY_NOW=99999 "$NTFY" check 2>&1)
+  assert_equals '' "$out" 'the same outage stays reported after deferral'
   pass 'a refused token keeps the event, backs off hard, and reports the credential'
 }
 
@@ -468,11 +469,15 @@ test_rate_limit_honours_retry_after() {
   fakebin=$(make_fake_curl "$home")
   FM_NTFY_NOW=1000 run_lib "$home" "$fakebin" 'fm_ntfy_record merged t1'
   PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
-    FAKE_CODE=429 FAKE_RETRY_AFTER=600 FM_NTFY_NOW=1000 "$NTFY" check >/dev/null
+    FAKE_CODE=429 FAKE_RETRY_AFTER=86400 FM_NTFY_NOW=1000 "$NTFY" check >/dev/null
   assert_equals 1 "$(outbox_count "$home")" 'a 429 keeps the event'
   rec=$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)
   next=$(grep '^next=' "$rec" | cut -d= -f2)
-  [ "$next" -ge 1600 ] || fail "a 429 must wait at least Retry-After, got next=$next"
+  [ "$next" -ge 87400 ] || fail "a 429 must wait at least Retry-After, got next=$next"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    FAKE_CODE=429 FAKE_RETRY_AFTER='Sun, 06 Nov 1994 08:49:37 GMT' FM_NTFY_NOW=90000 "$NTFY" check >/dev/null
+  next=$(grep '^next=' "$rec" | cut -d= -f2)
+  assert_equals 784111777 "$next" 'HTTP-date preserves its full timestamp'
   pass 'a rate limit honours Retry-After and never retries in a loop'
 }
 
@@ -758,10 +763,113 @@ test_watcher_records_nothing_for_a_routine_span() {
 
 # ---------------------------------------------------------------------------
 
+test_interrupted_delivery_replays() {
+  local home fakebin log window snippet expected
+  for window in before during after; do
+    home=$(make_home "interrupted-$window")
+    fakebin=$(make_fake_curl "$home")
+    log="$home/curl.log"
+    printf 'needs-decision: retained source\n' > "$home/state/t1.status"
+    cp "$home/state/t1.status" "$home/source-before"
+    run_lib "$home" "$fakebin" 'fm_ntfy_record decision-required t1'
+    case "$window" in
+      before) snippet='_fm_ntfy_publish() { kill -KILL $$; }; fm_ntfy_drain'; expected=1 ;;
+      during) snippet='export CRASH_PID=$$; fm_ntfy_drain'; expected=2 ;;
+      after) snippet='_fm_ntfy_receipt_write() { kill -KILL $$; }; fm_ntfy_drain'; expected=2 ;;
+    esac
+    FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" "$snippet" >/dev/null 2>&1 || true
+    assert_equals 1 "$(outbox_count "$home")" "$window crash retains intent"
+    assert_equals 0 "$(receipt_count "$home")" "$window crash has no receipt"
+    FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" 'fm_ntfy_drain'
+    assert_equals "$expected" "$(grep -c '^url=' "$log")" "$window crash replays on restart"
+    assert_equals 1 "$(grep -o '"sequence_id":"[^"]*"' "$log" | sort -u | wc -l | tr -d ' ')" 'replay preserves sequence identity'
+    assert_equals 1 "$(receipt_count "$home")" 'restart saves receipt'
+    cmp "$home/source-before" "$home/state/t1.status" || fail 'source state changed'
+  done
+  pass 'all three interrupted delivery windows replay without consuming source state'
+}
+
+test_receipt_write_failure_retains_intent() {
+  local home fakebin rec key out
+  home=$(make_home receipt-failure)
+  fakebin=$(make_fake_curl "$home")
+  run_lib "$home" "$fakebin" 'fm_ntfy_record pr-ready t1'
+  rec=$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)
+  key=$(basename "$rec")
+  mkdir "$home/state/ntfy/receipts/$key"
+  out=$(run_lib "$home" "$fakebin" 'fm_ntfy_drain')
+  assert_contains "$out" 'receipt could not be saved' 'receipt failure is reported'
+  assert_present "$rec" 'receipt failure retains intent'
+  rmdir "$home/state/ntfy/receipts/$key"
+  run_lib "$home" "$fakebin" 'fm_ntfy_drain'
+  assert_equals 1 "$(receipt_count "$home")" 'receipt recovery succeeds'
+  pass 'failed atomic receipt creation preserves replay'
+}
+
+test_queued_link_opt_out() {
+  local home fakebin log
+  home=$(make_home queued-link FM_NTFY_PR_LINKS=on)
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  run_lib "$home" "$fakebin" 'fm_ntfy_record pr-ready t1 https://github.com/acme/private/pull/1'
+  make_home queued-link FM_NTFY_PR_LINKS=off >/dev/null
+  FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" 'fm_ntfy_drain'
+  assert_no_grep 'github.com\|"click"\|"actions"' "$log" 'opt-out removes queued repository links'
+  pass 'publication reapplies current link privacy'
+}
+
+test_ambient_config_is_inert() {
+  local home fakebin donor log
+  donor=$(make_home ambient-donor)
+  home="$TMP_ROOT/ambient-recipient"; mkdir -p "$home/state"
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  FM_NTFY_URL=https://ntfy.test FM_NTFY_TOPIC=donor FM_NTFY_TOKEN_FILE="$donor/ntfy-token" \
+    FM_NTFY_SCOPE=detail FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" \
+    'fm_ntfy_record decision-required private-task; fm_ntfy_drain'
+  assert_absent "$home/state/ntfy" 'ambient donor configuration cannot opt in another home'
+  assert_absent "$log" 'ambient donor configuration makes no request'
+  pass 'home opt-in cannot leak through ambient configuration'
+}
+
+test_drain_budget() {
+  local home fakebin start elapsed log
+  home=$(make_home budget)
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  run_lib "$home" "$fakebin" 'for id in a b c d; do fm_ntfy_record work-failed "$id"; done'
+  start=$SECONDS
+  FAKE_CURL_DELAY=10 FAKE_CURL_FAIL=1 FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" 'fm_ntfy_drain'
+  elapsed=$((SECONDS - start))
+  [ "$elapsed" -lt 27 ] || fail "drain exceeded reserved budget: $elapsed"
+  [ "$(grep -c '^url=' "$log")" -le 2 ] || fail 'too many slow requests'
+  assert_equals 4 "$(outbox_count "$home")" 'outage retains all intents'
+  assert_grep 'attempts=1' "$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)" 'attempt results persist before returning'
+  pass 'drain reserves watcher time for persistent results'
+}
+
+test_captain_hold_projection() {
+  local home fakebin variant
+  for variant in hold transfer; do
+    home=$(make_home "captain-$variant")
+    fakebin=$(make_fake_curl "$home")
+    if [ "$variant" = transfer ]; then
+      printf 'needs-decision [key=k]: private choice\n' > "$home/state/t1.status"
+    fi
+    printf 'captain-held [key=k]: private choice\n' >> "$home/state/t1.status"
+    PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" \
+      bash -c '. "$1"; signal_files_actionable "$2/state/t1.status"; signal_files_actionable "$2/state/t1.status"' \
+      _ "$ROOT/bin/fm-watch.sh" "$home"
+    assert_equals 1 "$(outbox_count "$home")" 'captain hold gets one stable decision identity'
+    assert_grep 'type=decision-required' "$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)" 'hold projects a decision'
+  done
+  pass 'captain holds project even when classifier event text is empty'
+}
+
 test_absent_config_is_inert
 test_disabled_record_never_blocks_its_producer
 test_config_validation
-test_loopback_http_is_accepted
+test_loopback_http_is_refused
 test_token_file_permissions_are_enforced
 test_token_and_topic_stay_out_of_argv_and_records
 test_failure_diagnostics_never_quote_the_secret
@@ -774,7 +882,13 @@ test_allowlisted_link_becomes_a_view_action
 test_non_forge_links_are_dropped
 test_intent_is_durable_before_the_network_call
 test_receipt_suppresses_republication_across_restart
-test_crash_after_publish_before_receipt_does_not_republish
+test_crash_after_receipt_does_not_republish
+test_interrupted_delivery_replays
+test_receipt_write_failure_retains_intent
+test_queued_link_opt_out
+test_ambient_config_is_inert
+test_drain_budget
+test_captain_hold_projection
 test_retry_reuses_the_same_sequence_id
 test_auth_failure_keeps_the_event_and_reports_once
 test_rate_limit_honours_retry_after

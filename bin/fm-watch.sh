@@ -1598,9 +1598,10 @@ signal_files_actionable() {  # <status-file> ...
     # endpoint discriminates the identity so one span pages at most once per
     # kind. Recording is a local write with no network call, so a configured
     # pager cannot slow triage, and a disabled home does nothing at all here.
-    if [ "$rc" -eq 0 ]; then
+    if [ "$rc" -eq 0 ] || [ "$needs_decision" -eq 1 ]; then
       events=${rest#*$'\t'}
       if [ "$events" = "$rest" ]; then events=''; fi
+      if [ "$needs_decision" -eq 1 ]; then events="needs-decision: ; $events"; fi
       while IFS= read -r ntfy_type; do
         [ -n "$ntfy_type" ] || continue
         fm_ntfy_record "$ntfy_type" "$task" '' "$endpoint" || true
