@@ -843,6 +843,7 @@ test_drain_budget() {
   home=$(make_home budget)
   fakebin=$(make_fake_curl "$home")
   log="$home/curl.log"
+  # shellcheck disable=SC2016 # Deferred expansion in run_lib's child shell is intentional.
   run_lib "$home" "$fakebin" 'for id in a b c d; do fm_ntfy_record work-failed "$id"; done'
   start=$SECONDS
   FAKE_CURL_DELAY=10 FAKE_CURL_FAIL=1 FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" 'fm_ntfy_drain'
@@ -900,9 +901,11 @@ test_response_time_retry_deadlines() {
     home=$(make_home "response-time-$form")
     fakebin=$(make_fake_curl "$home")
     printf '1000' > "$home/clock"
+    # shellcheck disable=SC2016 # Deferred expansion in run_lib's child shell is intentional.
     run_lib "$home" "$fakebin" '_fm_ntfy_now() { cat "$FM_HOME/clock"; }; fm_ntfy_record merged t1'
     after=60
     [ "$form" != date ] || after='Thu, 01 Jan 1970 00:17:50 GMT'
+    # shellcheck disable=SC2016 # Deferred expansion in run_lib's child shell is intentional.
     FAKE_CODE=429 FAKE_RESPONSE_TIME=1010 FAKE_RETRY_AFTER="$after" run_lib "$home" "$fakebin" \
       '_fm_ntfy_now() { cat "$FM_HOME/clock"; }; fm_ntfy_drain'
     rec=$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)
