@@ -538,12 +538,25 @@ fm_ntfy_payload() {  # <type> <scope-id> <link> <sequence-id>
 }
 
 # Publish one payload. On a completed request it prints one tab-separated
-# "<http-code>\t<retry-after>\t<message-id>" line and returns 0; every other
+# "<http-code>\t<retry-after>\t<message-id>\t<received>" line and returns 0; every other
 # return code names a condition that produced no HTTP answer at all. Results are
 # printed rather than assigned because the caller reads this through a command
 # substitution, and a variable set in that subshell would never reach it.
+_fm_ntfy_delivery_budget() {
+  local check_timeout=${FM_CHECK_TIMEOUT:-30} budget
+  case "$check_timeout" in
+    ''|*[!0-9]*) printf '0'; return ;;
+    0) printf '20'; return ;;
+  esac
+  budget=$((check_timeout * 2 / 3))
+  [ "$budget" -le 20 ] || budget=20
+  printf '%s' "$budget"
+}
+
 _fm_ntfy_publish() {  # <payload-file>
-  local payload=$1 auth token headers body code rc timeout retry_after id
+  local payload=$1 auth token headers body code rc timeout retry_after id received budget
+  budget=$(_fm_ntfy_delivery_budget)
+  [ "$budget" -gt 0 ] || return 4
   command -v curl >/dev/null 2>&1 || return 127
   token=$(_fm_ntfy_token_read "$FM_NTFY_CFG_TOKEN_FILE") || return 3
   auth=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-ntfy-auth.XXXXXX") || return 1
@@ -555,6 +568,7 @@ _fm_ntfy_publish() {  # <payload-file>
   headers=$(mktemp "${TMPDIR:-/tmp}/fm-ntfy-head.XXXXXX") || { rm -f -- "$auth"; return 1; }
   body=$(mktemp "${TMPDIR:-/tmp}/fm-ntfy-body.XXXXXX") || { rm -f -- "$auth" "$headers"; return 1; }
   timeout=${2:-$FM_NTFY_TIMEOUT_DEFAULT}
+  [ "$timeout" -le "$budget" ] || timeout=$budget
   # Neither the token nor the topic appears in argv: the token rides a 0600
   # header file and the topic rides the payload file.
   code=$(curl -sS -m "$timeout" -o "$body" -D "$headers" -w '%{http_code}' \
@@ -569,10 +583,11 @@ _fm_ntfy_publish() {  # <payload-file>
     rm -f -- "$headers" "$body"
     return 4
   fi
-  retry_after=$(_fm_ntfy_retry_after "$headers")
+  received=$(_fm_ntfy_now)
+  retry_after=$(_fm_ntfy_retry_after "$headers" "$received")
   id=$(_fm_ntfy_response_id "$body")
   rm -f -- "$headers" "$body"
-  printf '%s\t%s\t%s' "$code" "$retry_after" "$id"
+  printf '%s\t%s\t%s\t%s' "$code" "$retry_after" "$id" "$received"
   return 0
 }
 
@@ -585,7 +600,7 @@ _fm_ntfy_retry_after() {  # <headers-file>
     *[!0-9]*)
       epoch=$(LC_ALL=C date -u -d "$value" +%s 2>/dev/null) \
         || epoch=$(LC_ALL=C date -j -u -f '%a, %d %b %Y %H:%M:%S GMT' "$value" +%s 2>/dev/null) || return 0
-      now=$(_fm_ntfy_now)
+      now=${2:-$(_fm_ntfy_now)}
       [ "$epoch" -gt "$now" ] || return 0
       printf '%s' "$((epoch - now))"
       ;;
@@ -678,7 +693,9 @@ fm_ntfy_drain() {
   local max=$FM_NTFY_DRAIN_MAX_DEFAULT
   local root rec key identity type link attempts next now payload report=''
   local max_attempts attempted=0 rc result code retry_after message_id
-  local deadline=$((SECONDS + 20)) remaining timeout recovered=0
+  local budget deadline remaining timeout recovered=0
+  budget=$(_fm_ntfy_delivery_budget)
+  deadline=$((SECONDS + budget))
 
   rc=0
   fm_ntfy_config_load || rc=$?
@@ -692,6 +709,9 @@ fm_ntfy_drain() {
   max_attempts=$FM_NTFY_RETRY_MAX_ATTEMPTS_DEFAULT
 
   root=$(fm_ntfy_root)
+  case "$(cat "$root/.report" 2>/dev/null)" in
+    'ntfy: FM_NTFY_'*) _fm_ntfy_report_emit "$root" '' ;;
+  esac
   [ -d "$root/outbox" ] || return 0
   now=$(_fm_ntfy_now)
 
@@ -737,6 +757,7 @@ fm_ntfy_drain() {
     [ "$timeout" -le "$remaining" ] || timeout=$remaining
     result=$(_fm_ntfy_publish "$payload" "$timeout")
     rc=$?
+    now=$(_fm_ntfy_now)
     rm -f -- "$payload"
 
     case "$rc" in
@@ -763,6 +784,8 @@ fm_ntfy_drain() {
     code=${result%%$'\t'*}
     retry_after=${result#*$'\t'}
     message_id=${retry_after#*$'\t'}
+    now=${message_id##*$'\t'}
+    message_id=${message_id%%$'\t'*}
     retry_after=${retry_after%%$'\t'*}
 
     case "$code" in

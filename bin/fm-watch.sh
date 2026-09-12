@@ -1471,6 +1471,7 @@ procevent_surface_queued() {
 run_check_process() {
   local c=$1
   shift
+  export FM_CHECK_TIMEOUT="$CHECK_TIMEOUT"
   if [ "${FM_CHECK_FORCE_FALLBACK:-0}" != 1 ] && command -v timeout >/dev/null 2>&1; then
     exec timeout "$CHECK_TIMEOUT" bash "$c" "$@"
   elif [ "${FM_CHECK_FORCE_FALLBACK:-0}" != 1 ] && command -v gtimeout >/dev/null 2>&1; then
@@ -1569,7 +1570,7 @@ run_check_capture() {
 # eligibility rules.
 signal_files_actionable() {  # <status-file> ...
   local f task record rest endpoint ident events needs_decision rc found=1
-  local ntfy_type
+  local ntfy_type ntfy_origins ntfy_origin start
   FM_SIGNAL_SURFACE_ENDPOINTS=''
   FM_SIGNAL_NEEDS_DECISION_FILES=''
   for f in "$@"; do
@@ -1577,8 +1578,8 @@ signal_files_actionable() {  # <status-file> ...
     [ -e "$f" ] || [ -L "$f" ] || continue
     task=$(basename "$f"); task="${task%.status}"
     record=''; needs_decision=0
-    status_span_first_actionable_record "$f" \
-      "$(fm_wake_signal_seen_size "$STATE" "$f")" record needs_decision
+    start=$(fm_wake_signal_seen_size "$STATE" "$f")
+    status_span_first_actionable_record "$f" "$start" record needs_decision
     rc=$?
     [ "$rc" -eq 1 ] && [ -z "$record" ] && continue
     if [ "$rc" -eq 2 ]; then
@@ -1601,15 +1602,26 @@ signal_files_actionable() {  # <status-file> ...
     if [ "$rc" -eq 0 ] || [ "$needs_decision" -eq 1 ]; then
       events=${rest#*$'\t'}
       if [ "$events" = "$rest" ]; then events=''; fi
-      if [ "$needs_decision" -eq 1 ]; then events="needs-decision: ; $events"; fi
       while IFS= read -r ntfy_type; do
         [ -n "$ntfy_type" ] || continue
+        [ "$ntfy_type" != decision-required ] || continue
         fm_ntfy_record "$ntfy_type" "$task" '' "$endpoint" || true
       done <<EOF
 $(fm_ntfy_status_types "$events")
 EOF
     fi
     if [ "$needs_decision" -eq 1 ]; then
+      if fm_ntfy_enabled; then
+        [ "$start" -le "$endpoint" ] || start=0
+        ntfy_origins=$(_fm_status_read_span "$f" 0 "$endpoint" \
+          | _fm_status_open_decision_origins /dev/stdin notification "$start")
+        while IFS= read -r ntfy_origin; do
+          [ -n "$ntfy_origin" ] || continue
+          fm_ntfy_record decision-required "$task" '' "$ident:$ntfy_origin" || true
+        done <<EOF
+$ntfy_origins
+EOF
+      fi
       FM_SIGNAL_NEEDS_DECISION_FILES="${FM_SIGNAL_NEEDS_DECISION_FILES} ${f}"
     fi
     if [ "$rc" -eq 0 ] || [ "$needs_decision" -eq 1 ]; then

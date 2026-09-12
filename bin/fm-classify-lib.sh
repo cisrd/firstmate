@@ -1635,17 +1635,29 @@ EOF
 
 _fm_status_open_decision_origins() {  # <status-file>
   local f=$1 line open='' after key verb note number=0 origins=''
+  local mode=${2:-open} start=${3:-0} offset=0 touched='' origin LC_ALL=C
   local resolve held
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do
     number=$((number + 1))
+    offset=$((offset + ${#line} + 1))
     after=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held")
     key=$(_fm_decision_key "$line") || { open=$after; continue; }
     verb=$(status_line_verb "$line")
     note=$(status_line_note "$line")
+    if [ "$mode" = notification ] && [ "$offset" -gt "$start" ]; then
+      if [ "$verb" = needs-decision ] || [ "$verb" = "$held" ] \
+        || { [ "$verb" = blocked ] && _fm_is_pending_reply_escalation "$key" "$note"; }; then
+        touched="${touched}|${key}|"
+      fi
+    fi
     case "$verb" in
       needs-decision|blocked)
+        if [ "$mode" = notification ] && _fm_open_set_has "$open" "$key"; then
+          open=$after
+          continue
+        fi
         if _fm_open_set_has "$after" "$key" \
           && [ "$(_fm_open_set_verb "$after" "$key")" = "$verb" ]; then
           case "$after" in
@@ -1658,12 +1670,28 @@ _fm_status_open_decision_origins() {  # <status-file>
         fi
         ;;
       "$resolve"|"$held")
-        _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
+        if [ "$mode" = notification ] && [ "$verb" = "$held" ]; then
+          case "$origins" in
+            "$key"$'\t'*|*$'\n'"$key"$'\t'*) ;;
+            *)
+              [ -z "$origins" ] || origins="${origins}"$'\n'
+              origins="${origins}${key}"$'\t'"${number}"
+              ;;
+          esac
+        else
+          _fm_open_set_has "$after" "$key" || origins=$(_fm_decision_origin_drop "$origins" "$key")
+        fi
         ;;
     esac
     open=$after
   done < "$f"
-  printf '%s' "$origins"
+  if [ "$mode" != notification ]; then printf '%s' "$origins"; return 0; fi
+  while IFS= read -r origin; do
+    key=${origin%%$'\t'*}
+    case "$touched" in *"|$key|"*) printf '%s\n' "$origin" ;; esac
+  done <<EOF
+$origins
+EOF
 }
 
 status_span_first_actionable_record() {  # <status-file> <start-offset> [record-var] [needs-decision-var]

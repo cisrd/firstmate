@@ -28,7 +28,7 @@ make_fake_curl() {
   fakebin=$(fm_fakebin "$dir")
   cat > "$fakebin/curl" <<'SH'
 #!/usr/bin/env bash
-ofile=""; hdrfile=""; datafile=""; url=""; auth=""
+ofile=""; hdrfile=""; datafile=""; url=""; auth=""; timeout=10
 argv=$*
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,7 +42,8 @@ while [ $# -gt 0 ]; do
       esac
       shift 2
       ;;
-    -m|-w|-X) shift 2 ;;
+    -m) timeout=$2; shift 2 ;;
+    -w|-X) shift 2 ;;
     -s|-sS|-S) shift ;;
     http://*|https://*) url=$1; shift ;;
     *) shift ;;
@@ -60,7 +61,11 @@ if [ -n "${CRASH_PID:-}" ]; then
   kill -KILL "$CRASH_PID"
   exit 7
 fi
-if [ -n "${FAKE_CURL_DELAY:-}" ]; then sleep "$FAKE_CURL_DELAY"; fi
+if [ -n "${FAKE_RESPONSE_TIME:-}" ]; then printf '%s' "$FAKE_RESPONSE_TIME" > "$FM_HOME/clock"; fi
+if [ -n "${FAKE_CURL_DELAY:-}" ]; then
+  if [ "$FAKE_CURL_DELAY" -ge "$timeout" ]; then sleep "$timeout"; exit 28; fi
+  sleep "$FAKE_CURL_DELAY"
+fi
 if [ -n "${FAKE_CURL_FAIL:-}" ]; then
   exit 7
 fi
@@ -866,8 +871,89 @@ test_captain_hold_projection() {
   pass 'captain holds project even when classifier event text is empty'
 }
 
+test_short_watcher_budget() {
+  local home fakebin log out rec
+  home=$(make_home short-budget)
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  run_lib "$home" "$fakebin" 'fm_ntfy_record work-failed t1'
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_CHECK_TIMEOUT=5 FAKE_CURL_DELAY=10 FAKE_CURL_LOG="$log" \
+    bash -c '. "$1"; ( run_check_process "$2" check ); printf "rc=%s" "$?"' \
+    _ "$ROOT/bin/fm-watch.sh" "$NTFY")
+  assert_contains "$out" 'rc=0' 'short watcher deadline does not kill the drain'
+  rec=$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)
+  assert_grep 'attempts=1' "$rec" 'short-budget timeout persists its attempt'
+  run_lib "$home" "$fakebin" 'fm_ntfy_drain'
+  assert_grep 'attempts=1' "$rec" 'next cadence respects persisted backoff'
+  awk '/^argv=/ { for (i=1; i<NF; i++) if ($i == "-m") { seen=1; if ($(i+1) <= 0 || $(i+1) > 3) bad=1 } } END { exit (!seen || bad) }' \
+    "$log" || fail 'request must fit actual watcher budget'
+  pass 'custom watcher timeout reserves time to persist failures'
+}
+
+test_response_time_retry_deadlines() {
+  local home fakebin form after rec next
+  for form in seconds date; do
+    home=$(make_home "response-time-$form")
+    fakebin=$(make_fake_curl "$home")
+    printf '1000' > "$home/clock"
+    run_lib "$home" "$fakebin" '_fm_ntfy_now() { cat "$FM_HOME/clock"; }; fm_ntfy_record merged t1'
+    after=60
+    [ "$form" != date ] || after='Thu, 01 Jan 1970 00:17:50 GMT'
+    FAKE_CODE=429 FAKE_RESPONSE_TIME=1010 FAKE_RETRY_AFTER="$after" run_lib "$home" "$fakebin" \
+      '_fm_ntfy_now() { cat "$FM_HOME/clock"; }; fm_ntfy_drain'
+    rec=$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)
+    next=$(grep '^next=' "$rec" | cut -d= -f2)
+    assert_equals 1070 "$next" "$form Retry-After is anchored at response receipt"
+  done
+  pass 'both Retry-After forms use response-time timestamps'
+}
+
+test_configuration_recovery_without_publication() {
+  local home fakebin first out
+  home=$(make_home config-recovery)
+  fakebin=$(make_fake_curl "$home")
+  mv "$home/ntfy-token" "$home/saved-token"
+  first=$(run_lib "$home" "$fakebin" 'fm_ntfy_drain')
+  assert_contains "$first" 'FM_NTFY_TOKEN_FILE' 'missing token reports configuration failure'
+  mv "$home/saved-token" "$home/ntfy-token"
+  out=$(run_lib "$home" "$fakebin" 'fm_ntfy_drain')
+  assert_equals '' "$out" 'healthy empty drain clears configuration failure silently'
+  mv "$home/ntfy-token" "$home/saved-token"
+  out=$(run_lib "$home" "$fakebin" 'fm_ntfy_drain')
+  assert_equals "$first" "$out" 'configuration relapse reports again without a publication'
+  pass 'configuration validation independently proves configuration recovery'
+}
+
+test_decision_opening_survives_transfer() {
+  local home fakebin log count phase
+  home=$(make_home decision-opening)
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  printf 'needs-decision [key=k]: private choice\n' > "$home/state/t1.status"
+  for phase in open transfer reopen; do
+    case "$phase" in
+      transfer) printf 'captain-held [key=k]: private choice\n' >> "$home/state/t1.status" ;;
+      reopen) printf 'resolved [key=k]: answered\nneeds-decision [key=k]: new choice\n' >> "$home/state/t1.status" ;;
+    esac
+    PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" \
+      bash -c '. "$1"; signal_files_actionable "$2/state/t1.status"; fm_wake_status_mark_current "$2/state" "$2/state/t1.status"' \
+      _ "$ROOT/bin/fm-watch.sh" "$home"
+    FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" 'fm_ntfy_drain'
+    count=1
+    [ "$phase" != reopen ] || count=2
+    assert_equals "$count" "$(grep -c '^url=' "$log")" "$phase preserves or advances decision-opening identity"
+  done
+  assert_equals 2 "$(grep -o '"sequence_id":"[^"]*"' "$log" | sort -u | wc -l | tr -d ' ')" 'reopened key has a new sequence identity'
+  pass 'decision transfer reuses its opening receipt while reopening publishes anew'
+}
+
 test_absent_config_is_inert
 test_disabled_record_never_blocks_its_producer
+test_short_watcher_budget
+test_response_time_retry_deadlines
+test_configuration_recovery_without_publication
+test_decision_opening_survives_transfer
 test_config_validation
 test_loopback_http_is_refused
 test_token_file_permissions_are_enforced
