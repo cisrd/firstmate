@@ -1,0 +1,371 @@
+[
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "status"
+    ],
+    "home": "home-b",
+    "rc": 0,
+    "stdout": "ntfy: off (no FM_NTFY_URL in /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.ntfy-validation/home-b/.env)\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-b",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; fm_ntfy_record \"$2\" \"$3\" \"$4\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy-lib.sh",
+      "decision-required",
+      "private-b",
+      ""
+    ],
+    "home": "home-b",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "status"
+    ],
+    "home": "home-a",
+    "rc": 1,
+    "stdout": "ntfy: misconfigured - FM_NTFY_URL must be an https base URL with no credentials, query, or fragment\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "status"
+    ],
+    "home": "home-a",
+    "rc": 1,
+    "stdout": "ntfy: misconfigured - FM_NTFY_TOKEN is not accepted; put the token in the private file named by FM_NTFY_TOKEN_FILE\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "status"
+    ],
+    "home": "home-a",
+    "rc": 1,
+    "stdout": "ntfy: misconfigured - FM_NTFY_TOKEN_FILE must be an absolute path to a regular file with mode 600\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "test"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "accepted: ntfy stored the self-test (HTTP 200). Accepted is not delivered and not read; check the device.\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "arm"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "armed: state/ntfy.check.sh\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "status"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "ntfy: on (scope=minimal pr-links=off armed=yes waiting=0)\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; signal_files_actionable \"$2/state/task.status\"; fm_wake_status_mark_current \"$2/state\" \"$2/state/task.status\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-watch.sh",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.ntfy-validation/home-a"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; signal_files_actionable \"$2/state/task.status\"; fm_wake_status_mark_current \"$2/state\" \"$2/state/task.status\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-watch.sh",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.ntfy-validation/home-a"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.ntfy-validation/home-a/state/ntfy.check.sh"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; signal_files_actionable \"$2/state/task.status\"; fm_wake_status_mark_current \"$2/state\" \"$2/state/task.status\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-watch.sh",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.ntfy-validation/home-a"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; signal_files_actionable \"$2/state/task.status\"; fm_wake_status_mark_current \"$2/state\" \"$2/state/task.status\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-watch.sh",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.ntfy-validation/home-a"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; fm_ntfy_record \"$2\" \"$3\" \"$4\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy-lib.sh",
+      "pr-ready",
+      "private-client",
+      "https://github.com/example/project/pull/123"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; fm_ntfy_record \"$2\" \"$3\" \"$4\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy-lib.sh",
+      "pr-ready",
+      "private-client-2",
+      "https://evil.example/action"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; fm_ntfy_record \"$2\" \"$3\" \"$4\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy-lib.sh",
+      "work-failed",
+      "budget",
+      ""
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "ntfy: FM_CHECK_TIMEOUT cannot accommodate notification delivery; use at least 2 whole seconds or 0 for no outer deadline\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "bash",
+      "-c",
+      ". \"$1\"; fm_ntfy_record \"$2\" \"$3\" \"$4\"",
+      "_",
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy-lib.sh",
+      "credential-required",
+      "revoked",
+      ""
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "ntfy: the server refused this home's token (HTTP 401); check FM_NTFY_TOKEN_FILE and the topic's access rules\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "check"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "disarm"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "disarmed: state/ntfy.check.sh\n",
+    "stderr": ""
+  },
+  {
+    "command": [
+      "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/bin/fm-ntfy.sh",
+      "status"
+    ],
+    "home": "home-a",
+    "rc": 0,
+    "stdout": "ntfy: on (scope=minimal pr-links=on armed=no waiting=1)\n",
+    "stderr": ""
+  },
+  {
+    "result": "all live assertions passed",
+    "ntfy_version": "2.28.0"
+  }
+]

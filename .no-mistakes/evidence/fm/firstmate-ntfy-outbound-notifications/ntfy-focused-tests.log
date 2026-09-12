@@ -1,0 +1,28 @@
+ok - no configuration means no state, no record, and no network request
+ok - a producer calling the notifier in a disabled home still succeeds
+ok - unusable timeout reports once and delivery resumes after recovery
+ok - projection uses classified record boundaries instead of presentation delimiters
+ok - custom watcher timeout reserves time to persist failures
+ok - both Retry-After forms use response-time timestamps
+ok - configuration validation independently proves configuration recovery
+ok - decision transfer reuses its opening receipt while reopening publishes anew
+ok - insecure, credential-bearing, and malformed configuration is refused
+ok - production loopback HTTP is refused
+ok - the token file must be absolute and owner-only
+ok - the token and topic never reach argv or any firstmate record
+ok - a credential failure is reported without quoting the token or topic
+ok - only the central event catalog can be published
+ok - the status projection reads the verb and discards worker text
+ok - the default minimal scope publishes a generic, project-free body
+ok - the opt-in detail scope adds the task id and nothing else
+ok - PR links are off by default and are not even recorded
+ok - an allowlisted forge URL becomes a view action, never an http button
+ok - only firstmate canonical forge URLs survive the link allowlist
+ok - a publication intent is durable before any network call happens
+ok - an identity-bound receipt suppresses republication, including after restart
+ok - the receipt is the authority across the publish-then-record crash window
+ok - all three interrupted delivery windows replay without consuming source state
+ok - failed atomic receipt creation preserves replay
+ok - publication reapplies current link privacy
+ok - home opt-in cannot leak through ambient configuration
+not ok - attempt results persist before returning

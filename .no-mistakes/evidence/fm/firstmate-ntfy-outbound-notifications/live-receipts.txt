@@ -1,0 +1,29 @@
+fm-ntfy-receipt-v1
+identity=pr-ready|private-client-2|
+type=pr-ready
+published=1789215622
+message=4JPcaf9PGhkb
+
+fm-ntfy-receipt-v1
+identity=decision-required|task|strong:65028:7696541:2026-09-12 14:20:19.371458724 +0200:k	2
+type=decision-required
+published=1789215620
+message=HLPEe7hJRExG
+
+fm-ntfy-receipt-v1
+identity=pr-ready|private-client|
+type=pr-ready
+published=1789215622
+message=QRx0wLYumPY8
+
+fm-ntfy-receipt-v1
+identity=work-failed|budget|
+type=work-failed
+published=1789215660
+message=aePTgsm4nl4W
+
+fm-ntfy-receipt-v1
+identity=decision-required|task|strong:65028:7696541:2026-09-12 14:20:19.371458724 +0200:k	5
+type=decision-required
+published=1789215621
+message=Aj60ituq57wN

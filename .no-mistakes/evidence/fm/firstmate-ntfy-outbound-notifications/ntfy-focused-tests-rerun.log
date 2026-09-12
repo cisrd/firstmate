@@ -1,0 +1,55 @@
+ok - no configuration means no state, no record, and no network request
+ok - a producer calling the notifier in a disabled home still succeeds
+ok - unusable timeout reports once and delivery resumes after recovery
+ok - projection uses classified record boundaries instead of presentation delimiters
+ok - custom watcher timeout reserves time to persist failures
+ok - both Retry-After forms use response-time timestamps
+ok - configuration validation independently proves configuration recovery
+ok - decision transfer reuses its opening receipt while reopening publishes anew
+ok - insecure, credential-bearing, and malformed configuration is refused
+ok - production loopback HTTP is refused
+ok - the token file must be absolute and owner-only
+ok - the token and topic never reach argv or any firstmate record
+ok - a credential failure is reported without quoting the token or topic
+ok - only the central event catalog can be published
+ok - the status projection reads the verb and discards worker text
+ok - the default minimal scope publishes a generic, project-free body
+ok - the opt-in detail scope adds the task id and nothing else
+ok - PR links are off by default and are not even recorded
+ok - an allowlisted forge URL becomes a view action, never an http button
+ok - only firstmate canonical forge URLs survive the link allowlist
+ok - a publication intent is durable before any network call happens
+ok - an identity-bound receipt suppresses republication, including after restart
+ok - the receipt is the authority across the publish-then-record crash window
+ok - all three interrupted delivery windows replay without consuming source state
+ok - failed atomic receipt creation preserves replay
+ok - publication reapplies current link privacy
+ok - home opt-in cannot leak through ambient configuration
+ok - drain reserves watcher time for persistent results
+ok - captain holds project even when classifier event text is empty
+ok - an ambiguous failure is retried under the same sequence id, never dropped
+ok - a refused token keeps the event, backs off hard, and reports the credential
+ok - a rate limit honours Retry-After and never retries in a loop
+ok - a server outage defers the event and delivers it after recovery
+ok - an event that exhausts its retries is reported and retained, never lost
+ok - the standing delivery check is silent unless an operator must act
+ok - a standing notifier problem wakes firstmate once, not on every check
+ok - a notifier problem that clears and returns is reported again
+ok - a half-configured notifier wakes firstmate instead of failing silently
+ok - two homes on one machine share no configuration, records, or delivery
+ok - recording and publishing change no firstmate record outside state/ntfy
+ok - the transport self-test proves delivery without inventing a fleet event
+ok - arming refuses a home that cannot publish, leaving no unbound shim
+ok - the standing delivery check arms and disarms through the trusted check path
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+●  WATCHER DOWN - SUPERVISION IS OFF
+●  1 task(s) in flight, but no watcher has a fresh beacon (last beat: never, grace 300s).
+●  Trust the emitted supervision protocol for this harness; do not use shell & for watcher repair.
+●  This is a supervision warning only; the guarded operation WILL still run.
+●  repair a missing or failed watcher cycle with the Pi tool fm_watch_arm_pi, or restart Pi with -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.pi/extensions/fm-primary-turnend-guard.ts -e /home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M2APVF6KH0MTJCKPDH05D7SK/.pi/extensions/fm-primary-pi-watch.ts if the extensions are not loaded.
+●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ok - registering a ready PR records exactly one pr-ready notification
+ok - a confirmed merge records exactly one delivery notification
+ok - the watcher projects a captain-relevant span without copying worker text
+ok - routine progress never reaches the pager
+ok - the away posture publishes the same taxonomy with no extra authority

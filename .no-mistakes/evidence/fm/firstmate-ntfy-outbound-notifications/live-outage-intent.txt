@@ -1,0 +1,7 @@
+fm-ntfy-outbox-v1
+identity=work-failed|budget|
+type=work-failed
+link=
+created=1789215622
+attempts=1
+next=1789215656
