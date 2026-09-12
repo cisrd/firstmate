@@ -1596,9 +1596,9 @@ signal_files_actionable() {  # <status-file> ...
     # project: firstmate has already judged it worth the captain's attention and
     # is about to surface it. Only the leading verbs cross over -
     # fm_ntfy_status_types discards the rest of every line - and the classified
-    # endpoint discriminates the identity so one span pages at most once per
-    # kind. Recording is a local write with no network call, so a configured
-    # pager cannot slow triage, and a disabled home does nothing at all here.
+    # endpoint discriminates non-decision identities. Decisions instead use
+    # their opening identity below so a captain-held transfer cannot repage.
+    # Recording makes no network call; a disabled home does nothing here.
     if [ "$rc" -eq 0 ] || [ "$needs_decision" -eq 1 ]; then
       while IFS= read -r ntfy_type; do
         [ -n "$ntfy_type" ] || continue

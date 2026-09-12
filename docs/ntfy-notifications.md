@@ -14,27 +14,20 @@ Firstmate decides, records, and acts exactly as it did before; the notification 
 - Nothing arrives back from ntfy.
   There is no command channel, no reply path, and no button that performs a firstmate action.
 - Reading, clearing, swiping, or deleting a notification changes nothing in firstmate.
-  A decision stays open until it is answered in firstmate, and a merge still needs the captain's word there.
-- An accepted publish means the ntfy server stored the message.
+  A decision stays open until it is answered in firstmate, and Firstmate's existing merge-authority rules still apply.
+- An HTTP 2xx means only that the ntfy server accepted the publication, not that it retained the message.
   It does not mean a device received it, a screen displayed it, or a person read it.
 - ntfy being slow, throttled, or completely down never blocks project work, delays supervision, or consumes the firstmate notification the captain would have seen anyway.
 
 ## What gets notified
 
-Five events, all of them things firstmate would already bring to the captain:
-
-| Event | ntfy priority | What the notification says |
-| --- | --- | --- |
-| A decision is waiting | 4 | "A decision is waiting for you in firstmate." |
-| Work stopped and needs the captain | 4 | "Work stopped and needs you in firstmate." |
-| A sign-in is required | 4 | "A sign-in is required before work can continue." |
-| A change is ready for review | 3 | "A change is ready for your review." |
-| A change was delivered | 2 | "A change was delivered." |
+Notifications cover open captain decisions, classified failures or blockers, a failed bootstrap GitHub sign-in check, PR/MR poll registration (ready for review), and recorded forge merge outcomes.
+The exact event names, priorities, tags, and generic messages have one owner: `_fm_ntfy_catalog` in [`bin/fm-ntfy-lib.sh`](../bin/fm-ntfy-lib.sh).
+A keyed decision keeps its notification identity when transferred to captain-held; resolving and genuinely reopening it permits a new notification.
 
 Routine progress is never notified.
-A worker's own words, its logs, a report body, a project or client name, a branch, a finding, or a file path are never published: only the event kind crosses over.
-
-Adding a sixth kind means editing the one catalog in `bin/fm-ntfy-lib.sh`, which is what keeps this list reviewable.
+Worker prose, logs, report bodies, findings, and file paths are never forwarded.
+The default payload is generic; opt-in task ids and forge links can reveal work metadata, as described under Privacy.
 
 ## Setup
 
@@ -46,6 +39,7 @@ Adding a sixth kind means editing the one catalog in `bin/fm-ntfy-lib.sh`, which
 
    ```sh
    umask 077
+   mkdir -p ~/.config/firstmate
    printf '%s\n' '<TOKEN>' > ~/.config/firstmate/ntfy-token
    chmod 600 ~/.config/firstmate/ntfy-token
    ```
@@ -68,7 +62,7 @@ Adding a sixth kind means editing the one catalog in `bin/fm-ntfy-lib.sh`, which
 
    This publishes one clearly-labelled self-test message and reports whether ntfy accepted it.
    Acceptance is the only thing it can prove; look at the phone to learn whether the message actually arrived.
-   The self-test leaves no record behind and can never be mistaken for real work.
+   The self-test writes no durable Firstmate intent or receipt; the server and phone may retain the clearly labelled probe.
 5. **Turn on unattended delivery** in the live home:
 
    ```sh
@@ -77,8 +71,7 @@ Adding a sixth kind means editing the one catalog in `bin/fm-ntfy-lib.sh`, which
 
    `bin/fm-ntfy.sh status` then reports the notifier's state without ever printing the topic or the token.
 
-Each home configures itself.
-A secondmate home notifies only when it has its own `.env`, its own topic, and its own token file; nothing is inherited.
+Select the intended home with `FM_HOME` when running these commands; see the [per-home configuration contract](configuration.md#outbound-ntfy-notifications-env).
 
 ## Privacy
 
@@ -89,11 +82,10 @@ Treat a phone lock screen as public, and treat the ntfy server as able to see wh
   The server caches messages, may forward them to Firebase, and handles the topic name.
   Assume the server operator, and depending on the client the push providers, can see at least metadata and possibly content.
 - **Lock screen.**
-  The default `minimal` scope exists for exactly this: every notification is one fixed generic sentence with a constant "Firstmate" title.
-  `FM_NTFY_SCOPE=detail` adds the firstmate task id, which usually names the work; turn it on only if a preview showing that id is acceptable wherever the phone is.
+  Notifications use a constant "Firstmate" title.
+  Choose the [scope setting](configuration.md#outbound-ntfy-notifications-env) with care: task ids can reveal what the work concerns.
 - **Links.**
-  `FM_NTFY_PR_LINKS=on` attaches a pull-request or merge-request URL, which reveals the repository and number in the notification.
-  With it off, no link is published and none is stored.
+  Enabling [PR links](configuration.md#outbound-ntfy-notifications-env) reveals the repository and number in the notification.
   A link is only ever a `view` action or the tap target; firstmate never publishes an ntfy `http` action button, because such a button would let anyone holding the device, or replaying an old notification, trigger an action with no identity, correlation, expiry, or replay protection.
 - **Mobile push.**
   Android through Google Play and iOS both go through Firebase, and iOS then through APNs, so content and metadata can traverse those providers.
@@ -105,15 +97,12 @@ Treat a phone lock screen as public, and treat the ntfy server as able to see wh
   Messages are cached server-side for a limited window (12 hours by default) so a phone that was offline can catch up; after that window a missed message is gone from the cache.
   A self-hosted server's default cache is in memory and does not survive a restart unless it is configured with SQLite or PostgreSQL.
 - **Rotation.**
-  The token is re-read from its file on every publish, so replacing the file's contents rotates the credential with no restart.
   If a topic or token is exposed, rotate the token and move to a new protected topic, and treat everything published during the retention window as exposed.
 
 ## Delivery and failure
 
-Publication is **at-least-once, deduplicated by firstmate**.
-An intent is written to disk before any network call, an identity-bound receipt is written after the server accepts it, and that receipt suppresses every later publication of the same event, including after a restart.
-A crash in the window between a successful publish and its receipt causes a repeat rather than a loss; the retry reuses the same ntfy sequence id so a client can collapse it visually.
-That sequence id is display de-duplication only and is not server-side idempotency, which is why firstmate's own receipt is the authority.
+The [library header](../bin/fm-ntfy-lib.sh) owns durable delivery and crash recovery: retries can duplicate a notification, but never acknowledge the underlying Firstmate outcome.
+Bounded retries are not a guarantee of eventual delivery.
 
 | Condition | What happens |
 | --- | --- |
@@ -121,10 +110,12 @@ That sequence id is display de-duplication only and is not server-side idempoten
 | Server unreachable, TLS or DNS failure, timeout | The notification is kept and retried with bounded exponential backoff and jitter. Work is unaffected. |
 | HTTP 401 or 403 | Treated as a revoked token or wrong access rules: the notification is kept, retries back off hard rather than hammering, and the credential is reported once. |
 | HTTP 429 | `Retry-After` is honoured when the server sends one, otherwise the ordinary bounded backoff applies. Never a retry loop. |
-| HTTP 5xx | Bounded backoff, then delivered once the server recovers. |
-| Retries exhausted | The notification is parked, never discarded. It is reported once and stays visible in `bin/fm-ntfy.sh status`. |
-| Configuration half-finished | Reported as one actionable line rather than failing silently, so a channel the captain believes is working cannot be quietly dead. |
-| ntfy completely unavailable | Firstmate keeps working and keeps its own notifications. One degradation is reported; nothing is consumed or replaced. |
+| HTTP 5xx | Bounded retries can deliver after recovery unless the notification has already been parked. |
+| Retries exhausted | The notification is parked, never discarded, and reported once. It remains included in the `waiting` count from `bin/fm-ntfy.sh status`; fixing transport or rearming does not reset its attempts. |
+| Configuration half-finished | `status`, `test`, or `arm` reports invalid configuration; an already armed check reports it once. Producers record no new intents while configuration is unusable. |
+| ntfy completely unavailable | Firstmate keeps its own outcomes. Transport failures retry silently until exhaustion is reported; nothing in Firstmate is consumed or replaced. |
+| Server restarted or push unavailable | Server acceptance does not prove retention or mobile delivery; consult Firstmate directly and check the server cache and client push setup described above. |
+| Deep link inaccessible | Open the authoritative PR/MR through your usual authenticated forge session or return to Firstmate; a failed link grants no authority and resolves nothing. |
 
 Away mode changes nothing here.
 The same five events are published with the same content, and being away grants no additional authority to anything.
@@ -137,4 +128,4 @@ It opens no pane, launches no agent, and issues no backend command: the events i
 - `config/wedge-alarm`'s `command:` channel is a separate, narrower seam that fires only when an away-mode escalation cannot be delivered inside the firstmate session; see [`wedge-alarm.md`](wedge-alarm.md).
   It is not part of this notifier and has its own configuration.
 - [`configuration.md`](configuration.md#outbound-ntfy-notifications-env) owns the configuration schema.
-- `tests/fm-ntfy.test.sh` pins this page's guarantees: the inert default, configuration refusals, secret containment, the event allowlist, link allowlisting, the view-only action, the durability and duplicate windows, every response class above, per-home isolation, and that publishing mutates no firstmate record.
+- `tests/fm-ntfy.test.sh` exercises the inert default, configuration refusals, secret containment, event and link allowlisting, view-only actions, crash replay, HTTP response handling, per-home isolation, and source-record preservation with a hermetic transport; it does not prove real server retention or mobile delivery.

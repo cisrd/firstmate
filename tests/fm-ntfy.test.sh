@@ -850,7 +850,9 @@ test_drain_budget() {
   [ "$elapsed" -lt 27 ] || fail "drain exceeded reserved budget: $elapsed"
   [ "$(grep -c '^url=' "$log")" -le 2 ] || fail 'too many slow requests'
   assert_equals 4 "$(outbox_count "$home")" 'outage retains all intents'
-  assert_grep 'attempts=1' "$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)" 'attempt results persist before returning'
+  assert_equals "$(grep -c '^url=' "$log")" \
+    "$(grep -l '^attempts=1$' "$home/state/ntfy/outbox/"*.rec | wc -l | tr -d ' ')" \
+    'every attempted request persists its result before returning'
   pass 'drain reserves watcher time for persistent results'
 }
 
