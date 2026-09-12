@@ -610,6 +610,7 @@ Optional: `FM_NTFY_SCOPE` (`minimal`, the default, or `detail`) and `FM_NTFY_PR_
 `FM_NTFY_PR_LINKS=on` allows a canonical pull-request or merge-request URL that firstmate itself validated to become the notification's tap target; with it off no link is published or even stored.
 Internal limits bound each request to 10 seconds and each drain's delivery budget to the smaller of 20 seconds or two-thirds of the watcher's actual `FM_CHECK_TIMEOUT`, reserving the remainder to persist results.
 A zero watcher timeout disables its outer deadline but retains the notifier's 20-second budget.
+A timeout that cannot provide a whole-second delivery budget reports a deduplicated configuration diagnostic and retains pending intents; use at least 2 whole seconds or zero.
 Retries use exponential backoff from 30 seconds to 3600 seconds plus jitter, respect `Retry-After` as a minimum, and park after 12 attempts.
 
 The token must live in the file `FM_NTFY_TOKEN_FILE` names and is read fresh on every publish, so rotating it needs no restart.

@@ -458,11 +458,8 @@ fm_ntfy_forget() {  # <type> <scope-id> [discriminator]
 # worker text is ever forwarded" a property of the projection rather than a
 # promise about every caller. Prints distinct types, one per line.
 fm_ntfy_status_types() {  # <events>
-  local events=${1-} line verb seen='' nl split
+  local events=${1-} line verb seen=''
   [ -n "$events" ] || return 0
-  # The classifier joins the span's captain-relevant lines with " ; ".
-  nl=$'\n'
-  split=${events// ; /$nl}
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     verb=${line%%:*}
@@ -477,7 +474,7 @@ fm_ntfy_status_types() {  # <events>
     seen="$seen $verb"
     printf '%s\n' "$verb"
   done <<EOF
-$split
+$events
 EOF
 }
 
@@ -709,8 +706,12 @@ fm_ntfy_drain() {
   max_attempts=$FM_NTFY_RETRY_MAX_ATTEMPTS_DEFAULT
 
   root=$(fm_ntfy_root)
+  if [ "$budget" -le 0 ]; then
+    _fm_ntfy_report_emit "$root" 'ntfy: FM_CHECK_TIMEOUT cannot accommodate notification delivery; use at least 2 whole seconds or 0 for no outer deadline'
+    return 0
+  fi
   case "$(cat "$root/.report" 2>/dev/null)" in
-    'ntfy: FM_NTFY_'*) _fm_ntfy_report_emit "$root" '' ;;
+    'ntfy: FM_NTFY_'*|'ntfy: FM_CHECK_TIMEOUT cannot accommodate notification delivery;'*) _fm_ntfy_report_emit "$root" '' ;;
   esac
   [ -d "$root/outbox" ] || return 0
   now=$(_fm_ntfy_now)

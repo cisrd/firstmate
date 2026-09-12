@@ -1694,9 +1694,11 @@ $origins
 EOF
 }
 
-status_span_first_actionable_record() {  # <status-file> <start-offset> [record-var] [needs-decision-var]
-  local f=$1 start=${2:-0} output_var=${3-} needs_var=${4-} size ident cur_ident scratch chunk_file full_file prefix_file result
+status_span_first_actionable_record() {  # <status-file> <start-offset> [record-var] [needs-decision-var] [classified-lines-var]
+  local f=$1 start=${2:-0} output_var=${3-} needs_var=${4-} records_var=${5-} size ident cur_ident scratch chunk_file full_file prefix_file result
   local line verb key origins='' folded=0 rc=1 failed=0 prefix_lines=0 line_number=0 live_line='' events='' _line _key _fm_span_needs_decision=0
+  local _fm_span_records=''
+  [ -z "$records_var" ] || printf -v "$records_var" '%s' ''
   [ -e "$f" ] || { [ -L "$f" ] && return 2; return 1; }
   [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 2
   ident=$(_fm_open_decisions_file_ident "$f") || return 2
@@ -1740,6 +1742,7 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
         key=$(_fm_decision_key "$line") || {
           [ -n "$events" ] && events="${events} ; "
           events="${events}${line}"
+          _fm_span_records="${_fm_span_records}${line}"$'\n'
           [ "$verb" = needs-decision ] && _fm_span_needs_decision=1
           rc=0
           continue
@@ -1747,6 +1750,7 @@ status_span_first_actionable_record() {  # <status-file> <start-offset> [record-
         _fm_decision_key_transition_allowed "$key" "$(status_line_note "$line")" || {
           [ -n "$events" ] && events="${events} ; "
           events="${events}reconciliation-required: ${line}"
+          _fm_span_records="${_fm_span_records}reconciliation-required: ${line}"$'\n'
           [ "$verb" = needs-decision ] && _fm_span_needs_decision=1
           rc=0
           continue
@@ -1771,6 +1775,7 @@ EOF
         [ -n "$live_line" ] && [ "$((prefix_lines + line_number))" -eq "$live_line" ] || continue
         [ -n "$events" ] && events="${events} ; "
         events="${events}${line}"
+        _fm_span_records="${_fm_span_records}${line}"$'\n'
         if [ "$verb" = needs-decision ] || { [ "$verb" = blocked ] &&
           _fm_is_pending_reply_escalation "$key" "$(status_line_note "$line")"; }; then
           _fm_span_needs_decision=1
@@ -1780,12 +1785,14 @@ EOF
       *)
         [ -n "$events" ] && events="${events} ; "
         events="${events}${line}"
+        _fm_span_records="${_fm_span_records}${line}"$'\n'
         rc=0
         ;;
     esac
   done < "$chunk_file"
   rm -f "$chunk_file" "$full_file" "$prefix_file"
   [ "$failed" -eq 0 ] || return 2
+  [ -z "$records_var" ] || printf -v "$records_var" '%s' "$_fm_span_records"
   if [ "$rc" -eq 0 ]; then result="${size}"$'\t'"${ident}"$'\t'"${events}"; else result="${size}"$'\t'"${ident}"; fi
   if [ -n "$output_var" ]; then
     printf -v "$output_var" '%s' "$result"

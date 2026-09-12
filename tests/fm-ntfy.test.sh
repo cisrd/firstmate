@@ -261,7 +261,8 @@ test_status_projection_keeps_only_the_verb() {
     'fm_ntfy_status_types "needs-decision [key=k]: use ACME Corp secret sk-LEAK ; working: still going"')
   assert_equals 'decision-required' "$out" 'a needs-decision span projects one decision type'
   out=$(run_lib "$home" "$fakebin" \
-    'fm_ntfy_status_types "blocked: cannot reach acme-prod ; failed: build broke"')
+    'fm_ntfy_status_types "blocked: cannot reach acme-prod
+failed: build broke"')
   assert_equals 'work-failed' "$out" 'blocked and failed collapse to one failure type'
   out=$(run_lib "$home" "$fakebin" 'fm_ntfy_status_types "working: rebased onto merged #76"')
   assert_equals '' "$out" 'a routine line projects nothing'
@@ -948,8 +949,46 @@ test_decision_opening_survives_transfer() {
   pass 'decision transfer reuses its opening receipt while reopening publishes anew'
 }
 
+test_unusable_delivery_budget_reports_once() {
+  local home fakebin log first second rec
+  home=$(make_home unusable-budget)
+  fakebin=$(make_fake_curl "$home")
+  log="$home/curl.log"
+  run_lib "$home" "$fakebin" 'fm_ntfy_record work-failed t1'
+  first=$(FM_CHECK_TIMEOUT=1 FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" 'fm_ntfy_drain')
+  assert_contains "$first" 'FM_CHECK_TIMEOUT cannot accommodate notification delivery' 'unusable budget is explicit'
+  second=$(FM_CHECK_TIMEOUT=1 run_lib "$home" "$fakebin" 'fm_ntfy_drain')
+  assert_equals '' "$second" 'unchanged timeout diagnostic is deduplicated'
+  assert_absent "$log" 'unusable budget makes no request'
+  rec=$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)
+  assert_grep 'attempts=0' "$rec" 'unattempted intent is retained unchanged'
+  FM_CHECK_TIMEOUT=5 FAKE_CURL_LOG="$log" run_lib "$home" "$fakebin" 'fm_ntfy_drain'
+  assert_equals 1 "$(receipt_count "$home")" 'restoring usable timeout delivers pending intent'
+  second=$(FM_CHECK_TIMEOUT=1 run_lib "$home" "$fakebin" 'fm_ntfy_drain')
+  assert_equals "$first" "$second" 'timeout relapse is reported after recovery'
+  pass 'unusable timeout reports once and delivery resumes after recovery'
+}
+
+test_status_prose_cannot_invent_events() {
+  local home fakebin
+  home=$(make_home prose-delimiter)
+  fakebin=$(make_fake_curl "$home")
+  printf 'done: checks complete ; failed: 0 ; blocked: 0\n' > "$home/state/t1.status"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" \
+    bash -c '. "$1"; signal_files_actionable "$2/state/t1.status"' _ "$ROOT/bin/fm-watch.sh" "$home"
+  assert_equals 0 "$(outbox_count "$home")" 'verbs in worker prose never become failure events'
+  printf 'failed: actual failure ; done: cleanup complete\n' >> "$home/state/t1.status"
+  PATH="$fakebin:$BASE_PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_ROOT_OVERRIDE="$ROOT" \
+    bash -c '. "$1"; signal_files_actionable "$2/state/t1.status"' _ "$ROOT/bin/fm-watch.sh" "$home"
+  assert_equals 1 "$(outbox_count "$home")" 'a separate classified failure record still notifies'
+  assert_grep 'type=work-failed' "$(find "$home/state/ntfy/outbox" -name '*.rec' | head -1)" 'actual failure retains its event type'
+  pass 'projection uses classified record boundaries instead of presentation delimiters'
+}
+
 test_absent_config_is_inert
 test_disabled_record_never_blocks_its_producer
+test_unusable_delivery_budget_reports_once
+test_status_prose_cannot_invent_events
 test_short_watcher_budget
 test_response_time_retry_deadlines
 test_configuration_recovery_without_publication

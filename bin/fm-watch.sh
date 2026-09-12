@@ -1569,7 +1569,7 @@ run_check_capture() {
 # (docs/pi-supervision-branch.md). Stale and heartbeat rows retain their existing
 # eligibility rules.
 signal_files_actionable() {  # <status-file> ...
-  local f task record rest endpoint ident events needs_decision rc found=1
+  local f task record rest endpoint ident classified_records needs_decision rc found=1
   local ntfy_type ntfy_origins ntfy_origin start
   FM_SIGNAL_SURFACE_ENDPOINTS=''
   FM_SIGNAL_NEEDS_DECISION_FILES=''
@@ -1579,7 +1579,7 @@ signal_files_actionable() {  # <status-file> ...
     task=$(basename "$f"); task="${task%.status}"
     record=''; needs_decision=0
     start=$(fm_wake_signal_seen_size "$STATE" "$f")
-    status_span_first_actionable_record "$f" "$start" record needs_decision
+    status_span_first_actionable_record "$f" "$start" record needs_decision classified_records
     rc=$?
     [ "$rc" -eq 1 ] && [ -z "$record" ] && continue
     if [ "$rc" -eq 2 ]; then
@@ -1600,14 +1600,12 @@ signal_files_actionable() {  # <status-file> ...
     # kind. Recording is a local write with no network call, so a configured
     # pager cannot slow triage, and a disabled home does nothing at all here.
     if [ "$rc" -eq 0 ] || [ "$needs_decision" -eq 1 ]; then
-      events=${rest#*$'\t'}
-      if [ "$events" = "$rest" ]; then events=''; fi
       while IFS= read -r ntfy_type; do
         [ -n "$ntfy_type" ] || continue
         [ "$ntfy_type" != decision-required ] || continue
         fm_ntfy_record "$ntfy_type" "$task" '' "$endpoint" || true
       done <<EOF
-$(fm_ntfy_status_types "$events")
+$(fm_ntfy_status_types "$classified_records")
 EOF
     fi
     if [ "$needs_decision" -eq 1 ]; then
