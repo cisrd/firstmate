@@ -173,6 +173,12 @@ mkdir -p "$STATE"
 # watcher reads only its presence (afk_record_present below).
 # shellcheck source=bin/fm-afk-contract.sh
 . "$SCRIPT_DIR/fm-afk-contract.sh"
+# Optional outbound pager. Inert unless this home opted in, and never a wake
+# source or a triage input: bin/fm-ntfy-lib.sh only projects spans this watcher
+# has already classified as captain-relevant, and records them without any
+# network call so triage cost is unchanged.
+# shellcheck source=bin/fm-ntfy-lib.sh
+. "$SCRIPT_DIR/fm-ntfy-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -1562,7 +1568,8 @@ run_check_capture() {
 # (docs/pi-supervision-branch.md). Stale and heartbeat rows retain their existing
 # eligibility rules.
 signal_files_actionable() {  # <status-file> ...
-  local f task record rest endpoint ident needs_decision rc found=1
+  local f task record rest endpoint ident events needs_decision rc found=1
+  local ntfy_type
   FM_SIGNAL_SURFACE_ENDPOINTS=''
   FM_SIGNAL_NEEDS_DECISION_FILES=''
   for f in "$@"; do
@@ -1584,6 +1591,23 @@ signal_files_actionable() {  # <status-file> ...
     fi
     endpoint=${record%%$'\t'*}; rest=${record#*$'\t'}; ident=${rest%%$'\t'*}
     FM_SIGNAL_SURFACE_ENDPOINTS="${FM_SIGNAL_SURFACE_ENDPOINTS}${f}"$'\t'"${endpoint}"$'\t'"${ident}"$'\n'
+    # A captain-relevant span is exactly what the optional outbound pager may
+    # project: firstmate has already judged it worth the captain's attention and
+    # is about to surface it. Only the leading verbs cross over -
+    # fm_ntfy_status_types discards the rest of every line - and the classified
+    # endpoint discriminates the identity so one span pages at most once per
+    # kind. Recording is a local write with no network call, so a configured
+    # pager cannot slow triage, and a disabled home does nothing at all here.
+    if [ "$rc" -eq 0 ]; then
+      events=${rest#*$'\t'}
+      if [ "$events" = "$rest" ]; then events=''; fi
+      while IFS= read -r ntfy_type; do
+        [ -n "$ntfy_type" ] || continue
+        fm_ntfy_record "$ntfy_type" "$task" '' "$endpoint" || true
+      done <<EOF
+$(fm_ntfy_status_types "$events")
+EOF
+    fi
     if [ "$needs_decision" -eq 1 ]; then
       FM_SIGNAL_NEEDS_DECISION_FILES="${FM_SIGNAL_NEEDS_DECISION_FILES} ${f}"
     fi

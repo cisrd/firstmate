@@ -19,6 +19,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 . "$SCRIPT_DIR/fm-parent-channel-lib.sh"
+# Optional outbound pager. Inert unless this home opted in; bin/fm-ntfy-lib.sh
+# owns every notifier contract and never makes a network call from here.
+# shellcheck source=bin/fm-ntfy-lib.sh
+. "$SCRIPT_DIR/fm-ntfy-lib.sh"
 
 if [ "$#" -ne 2 ]; then
   echo "error: invalid PR check request" >&2
@@ -134,6 +138,12 @@ fm_pr_poll_publish_prepared || {
   echo "error: could not publish PR poll" >&2
   exit 1
 }
+# Registering the PR is firstmate's own canonical "ready for review" moment, and
+# the URL here is the one fm-pr-lib.sh already validated, so this is where the
+# optional outbound pager learns about it. Recording is a local write; delivery
+# happens later in the standing check, so a slow ntfy cannot delay arming the
+# poll, and a home that did not opt in does nothing here at all.
+fm_ntfy_record pr-ready "$ID" "$URL" "$PROVIDER:$HOST/$PROJECT_PATH#$NUMBER" || true
 # In a secondmate home the registration itself is a captain-facing fact:
 # publish the child's PR-ready line with the canonical URL just recorded, so it
 # reaches the parent whether or not the mate model appends anything

@@ -31,7 +31,8 @@
     "docs/zellij-backend.md",
     "docs/orca-backend.md",
     "docs/cmux-backend.md",
-    "docs/remote-secondmates.md"
+    "docs/remote-secondmates.md",
+    "docs/ntfy-notifications.md"
   ],
   "requiredOwnerPointers": [
     {
@@ -358,6 +359,10 @@
     },
     {
       "path": "docs/herdr-backend.md",
+      "audience": "operator-current"
+    },
+    {
+      "path": "docs/ntfy-notifications.md",
       "audience": "operator-current"
     },
     {

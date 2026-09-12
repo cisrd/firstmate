@@ -31,6 +31,10 @@ _FM_MERGE_OUTCOME_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-parent-channel-lib.sh
 . "$_FM_MERGE_OUTCOME_LIB_DIR/fm-parent-channel-lib.sh"
+# Optional outbound pager, inert unless this home opted in. It observes the
+# outcome this library already published; it never decides one.
+# shellcheck source=bin/fm-ntfy-lib.sh
+. "$_FM_MERGE_OUTCOME_LIB_DIR/fm-ntfy-lib.sh"
 
 # shellcheck disable=SC2034 # Public result consumed by sourcing callers.
 FM_MERGE_OUTCOME_ALREADY_RECORDED=false
@@ -60,6 +64,11 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin> [autho
   local provider host path number
   # shellcheck disable=SC2034 # Sourced wake helpers consume these scoped globals.
   local STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+  # This function is told which home the outcome belongs to, so the optional
+  # pager is scoped to that same home rather than to whatever FM_HOME the
+  # calling process happens to carry.
+  # shellcheck disable=SC2034 # Read by the sourced notifier library.
+  local FM_NTFY_HOME=$1
   FM_MERGE_OUTCOME_ALREADY_RECORDED=false
   case "$origin" in self|poll) ;; *) return 2 ;; esac
   case "$authority" in
@@ -106,6 +115,13 @@ fm_merge_outcome_report() {  # <home> <state> <task-id> <pr-url> <origin> [autho
   if [ "$status" -eq 0 ]; then
     fm_pr_poll_merge_mark_notified "$state" "$id" \
       "$provider" "$host" "$path" "$number" || status=1
+  fi
+  if [ "$status" -eq 0 ]; then
+    # Delivery is the one outcome worth paging about that is not a request for
+    # attention, so it is recorded at the lowest priority the catalog carries.
+    # A notifier failure cannot change this function's result: the merge record
+    # is the outcome, and the pager is only a copy of it.
+    fm_ntfy_record merged "$id" "$FM_PR_URL" "$provider:$host/$path#$number" || true
   fi
   fm_lock_release "$lock"
   return "$status"

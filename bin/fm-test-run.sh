@@ -391,6 +391,7 @@ family_for_basename() {
     fm-pending-reply.test.sh|fm-pi-branch-extension.test.sh|\
     fm-procevent-quota.test.sh|fm-procevent-when.test.sh|fm-procevent.test.sh|\
     fm-live-gate.test.sh|\
+    fm-ntfy.test.sh|\
     fm-project-origin.test.sh|fm-public-followup.test.sh|fm-quota-choose.test.sh|\
     fm-remote-entrypoint.test.sh|fm-remote-secondmate-parent-binding.test.sh|\
     fm-send-remote-delivery.test.sh|fm-spawn-pool-base-freshen.test.sh|\

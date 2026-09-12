@@ -191,6 +191,10 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # deferred network stage sets, so an ordinary bootstrap run records nothing.
 # shellcheck source=bin/fm-timing-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-timing-lib.sh"
+# Optional outbound pager, inert unless this home opted in. Only the GitHub
+# authentication check below uses it, and only to record an intent locally.
+# shellcheck source=bin/fm-ntfy-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-ntfy-lib.sh"
 
 # Network-phase selection (see the header). An unrecognized value resolves to
 # `all` so a malformed override runs every step rather than silently dropping a
@@ -1569,7 +1573,16 @@ detect_home_summary_publication() {
 local_phase && detect_local_tools
 if network_phase; then
   __fm_timing_stamp=$(fm_timing_now_ms)
-  gh auth status >/dev/null 2>&1 || echo "NEEDS_GH_AUTH"
+  # A missing GitHub login is the one credential condition firstmate detects for
+  # itself, and it blocks delivery for every project. Page it once per outage:
+  # the intent is recorded while authentication is broken and forgotten once it
+  # works again, so a later expiry pages again instead of staying silent.
+  if gh auth status >/dev/null 2>&1; then
+    fm_ntfy_forget credential-required github || true
+  else
+    echo "NEEDS_GH_AUTH"
+    fm_ntfy_record credential-required github || true
+  fi
   fm_timing_record phase gh-auth "$__fm_timing_stamp"
 fi
 local_phase && detect_local_config
