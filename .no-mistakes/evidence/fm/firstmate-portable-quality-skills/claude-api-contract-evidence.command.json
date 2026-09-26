@@ -1,0 +1,28 @@
+{
+  "runtime": "claude",
+  "version": "2.1.283 (Claude Code)",
+  "cwd": "/home/awilliam/.no-mistakes/worktrees/a03e7f5d4084/01M3ENAN0HWS8TPJ7S0FV1SFBT/.quality-live-r3jtaai8",
+  "argv": [
+    "claude",
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--no-session-persistence",
+    "--setting-sources",
+    "project",
+    "--settings",
+    "{\"disableAllHooks\":true}",
+    "--strict-mcp-config",
+    "--mcp-config",
+    "{\"mcpServers\":{}}",
+    "--tools",
+    "Read,Skill",
+    "--allowedTools",
+    "Read,Skill",
+    "--max-turns",
+    "5",
+    "/api-contract-evidence You are a bounded read-only skill evaluation worker, not a Firstmate supervisor. Do not delegate or run fleet operations. Load the discovered api-contract-evidence skill and read its linked references/paths.md file. Use only skill/read tools or read-only file commands; do not edit, access network, or test an application. State the loaded canonical skill path and reference path, then answer the scenario in at most 250 words. A fictional endpoint contract forbids role-denied and foreign-tenant writes, leaks no secret field, and uses an idempotency key for successful mutations. A refusal returns 403 but may enqueue a write. Produce allowed/refused/replay/partial-failure evidence rows checking status, payload and persisted effects; do not execute requests or choose authorization policy."
+  ],
+  "exit_code": 0
+}
